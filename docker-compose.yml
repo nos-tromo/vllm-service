@@ -54,7 +54,10 @@ services:
     volumes:
       - ./nginx.vllm.conf:/etc/nginx/conf.d/default.conf:ro
     networks:
-      - vllm-net
+      vllm-net:
+      proxy-net:
+        aliases:
+          - vllm-router
     restart: unless-stopped
 
   chat:
@@ -204,4 +207,6 @@ volumes:
 
 networks:
   vllm-net:
+  proxy-net:
     external: true
+    name: ${PROXY_NETWORK:-proxy-net}
