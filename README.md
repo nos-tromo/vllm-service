@@ -28,22 +28,23 @@ Internally it runs:
 ## Usage
 
 1. Copy `.env.example` to `.env` and set the model IDs, API key, and any
-   GPU-placement settings.
+   GPU-placement settings. If host port `9000` is already in use, set
+   `ROUTER_HOST_PORT` in `.env` to another free port such as `9001`.
 2. Ensure the external `huggingface-cache` Docker volume exists.
-3. Run `docker_setup.sh` to initialize the persistent model cache.
-4. Create the shared proxy network once:
+3. Initialize the shared proxy network and persistent model cache:
 
    ```bash
    docker network create proxy-net
+   docker volume create huggingface-cache
    ```
 
-5. Start the stack:
+4. Start the stack:
 
    ```bash
    docker compose up --build
    ```
 
-6. Point third-party app at the router.
+5. Point third-party app at the router.
 
 If the consuming app is on the same shared Docker network, use the router
 alias directly:
@@ -58,7 +59,7 @@ If the consuming app is outside that network, use a host or reverse-proxy URL:
 
    ```bash
    INFERENCE_PROVIDER=vllm
-   OPENAI_API_BASE=http://<host>:9000/v1
+   OPENAI_API_BASE=http://<host>:${ROUTER_HOST_PORT:-9000}/v1
    OPENAI_API_KEY=<token>
    ```
 
