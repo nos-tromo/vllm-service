@@ -34,7 +34,7 @@ Internally it runs:
 3. Initialize the shared proxy network and persistent model cache:
 
    ```bash
-   docker network create proxy-net
+   docker network create inference-net
    docker volume create huggingface-cache
    ```
 
@@ -67,7 +67,7 @@ If the consuming app is outside that network, use a host or reverse-proxy URL:
 
 - `vllm-net` is private to this compose project and carries traffic between the
   router and the worker containers.
-- `proxy-net` is an external shared Docker network used for cross-project
+- `inference-net` is an external shared Docker network used for cross-project
   service discovery and reverse-proxy access.
-- Only the `router` service joins `proxy-net`; `chat`, `embed`, `rerank`, and
+- Only the `router` service joins `inference-net`; `chat`, `embed`, `rerank`, and
   `audio` stay on the private network.

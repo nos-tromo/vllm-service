@@ -55,7 +55,7 @@ services:
       - ./nginx.vllm.conf:/etc/nginx/conf.d/default.conf:ro
     networks:
       vllm-net:
-      proxy-net:
+      inference-net:
         aliases:
           - vllm-router
     restart: unless-stopped
@@ -207,6 +207,6 @@ volumes:
 
 networks:
   vllm-net:
-  proxy-net:
+  inference-net:
     external: true
-    name: ${PROXY_NETWORK:-proxy-net}
+    name: ${INFERENCE_NETWORK:-inference-net}
