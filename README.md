@@ -1,6 +1,6 @@
 # Standalone vLLM Service
 
-This repository runs the standalone routed vLLM deployment used by Docint and
+This repository runs the standalone routed vLLM deployment used by [docint](https://github.com/nos-tromo/docint) and
 other consumers.
 
 ## Purpose
