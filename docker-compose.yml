@@ -38,7 +38,7 @@ x-cuda-deploy: &cuda-deploy
 
 services:
   router:
-    image: nginx:1.28.2-alpine
+    image: ghcr.io/berriai/litellm:main-stable
     env_file: *env-file
     depends_on:
       chat:
@@ -52,9 +52,16 @@ services:
       rerank:
         condition: service_healthy
     ports:
-      - "${ROUTER_HOST_PORT:-9000}:9000"
+      - "${ROUTER_HOST_PORT:-9000}:4000"
     volumes:
-      - ./nginx.vllm.conf:/etc/nginx/conf.d/default.conf:ro
+      - ./litellm.config.yaml:/app/config.yaml:ro
+    command: ["--config", "/app/config.yaml", "--port", "4000", "--host", "0.0.0.0"]
+    healthcheck:
+      test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://localhost:4000/health/liveliness').read()"]
+      interval: 10s
+      timeout: 5s
+      retries: 30
+      start_period: 60s
     networks:
       vllm-net:
       inference-net:

@@ -5,25 +5,35 @@ other consumers.
 
 ## Purpose
 
-The stack exposes one routed HTTP endpoint. The router fronts these paths:
+The stack exposes one routed HTTP endpoint fronted by [LiteLLM Proxy](https://docs.litellm.ai/docs/proxy).
+LiteLLM dispatches each request to the right vLLM backend based on the `model`
+field in the request body, and natively exposes:
 
 - `/v1/chat/completions`
 - `/v1/completions`
 - `/v1/embeddings`
-- `/v1/models`
-- `/v1/rerank`
 - `/v1/audio/transcriptions`
 - `/v1/audio/translations`
+- `/v1/models`
+
+Additional vLLM-specific endpoints are pass-through forwarded by LiteLLM to the
+relevant backend:
+
+- `/v1/rerank`
 - `/pooling`
 - `/tokenize`
 
 Internally it runs:
 
-- `router`
+- `router` (LiteLLM Proxy)
 - `chat`
+- `translate`
 - `embed`
 - `rerank`
 - `audio`
+
+Model-to-backend routing is declared in `litellm.config.yaml`. Clients select a
+backend purely by the `model` field they send; there is no path-based dispatch.
 
 ## Usage
 
@@ -69,5 +79,16 @@ If the consuming app is outside that network, use a host or reverse-proxy URL:
   router and the worker containers.
 - `inference-net` is an external shared Docker network used for cross-project
   service discovery and reverse-proxy access.
-- Only the `router` service joins `inference-net`; `chat`, `embed`, `rerank`, and
-  `audio` stay on the private network.
+- Only the `router` service joins `inference-net`; `chat`, `translate`, `embed`,
+  `rerank`, and `audio` stay on the private network.
+- The `router` service keeps its `vllm-router` alias on `inference-net` so
+  existing consumers do not need to change their `OPENAI_API_BASE`.
+
+## Updating the model catalog
+
+The public list of model names is declared in `litellm.config.yaml` under
+`model_list`. Each entry maps a client-visible `model_name` to a vLLM backend
+`api_base`. When you override `TEXT_MODEL`, `TRANSLATE_MODEL`, `EMBED_MODEL`,
+`RERANK_MODEL`, or `WHISPER_MODEL` in `.env`, also update the matching
+`model_name` (and the `model:` field inside `litellm_params`) in
+`litellm.config.yaml` so `/v1/models` discovery and client calls keep working.
