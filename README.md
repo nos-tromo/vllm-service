@@ -92,3 +92,38 @@ The public list of model names is declared in `litellm.config.yaml` under
 `RERANK_MODEL`, or `WHISPER_MODEL` in `.env`, also update the matching
 `model_name` (and the `model:` field inside `litellm_params`) in
 `litellm.config.yaml` so `/v1/models` discovery and client calls keep working.
+
+The translate service additionally runs vLLM with `--served-model-name`
+(configurable via `TRANSLATE_SERVED_MODEL_NAME`) to expose a short, stable
+public name. The LiteLLM `model_name` for the translate entry must match
+`TRANSLATE_SERVED_MODEL_NAME` exactly.
+
+## Calling the translate service
+
+The translate service runs
+[`Infomaniak-AI/vllm-translategemma-4b-it`](https://huggingface.co/Infomaniak-AI/vllm-translategemma-4b-it),
+a vLLM-compatible repackaging of Google's TranslateGemma 4B. Unlike a general
+chat model, it expects the source language, target language, and text to be
+encoded in the message content using a delimiter format:
+
+```
+<<<source>>>{iso_src}<<<target>>>{iso_tgt}<<<text>>>{text_to_translate}
+```
+
+Language codes are ISO 639-1 (`en`, `de`, `fr`, ...) with optional regional
+variants (`en_US`, `zh_CN`). 55 languages are supported. Example request:
+
+```bash
+curl http://vllm-router:9000/v1/chat/completions \
+  -H "Authorization: Bearer $OPENAI_API_KEY" \
+  -H "Content-Type: application/json" \
+  -d '{
+    "model": "translategemma-4b-it",
+    "messages": [
+      {"role": "user", "content": "<<<source>>>en<<<target>>>de<<<text>>>Hello world"}
+    ]
+  }'
+```
+
+The model is trained for a ~2K context window, so keep `TRANSLATE_MAX_MODEL_LEN`
+at 2048 unless you have a specific reason to raise it.
