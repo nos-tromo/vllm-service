@@ -118,15 +118,16 @@ services:
     command:
       - >-
         export CUDA_VISIBLE_DEVICES="$${TRANSLATE_CUDA_VISIBLE_DEVICES:-0}";
-        set -- vllm serve "$${TRANSLATE_MODEL:-google/translategemma-12b}"
+        set -- vllm serve "$${TRANSLATE_MODEL:-Infomaniak-AI/vllm-translategemma-4b-it}"
+        --served-model-name "$${TRANSLATE_SERVED_MODEL_NAME:-translategemma-4b-it}"
         --tensor-parallel-size "$${TRANSLATE_TENSOR_PARALLEL_SIZE:-1}"
         --api-key "$${OPENAI_API_KEY:-sk-no-key-required}"
         --host 0.0.0.0
         --port 8000
-        --gpu-memory-utilization "$${TRANSLATE_GPU_MEMORY_UTILIZATION:-0.25}"
-        --max-model-len "$${TRANSLATE_MAX_MODEL_LEN:-4096}"
+        --gpu-memory-utilization "$${TRANSLATE_GPU_MEMORY_UTILIZATION:-0.15}"
+        --max-model-len "$${TRANSLATE_MAX_MODEL_LEN:-2048}"
         --max-num-seqs "$${TRANSLATE_MAX_NUM_SEQS:-8}"
-        --max-num-batched-tokens "$${TRANSLATE_MAX_NUM_BATCHED_TOKENS:-8192}";
+        --max-num-batched-tokens "$${TRANSLATE_MAX_NUM_BATCHED_TOKENS:-4096}";
         if [ "$${TRANSLATE_ENABLE_PREFIX_CACHING:-true}" = "true" ]; then
           set -- "$@" --enable-prefix-caching;
         fi;
