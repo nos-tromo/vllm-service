@@ -78,6 +78,9 @@ services:
     gpus: all
     env_file: *env-file
     ipc: host
+    depends_on:
+      translate:
+        condition: service_healthy
     entrypoint: ["/bin/sh", "-lc"]
     command:
       - >-
@@ -102,6 +105,9 @@ services:
         fi;
         if [ -n "$${CHAT_LIMIT_MM_PER_PROMPT:-}" ]; then
           set -- "$@" --limit-mm-per-prompt "$${CHAT_LIMIT_MM_PER_PROMPT}";
+        fi;
+        if [ -n "$${CHAT_CPU_OFFLOAD_GB:-}" ]; then
+          set -- "$@" --cpu-offload-gb "$${CHAT_CPU_OFFLOAD_GB}";
         fi;
         exec "$@"
     environment: *vllm-env
