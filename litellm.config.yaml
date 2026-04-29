@@ -10,10 +10,10 @@
 # below so /v1/models discovery and client calls keep working.
 
 model_list:
-  # General-purpose chat - Qwen3.5 MoE
-  - model_name: Qwen/Qwen3.5-35B-A3B-GPTQ-Int4
+  # General-purpose chat - Qwen3.6 MoE
+  - model_name: palmfuture/Qwen3.6-35B-A3B-GPTQ-Int4
     litellm_params:
-      model: openai/Qwen/Qwen3.5-35B-A3B-GPTQ-Int4
+      model: openai/palmfuture/Qwen3.6-35B-A3B-GPTQ-Int4
       api_base: http://chat:8000/v1
       api_key: os.environ/OPENAI_API_KEY
 
