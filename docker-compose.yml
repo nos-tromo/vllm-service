@@ -119,7 +119,6 @@ services:
       - >-
         export CUDA_VISIBLE_DEVICES="$${TRANSLATE_CUDA_VISIBLE_DEVICES:-0}";
         set -- vllm serve "$${TRANSLATE_MODEL:-Infomaniak-AI/vllm-translategemma-4b-it}"
-        --served-model-name "$${TRANSLATE_SERVED_MODEL_NAME:-translategemma-4b-it}"
         --tensor-parallel-size "$${TRANSLATE_TENSOR_PARALLEL_SIZE:-1}"
         --api-key "$${OPENAI_API_KEY:-sk-no-key-required}"
         --host 0.0.0.0
