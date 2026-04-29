@@ -93,10 +93,6 @@ The public list of model names is declared in `litellm.config.yaml` under
 `model_name` (and the `model:` field inside `litellm_params`) in
 `litellm.config.yaml` so `/v1/models` discovery and client calls keep working.
 
-The translate service additionally runs vLLM with `--served-model-name`
-(configurable via `TRANSLATE_SERVED_MODEL_NAME`) to expose a short, stable
-public name. The LiteLLM `model_name` for the translate entry must match
-`TRANSLATE_SERVED_MODEL_NAME` exactly.
 
 ## Calling the translate service
 

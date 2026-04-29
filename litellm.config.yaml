@@ -22,9 +22,9 @@ model_list:
   # service command in docker-compose.yml. Clients wrap text using the
   # delimiter format:
   #   <<<source>>>{iso_src}<<<target>>>{iso_tgt}<<<text>>>{text}
-  - model_name: translategemma-4b-it
+  - model_name: Infomaniak-AI/vllm-translategemma-4b-it
     litellm_params:
-      model: openai/translategemma-4b-it
+      model: openai/Infomaniak-AI/vllm-translategemma-4b-it
       api_base: http://translate:8000/v1
       api_key: os.environ/OPENAI_API_KEY
 
