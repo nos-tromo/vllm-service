@@ -38,7 +38,7 @@ x-cuda-deploy: &cuda-deploy
 
 services:
   router:
-    image: ghcr.io/berriai/litellm:main-stable
+    image: ghcr.io/litellm/litellm:main-v1.83.10-stable
     env_file: *env-file
     depends_on:
       chat:
