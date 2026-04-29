@@ -199,7 +199,7 @@ services:
     command:
       - >-
         export CUDA_VISIBLE_DEVICES="$${AUDIO_CUDA_VISIBLE_DEVICES:-0}";
-        exec vllm serve "$${WHISPER_MODEL:-openai/whisper-large-v3-turbo}"
+        exec vllm serve "$${WHISPER_MODEL:-openai/whisper-large-v3}"
         --api-key "$${OPENAI_API_KEY:-sk-no-key-required}"
         --host 0.0.0.0
         --port 8000

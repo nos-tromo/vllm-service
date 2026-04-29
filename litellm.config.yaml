@@ -36,9 +36,9 @@ model_list:
       api_key: os.environ/OPENAI_API_KEY
 
   # Audio transcription / translation - Whisper
-  - model_name: openai/whisper-large-v3-turbo
+  - model_name: openai/whisper-large-v3
     litellm_params:
-      model: openai/openai/whisper-large-v3-turbo
+      model: openai/openai/whisper-large-v3
       api_base: http://audio:8000/v1
       api_key: os.environ/OPENAI_API_KEY
 
