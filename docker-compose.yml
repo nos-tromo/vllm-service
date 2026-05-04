@@ -17,6 +17,7 @@ x-vllm-env: &vllm-env
   NVIDIA_VISIBLE_DEVICES: all
   HF_HUB_OFFLINE: ${HF_HUB_OFFLINE:-1}
   TRANSFORMERS_OFFLINE: ${TRANSFORMERS_OFFLINE:-1}
+  FLASHINFER_DISABLE_VERSION_CHECK: 1
 
 x-vllm-volumes: &vllm-volumes
   - huggingface-cache:/root/.cache/huggingface/hub
