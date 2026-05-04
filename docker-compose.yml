@@ -117,6 +117,9 @@ services:
         if [ -n "$${CHAT_CPU_OFFLOAD_GB:-}" ]; then
           set -- "$@" --cpu-offload-gb "$${CHAT_CPU_OFFLOAD_GB}";
         fi;
+        if [ -n "$${CHAT_QUANTIZATION:-}" ]; then
+          set -- "$@" --quantization "$${CHAT_QUANTIZATION}";
+        fi;
         exec "$@"
     environment: *vllm-env
     volumes: *vllm-volumes
