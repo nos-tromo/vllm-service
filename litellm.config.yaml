@@ -1,0 +1,77 @@
+# LiteLLM Proxy configuration for the vLLM service stack.
+#
+# This config fronts the vLLM backends (chat, translate, embed, rerank,
+# audio) and exposes a single OpenAI-compatible endpoint at :4000.
+#
+# Model names are read from environment variables via the os.environ/
+# syntax. Set TEXT_MODEL, TRANSLATE_MODEL, EMBED_MODEL, and
+# WHISPER_MODEL in .env; both docker-compose and LiteLLM will pick them
+# up automatically with no further changes required here.
+# Note: the LLM fallback alias in docker-compose is not visible to
+# LiteLLM — always set TEXT_MODEL explicitly in .env.
+
+model_list:
+  # General-purpose chat
+  - model_name: os.environ/TEXT_MODEL
+    litellm_params:
+      model: os.environ/TEXT_MODEL
+      custom_llm_provider: openai
+      api_base: http://chat:8000/v1
+      api_key: os.environ/OPENAI_API_KEY
+
+  # Translation - TranslateGemma (Infomaniak vLLM-optimized fork).
+  # Clients wrap text using the delimiter format:
+  #   <<<source>>>{iso_src}<<<target>>>{iso_tgt}<<<text>>>{text}
+  - model_name: os.environ/TRANSLATE_MODEL
+    litellm_params:
+      model: os.environ/TRANSLATE_MODEL
+      custom_llm_provider: openai
+      api_base: http://translate:8000/v1
+      api_key: os.environ/OPENAI_API_KEY
+
+  # Embeddings
+  - model_name: os.environ/EMBED_MODEL
+    litellm_params:
+      model: os.environ/EMBED_MODEL
+      custom_llm_provider: openai
+      api_base: http://embed:8000/v1
+      api_key: os.environ/OPENAI_API_KEY
+
+  # Audio transcription / translation
+  - model_name: os.environ/WHISPER_MODEL
+    litellm_params:
+      model: os.environ/WHISPER_MODEL
+      custom_llm_provider: openai
+      api_base: http://audio:8000/v1
+      api_key: os.environ/OPENAI_API_KEY
+
+general_settings:
+  # The master key gates access to the proxy. Clients must present it as
+  # `Authorization: Bearer <key>`. Reuses OPENAI_API_KEY from .env so the
+  # existing consumer configuration keeps working without changes.
+  master_key: os.environ/OPENAI_API_KEY
+
+  # Pass-through endpoints for vLLM-specific paths that LiteLLM does not
+  # map natively. Forwards the request body unchanged to the upstream.
+  pass_through_endpoints:
+    - path: "/v1/rerank"
+      target: "http://rerank:8000/v1/rerank"
+      headers:
+        content-type: "application/json"
+    - path: "/pooling"
+      target: "http://embed:8000/pooling"
+      headers:
+        content-type: "application/json"
+    - path: "/tokenize"
+      target: "http://embed:8000/tokenize"
+      headers:
+        content-type: "application/json"
+
+litellm_settings:
+  # Silently drop OpenAI-only params that the upstream vLLM backend does
+  # not understand, rather than erroring out the request.
+  drop_params: true
+  set_verbose: false
+
+router_settings:
+  routing_strategy: simple-shuffle

@@ -17,6 +17,7 @@ x-vllm-env: &vllm-env
   NVIDIA_VISIBLE_DEVICES: all
   HF_HUB_OFFLINE: ${HF_HUB_OFFLINE:-1}
   TRANSFORMERS_OFFLINE: ${TRANSFORMERS_OFFLINE:-1}
+  FLASHINFER_DISABLE_VERSION_CHECK: 1
 
 x-vllm-volumes: &vllm-volumes
   - huggingface-cache:/root/.cache/huggingface/hub
@@ -35,24 +36,43 @@ x-cuda-deploy: &cuda-deploy
         - driver: nvidia
           count: all
           capabilities: [gpu]
+  restart_policy:
+    condition: on-failure
+    delay: 10s
+    max_attempts: 5
+    window: 120s
 
 services:
   router:
-    image: nginx:1.28.2-alpine
+    image: litellm/litellm:main-v1.83.10-stable
     env_file: *env-file
     depends_on:
       chat:
         condition: service_healthy
       embed:
         condition: service_healthy
-      audio:
-        condition: service_healthy
       rerank:
         condition: service_healthy
+      translate:
+        condition: service_healthy
+        required: false
+      audio:
+        condition: service_healthy
+        required: false
+    environment:
+      TRANSLATE_MODEL: ${TRANSLATE_MODEL:-Infomaniak-AI/vllm-translategemma-4b-it}
+      WHISPER_MODEL: ${WHISPER_MODEL:-openai/whisper-large-v3}
     ports:
-      - "${ROUTER_HOST_PORT:-9000}:9000"
+      - "${ROUTER_HOST_PORT:-9000}:4000"
     volumes:
-      - ./nginx.vllm.conf:/etc/nginx/conf.d/default.conf:ro
+      - ./litellm.config.yaml:/app/config.yaml:ro
+    command: ["--config", "/app/config.yaml", "--port", "4000", "--host", "0.0.0.0"]
+    healthcheck:
+      test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://localhost:4000/health/liveliness').read()"]
+      interval: 10s
+      timeout: 5s
+      retries: 30
+      start_period: 60s
     networks:
       vllm-net:
       inference-net:
@@ -73,8 +93,8 @@ services:
     command:
       - >-
         export CUDA_VISIBLE_DEVICES="$${CHAT_CUDA_VISIBLE_DEVICES:-0}";
-        set -- vllm serve "$${TEXT_MODEL:-$${LLM:-Qwen/Qwen3.5-2B}}"
-        --tensor-parallel-size "$${TENSOR_PARALLEL_SIZE:-1}"
+        set -- vllm serve "$${TEXT_MODEL:-$${LLM:-palmfuture/Qwen3.6-35B-A3B-GPTQ-Int4}}"
+        --tensor-parallel-size "$${CHAT_TENSOR_PARALLEL_SIZE:-1}"
         --api-key "$${OPENAI_API_KEY:-sk-no-key-required}"
         --host 0.0.0.0
         --port 8000
@@ -95,6 +115,9 @@ services:
         if [ -n "$${CHAT_LIMIT_MM_PER_PROMPT:-}" ]; then
           set -- "$@" --limit-mm-per-prompt "$${CHAT_LIMIT_MM_PER_PROMPT}";
         fi;
+        if [ -n "$${CHAT_CPU_OFFLOAD_GB:-}" ]; then
+          set -- "$@" --cpu-offload-gb "$${CHAT_CPU_OFFLOAD_GB}";
+        fi;
         exec "$@"
     environment: *vllm-env
     volumes: *vllm-volumes
@@ -102,7 +125,6 @@ services:
     deploy: *cuda-deploy
     networks:
       - vllm-net
-    restart: unless-stopped
 
   embed:
     build:
@@ -139,38 +161,6 @@ services:
     deploy: *cuda-deploy
     networks:
       - vllm-net
-    restart: unless-stopped
-
-  audio:
-    build:
-      context: .
-      dockerfile: Dockerfile.vllm
-      args:
-        <<: *build-args
-    gpus: all
-    env_file: *env-file
-    ipc: host
-    depends_on:
-      embed:
-        condition: service_healthy
-    entrypoint: ["/bin/sh", "-lc"]
-    command:
-      - >-
-        export CUDA_VISIBLE_DEVICES="$${AUDIO_CUDA_VISIBLE_DEVICES:-0}";
-        exec vllm serve "$${WHISPER_MODEL:-openai/whisper-large-v3-turbo}"
-        --api-key "$${OPENAI_API_KEY:-sk-no-key-required}"
-        --host 0.0.0.0
-        --port 8000
-        --gpu-memory-utilization "$${AUDIO_GPU_MEMORY_UTILIZATION:-0.15}"
-    environment:
-      <<: *vllm-env
-      VLLM_MAX_AUDIO_CLIP_FILESIZE_MB: ${VLLM_MAX_AUDIO_CLIP_FILESIZE_MB:-200}
-    volumes: *vllm-volumes
-    healthcheck: *vllm-healthcheck
-    deploy: *cuda-deploy
-    networks:
-      - vllm-net
-    restart: unless-stopped
 
   rerank:
     build:
@@ -182,7 +172,7 @@ services:
     env_file: *env-file
     ipc: host
     depends_on:
-      audio:
+      embed:
         condition: service_healthy
     entrypoint: ["/bin/sh", "-lc"]
     command:
@@ -200,7 +190,74 @@ services:
     deploy: *cuda-deploy
     networks:
       - vllm-net
-    restart: unless-stopped
+
+  audio:
+    build:
+      context: .
+      dockerfile: Dockerfile.vllm
+      args:
+        <<: *build-args
+    profiles: [media]
+    gpus: all
+    env_file: *env-file
+    ipc: host
+    depends_on:
+      rerank:
+        condition: service_healthy
+    entrypoint: ["/bin/sh", "-lc"]
+    command:
+      - >-
+        export CUDA_VISIBLE_DEVICES="$${AUDIO_CUDA_VISIBLE_DEVICES:-0}";
+        exec vllm serve "$${WHISPER_MODEL:-openai/whisper-large-v3}"
+        --api-key "$${OPENAI_API_KEY:-sk-no-key-required}"
+        --host 0.0.0.0
+        --port 8000
+        --gpu-memory-utilization "$${AUDIO_GPU_MEMORY_UTILIZATION:-0.15}"
+    environment:
+      <<: *vllm-env
+      VLLM_MAX_AUDIO_CLIP_FILESIZE_MB: ${VLLM_MAX_AUDIO_CLIP_FILESIZE_MB:-200}
+    volumes: *vllm-volumes
+    healthcheck: *vllm-healthcheck
+    deploy: *cuda-deploy
+    networks:
+      - vllm-net
+
+  translate:
+    build:
+      context: .
+      dockerfile: Dockerfile.vllm
+      args:
+        <<: *build-args
+    profiles: [media]
+    gpus: all
+    env_file: *env-file
+    ipc: host
+    depends_on:
+      audio:
+        condition: service_healthy
+    entrypoint: ["/bin/sh", "-lc"]
+    command:
+      - >-
+        export CUDA_VISIBLE_DEVICES="$${TRANSLATE_CUDA_VISIBLE_DEVICES:-0}";
+        set -- vllm serve "$${TRANSLATE_MODEL:-Infomaniak-AI/vllm-translategemma-4b-it}"
+        --tensor-parallel-size "$${TRANSLATE_TENSOR_PARALLEL_SIZE:-1}"
+        --api-key "$${OPENAI_API_KEY:-sk-no-key-required}"
+        --host 0.0.0.0
+        --port 8000
+        --gpu-memory-utilization "$${TRANSLATE_GPU_MEMORY_UTILIZATION:-0.15}"
+        --max-model-len "$${TRANSLATE_MAX_MODEL_LEN:-2048}"
+        --max-num-seqs "$${TRANSLATE_MAX_NUM_SEQS:-8}"
+        --max-num-batched-tokens "$${TRANSLATE_MAX_NUM_BATCHED_TOKENS:-4096}";
+        if [ "$${TRANSLATE_ENABLE_PREFIX_CACHING:-true}" = "true" ]; then
+          set -- "$@" --enable-prefix-caching;
+        fi;
+        exec "$@"
+    environment: *vllm-env
+    volumes: *vllm-volumes
+    healthcheck: *vllm-healthcheck
+    deploy: *cuda-deploy
+    networks:
+      - vllm-net
 
 volumes:
   huggingface-cache:
