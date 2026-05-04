@@ -3,42 +3,45 @@
 # This config fronts the vLLM backends (chat, translate, embed, rerank,
 # audio) and exposes a single OpenAI-compatible endpoint at :4000.
 #
-# Routing is by the "model" field in each request. The names declared
-# under `model_list` are exactly what clients must pass as `model`. If
-# you override TEXT_MODEL, TRANSLATE_MODEL, etc. in .env to load a
-# different Hugging Face repo, update the matching `model_name` entries
-# below so /v1/models discovery and client calls keep working.
+# Model names are read from environment variables via the os.environ/
+# syntax. Set TEXT_MODEL, TRANSLATE_MODEL, EMBED_MODEL, and
+# WHISPER_MODEL in .env; both docker-compose and LiteLLM will pick them
+# up automatically with no further changes required here.
+# Note: the LLM fallback alias in docker-compose is not visible to
+# LiteLLM — always set TEXT_MODEL explicitly in .env.
 
 model_list:
-  # General-purpose chat - Qwen3.6 MoE
-  - model_name: palmfuture/Qwen3.6-35B-A3B-GPTQ-Int4
+  # General-purpose chat
+  - model_name: os.environ/TEXT_MODEL
     litellm_params:
-      model: openai/palmfuture/Qwen3.6-35B-A3B-GPTQ-Int4
+      model: os.environ/TEXT_MODEL
+      custom_llm_provider: openai
       api_base: http://chat:8000/v1
       api_key: os.environ/OPENAI_API_KEY
 
-  # Translation - TranslateGemma 4B (Infomaniak vLLM-optimized fork).
-  # The model_name here must match --served-model-name in the translate
-  # service command in docker-compose.yml. Clients wrap text using the
-  # delimiter format:
+  # Translation - TranslateGemma (Infomaniak vLLM-optimized fork).
+  # Clients wrap text using the delimiter format:
   #   <<<source>>>{iso_src}<<<target>>>{iso_tgt}<<<text>>>{text}
-  - model_name: Infomaniak-AI/vllm-translategemma-4b-it
+  - model_name: os.environ/TRANSLATE_MODEL
     litellm_params:
-      model: openai/Infomaniak-AI/vllm-translategemma-4b-it
+      model: os.environ/TRANSLATE_MODEL
+      custom_llm_provider: openai
       api_base: http://translate:8000/v1
       api_key: os.environ/OPENAI_API_KEY
 
-  # Embeddings - BGE-M3
-  - model_name: BAAI/bge-m3
+  # Embeddings
+  - model_name: os.environ/EMBED_MODEL
     litellm_params:
-      model: openai/BAAI/bge-m3
+      model: os.environ/EMBED_MODEL
+      custom_llm_provider: openai
       api_base: http://embed:8000/v1
       api_key: os.environ/OPENAI_API_KEY
 
-  # Audio transcription / translation - Whisper
-  - model_name: openai/whisper-large-v3
+  # Audio transcription / translation
+  - model_name: os.environ/WHISPER_MODEL
     litellm_params:
-      model: openai/openai/whisper-large-v3
+      model: os.environ/WHISPER_MODEL
+      custom_llm_provider: openai
       api_base: http://audio:8000/v1
       api_key: os.environ/OPENAI_API_KEY
 

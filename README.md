@@ -27,9 +27,12 @@ Internally it runs:
 
 - `router` (LiteLLM Proxy)
 - `chat`
-- `translate`
 - `embed`
 - `rerank`
+
+The following services are optional and only started with `--profile media`:
+
+- `translate`
 - `audio`
 
 Model-to-backend routing is declared in `litellm.config.yaml`. Clients select a
@@ -48,10 +51,16 @@ backend purely by the `model` field they send; there is no path-based dispatch.
    docker volume create huggingface-cache
    ```
 
-4. Start the stack:
+4. Start the core stack:
 
    ```bash
    docker compose up --build
+   ```
+
+   To also start the `translate` and `audio` services, add the `media` profile:
+
+   ```bash
+   docker compose --profile media up --build
    ```
 
 5. Point third-party app at the router.
@@ -86,12 +95,14 @@ If the consuming app is outside that network, use a host or reverse-proxy URL:
 
 ## Updating the model catalog
 
-The public list of model names is declared in `litellm.config.yaml` under
-`model_list`. Each entry maps a client-visible `model_name` to a vLLM backend
-`api_base`. When you override `TEXT_MODEL`, `TRANSLATE_MODEL`, `EMBED_MODEL`,
-`RERANK_MODEL`, or `WHISPER_MODEL` in `.env`, also update the matching
-`model_name` (and the `model:` field inside `litellm_params`) in
-`litellm.config.yaml` so `/v1/models` discovery and client calls keep working.
+`litellm.config.yaml` is model-agnostic: all model names are read at startup
+from the environment variables `TEXT_MODEL`, `TRANSLATE_MODEL`, `EMBED_MODEL`,
+and `WHISPER_MODEL`. To switch a model, update the relevant variable in `.env`
+and restart the stack. No changes to `litellm.config.yaml` are required.
+
+Clients must use the exact model ID set in `.env` as the `model` field in
+their requests (e.g. `"model": "BAAI/bge-m3"`). The `/v1/models` endpoint
+returns the currently active IDs.
 
 
 ## Calling the translate service
@@ -114,7 +125,7 @@ curl http://vllm-router:9000/v1/chat/completions \
   -H "Authorization: Bearer $OPENAI_API_KEY" \
   -H "Content-Type: application/json" \
   -d '{
-    "model": "translategemma-4b-it",
+    "model": "'"$TRANSLATE_MODEL"'",
     "messages": [
       {"role": "user", "content": "<<<source>>>en<<<target>>>de<<<text>>>Hello world"}
     ]
@@ -123,3 +134,30 @@ curl http://vllm-router:9000/v1/chat/completions \
 
 The model is trained for a ~2K context window, so keep `TRANSLATE_MAX_MODEL_LEN`
 at 2048 unless you have a specific reason to raise it.
+
+The translate service is only started when the `media` profile is active:
+
+```bash
+docker compose --profile media up
+```
+
+## Calling the audio service
+
+The audio service runs Whisper via vLLM and exposes OpenAI-compatible
+`/v1/audio/transcriptions` and `/v1/audio/translations` endpoints.
+
+```bash
+curl http://vllm-router:9000/v1/audio/transcriptions \
+  -H "Authorization: Bearer $OPENAI_API_KEY" \
+  -F model="$WHISPER_MODEL" \
+  -F file="@recording.mp3"
+```
+
+The maximum accepted file size defaults to 200 MB and can be raised with
+`VLLM_MAX_AUDIO_CLIP_FILESIZE_MB` in `.env`.
+
+The audio service is only started when the `media` profile is active:
+
+```bash
+docker compose --profile media up
+```

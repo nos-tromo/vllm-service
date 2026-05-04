@@ -35,6 +35,11 @@ x-cuda-deploy: &cuda-deploy
         - driver: nvidia
           count: all
           capabilities: [gpu]
+  restart_policy:
+    condition: on-failure
+    delay: 10s
+    max_attempts: 5
+    window: 120s
 
 services:
   router:
@@ -43,14 +48,19 @@ services:
     depends_on:
       chat:
         condition: service_healthy
-      translate:
-        condition: service_healthy
       embed:
-        condition: service_healthy
-      audio:
         condition: service_healthy
       rerank:
         condition: service_healthy
+      translate:
+        condition: service_healthy
+        required: false
+      audio:
+        condition: service_healthy
+        required: false
+    environment:
+      TRANSLATE_MODEL: ${TRANSLATE_MODEL:-Infomaniak-AI/vllm-translategemma-4b-it}
+      WHISPER_MODEL: ${WHISPER_MODEL:-openai/whisper-large-v3}
     ports:
       - "${ROUTER_HOST_PORT:-9000}:4000"
     volumes:
@@ -78,15 +88,12 @@ services:
     gpus: all
     env_file: *env-file
     ipc: host
-    depends_on:
-      translate:
-        condition: service_healthy
     entrypoint: ["/bin/sh", "-lc"]
     command:
       - >-
         export CUDA_VISIBLE_DEVICES="$${CHAT_CUDA_VISIBLE_DEVICES:-0}";
         set -- vllm serve "$${TEXT_MODEL:-$${LLM:-palmfuture/Qwen3.6-35B-A3B-GPTQ-Int4}}"
-        --tensor-parallel-size "$${TENSOR_PARALLEL_SIZE:-1}"
+        --tensor-parallel-size "$${CHAT_TENSOR_PARALLEL_SIZE:-1}"
         --api-key "$${OPENAI_API_KEY:-sk-no-key-required}"
         --host 0.0.0.0
         --port 8000
@@ -116,41 +123,6 @@ services:
     deploy: *cuda-deploy
     networks:
       - vllm-net
-    restart: unless-stopped
-
-  translate:
-    build:
-      context: .
-      dockerfile: Dockerfile.vllm
-      args:
-        <<: *build-args
-    gpus: all
-    env_file: *env-file
-    ipc: host
-    entrypoint: ["/bin/sh", "-lc"]
-    command:
-      - >-
-        export CUDA_VISIBLE_DEVICES="$${TRANSLATE_CUDA_VISIBLE_DEVICES:-0}";
-        set -- vllm serve "$${TRANSLATE_MODEL:-Infomaniak-AI/vllm-translategemma-4b-it}"
-        --tensor-parallel-size "$${TRANSLATE_TENSOR_PARALLEL_SIZE:-1}"
-        --api-key "$${OPENAI_API_KEY:-sk-no-key-required}"
-        --host 0.0.0.0
-        --port 8000
-        --gpu-memory-utilization "$${TRANSLATE_GPU_MEMORY_UTILIZATION:-0.15}"
-        --max-model-len "$${TRANSLATE_MAX_MODEL_LEN:-2048}"
-        --max-num-seqs "$${TRANSLATE_MAX_NUM_SEQS:-8}"
-        --max-num-batched-tokens "$${TRANSLATE_MAX_NUM_BATCHED_TOKENS:-4096}";
-        if [ "$${TRANSLATE_ENABLE_PREFIX_CACHING:-true}" = "true" ]; then
-          set -- "$@" --enable-prefix-caching;
-        fi;
-        exec "$@"
-    environment: *vllm-env
-    volumes: *vllm-volumes
-    healthcheck: *vllm-healthcheck
-    deploy: *cuda-deploy
-    networks:
-      - vllm-net
-    restart: unless-stopped
 
   embed:
     build:
@@ -187,9 +159,8 @@ services:
     deploy: *cuda-deploy
     networks:
       - vllm-net
-    restart: unless-stopped
 
-  audio:
+  rerank:
     build:
       context: .
       dockerfile: Dockerfile.vllm
@@ -200,6 +171,36 @@ services:
     ipc: host
     depends_on:
       embed:
+        condition: service_healthy
+    entrypoint: ["/bin/sh", "-lc"]
+    command:
+      - >-
+        export CUDA_VISIBLE_DEVICES="$${RERANK_CUDA_VISIBLE_DEVICES:-0}";
+        exec vllm serve "$${RERANK_MODEL:-BAAI/bge-reranker-v2-m3}"
+        --api-key "$${OPENAI_API_KEY:-sk-no-key-required}"
+        --host 0.0.0.0
+        --port 8000
+        --runner "$${RERANK_RUNNER:-pooling}"
+        --gpu-memory-utilization "$${RERANK_GPU_MEMORY_UTILIZATION:-0.15}"
+    environment: *vllm-env
+    volumes: *vllm-volumes
+    healthcheck: *vllm-healthcheck
+    deploy: *cuda-deploy
+    networks:
+      - vllm-net
+
+  audio:
+    build:
+      context: .
+      dockerfile: Dockerfile.vllm
+      args:
+        <<: *build-args
+    profiles: [media]
+    gpus: all
+    env_file: *env-file
+    ipc: host
+    depends_on:
+      rerank:
         condition: service_healthy
     entrypoint: ["/bin/sh", "-lc"]
     command:
@@ -218,14 +219,14 @@ services:
     deploy: *cuda-deploy
     networks:
       - vllm-net
-    restart: unless-stopped
 
-  rerank:
+  translate:
     build:
       context: .
       dockerfile: Dockerfile.vllm
       args:
         <<: *build-args
+    profiles: [media]
     gpus: all
     env_file: *env-file
     ipc: host
@@ -235,20 +236,26 @@ services:
     entrypoint: ["/bin/sh", "-lc"]
     command:
       - >-
-        export CUDA_VISIBLE_DEVICES="$${RERANK_CUDA_VISIBLE_DEVICES:-0}";
-        exec vllm serve "$${RERANK_MODEL:-BAAI/bge-reranker-v2-m3}"
+        export CUDA_VISIBLE_DEVICES="$${TRANSLATE_CUDA_VISIBLE_DEVICES:-0}";
+        set -- vllm serve "$${TRANSLATE_MODEL:-Infomaniak-AI/vllm-translategemma-4b-it}"
+        --tensor-parallel-size "$${TRANSLATE_TENSOR_PARALLEL_SIZE:-1}"
         --api-key "$${OPENAI_API_KEY:-sk-no-key-required}"
         --host 0.0.0.0
         --port 8000
-        --runner "$${RERANK_RUNNER:-pooling}"
-        --gpu-memory-utilization "$${RERANK_GPU_MEMORY_UTILIZATION:-0.15}"
+        --gpu-memory-utilization "$${TRANSLATE_GPU_MEMORY_UTILIZATION:-0.15}"
+        --max-model-len "$${TRANSLATE_MAX_MODEL_LEN:-2048}"
+        --max-num-seqs "$${TRANSLATE_MAX_NUM_SEQS:-8}"
+        --max-num-batched-tokens "$${TRANSLATE_MAX_NUM_BATCHED_TOKENS:-4096}";
+        if [ "$${TRANSLATE_ENABLE_PREFIX_CACHING:-true}" = "true" ]; then
+          set -- "$@" --enable-prefix-caching;
+        fi;
+        exec "$@"
     environment: *vllm-env
     volumes: *vllm-volumes
     healthcheck: *vllm-healthcheck
     deploy: *cuda-deploy
     networks:
       - vllm-net
-    restart: unless-stopped
 
 volumes:
   huggingface-cache:
