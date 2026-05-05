@@ -102,7 +102,9 @@ services:
         --max-model-len "$${CHAT_MAX_MODEL_LEN:-8192}"
         --max-num-seqs "$${CHAT_MAX_NUM_SEQS:-8}"
         --max-num-batched-tokens "$${CHAT_MAX_NUM_BATCHED_TOKENS:-16384}";
-        $${CHAT_ENFORCE_EAGER:+--enforce-eager};
+        if [ -n "$${CHAT_ENFORCE_EAGER:-}" ]; then
+          set -- "$@" --enforce-eager;
+        fi;
         if [ "$${CHAT_ENABLE_PREFIX_CACHING:-true}" = "true" ]; then
           set -- "$@" --enable-prefix-caching;
         fi;
