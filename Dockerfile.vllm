@@ -1,5 +1,18 @@
-ARG VLLM_OPENAI_IMAGE=vllm/vllm-openai:v0.17.1
+ARG VLLM_OPENAI_IMAGE=docker.io/vllm/vllm-openai:v0.17.1@sha256:0dc46f74eb0e630675d83101dc66c6441c4475cceedcf9235ee42b87c3affd23
+ARG UV_IMAGE=ghcr.io/astral-sh/uv:0.10.9@sha256:10902f58a1606787602f303954cea099626a4adb02acbac4c69920fe9d278f82
 
-FROM ${VLLM_OPENAI_IMAGE}
+FROM $UV_IMAGE AS uvbin
 
-RUN pip install --no-cache-dir 'vllm[audio]' orjson 'transformers>=5.5.0' conch-triton-kernels
+FROM $VLLM_OPENAI_IMAGE
+
+ARG HTTP_PROXY
+ARG HTTPS_PROXY
+ARG NO_PROXY
+ARG http_proxy
+ARG https_proxy
+ARG no_proxy
+
+COPY --from=uvbin /uv /usr/local/bin/uv
+
+RUN uv pip install --no-cache --system \
+    'vllm[audio]' orjson 'transformers>=5.5.0' conch-triton-kernels

@@ -6,10 +6,6 @@ x-proxy-build-args: &proxy-build-args
   https_proxy: ${https_proxy:-}
   no_proxy: ${no_proxy:-}
 
-x-build-args: &build-args
-  <<: *proxy-build-args
-  VLLM_OPENAI_IMAGE: ${VLLM_OPENAI_IMAGE:-vllm/vllm-openai:v0.17.1}
-
 x-env-file: &env-file
   - .env
 
@@ -44,7 +40,7 @@ x-cuda-deploy: &cuda-deploy
 
 services:
   router:
-    image: litellm/litellm:main-v1.83.10-stable
+    image: docker.io/litellm/litellm:main-v1.83.10-stable@sha256:6c82d338a60e7b273ae46bf1d8db814d2856ae010f96c44eeadde574d3893f76
     env_file: *env-file
     depends_on:
       chat:
@@ -85,7 +81,7 @@ services:
       context: .
       dockerfile: Dockerfile.vllm
       args:
-        <<: *build-args
+        <<: *proxy-build-args
     gpus: all
     env_file: *env-file
     ipc: host
@@ -133,7 +129,7 @@ services:
       context: .
       dockerfile: Dockerfile.vllm
       args:
-        <<: *build-args
+        <<: *proxy-build-args
     gpus: all
     env_file: *env-file
     ipc: host
@@ -169,7 +165,7 @@ services:
       context: .
       dockerfile: Dockerfile.vllm
       args:
-        <<: *build-args
+        <<: *proxy-build-args
     gpus: all
     env_file: *env-file
     ipc: host
@@ -198,7 +194,7 @@ services:
       context: .
       dockerfile: Dockerfile.vllm
       args:
-        <<: *build-args
+        <<: *proxy-build-args
     profiles: [media]
     gpus: all
     env_file: *env-file
@@ -229,7 +225,7 @@ services:
       context: .
       dockerfile: Dockerfile.vllm
       args:
-        <<: *build-args
+        <<: *proxy-build-args
     profiles: [media]
     gpus: all
     env_file: *env-file
