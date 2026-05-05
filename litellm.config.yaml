@@ -19,16 +19,6 @@ model_list:
       api_base: http://chat:8000/v1
       api_key: os.environ/OPENAI_API_KEY
 
-  # Translation - TranslateGemma (Infomaniak vLLM-optimized fork).
-  # Clients wrap text using the delimiter format:
-  #   <<<source>>>{iso_src}<<<target>>>{iso_tgt}<<<text>>>{text}
-  - model_name: os.environ/TRANSLATE_MODEL
-    litellm_params:
-      model: os.environ/TRANSLATE_MODEL
-      custom_llm_provider: openai
-      api_base: http://translate:8000/v1
-      api_key: os.environ/OPENAI_API_KEY
-
   # Embeddings
   - model_name: os.environ/EMBED_MODEL
     litellm_params:
@@ -44,6 +34,15 @@ model_list:
       custom_llm_provider: openai
       api_base: http://audio:8000/v1
       api_key: os.environ/OPENAI_API_KEY
+
+  # Translation
+  - model_name: os.environ/TRANSLATE_MODEL
+    litellm_params:
+      model: os.environ/TRANSLATE_MODEL
+      custom_llm_provider: openai
+      api_base: http://translate:8000/v1
+      api_key: os.environ/OPENAI_API_KEY
+
 
 general_settings:
   # The master key gates access to the proxy. Clients must present it as
