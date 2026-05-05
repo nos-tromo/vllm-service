@@ -27,6 +27,17 @@ model_list:
       api_base: http://embed:8000/v1
       api_key: os.environ/OPENAI_API_KEY
 
+  # Reranking — must use hosted_vllm provider; LiteLLM's native /v1/rerank
+  # route takes precedence over pass_through_endpoints and rejects openai.
+  # api_base has no /v1 suffix: hosted_vllm appends /rerank directly,
+  # matching vLLM's canonical endpoint (JinaAI format, not OpenAI-style).
+  - model_name: os.environ/RERANK_MODEL
+    litellm_params:
+      model: os.environ/RERANK_MODEL
+      custom_llm_provider: hosted_vllm
+      api_base: http://rerank:8000
+      api_key: os.environ/OPENAI_API_KEY
+
   # Audio transcription / translation
   - model_name: os.environ/WHISPER_MODEL
     litellm_params:
@@ -53,10 +64,6 @@ general_settings:
   # Pass-through endpoints for vLLM-specific paths that LiteLLM does not
   # map natively. Forwards the request body unchanged to the upstream.
   pass_through_endpoints:
-    - path: "/v1/rerank"
-      target: "http://rerank:8000/v1/rerank"
-      headers:
-        content-type: "application/json"
     - path: "/pooling"
       target: "http://embed:8000/pooling"
       headers:
