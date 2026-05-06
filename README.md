@@ -93,6 +93,51 @@ If the consuming app is outside that network, use a host or reverse-proxy URL:
 - The `router` service keeps its `vllm-router` alias on `inference-net` so
   existing consumers do not need to change their `OPENAI_API_BASE`.
 
+## Airgapped / offline deployment
+
+When the target server has no internet access the `uv pip install` step in
+`Dockerfile.vllm` fails because it cannot reach PyPI.  The recommended
+workflow is to pre-download the required wheels on an internet-connected
+machine and ship them alongside the git bundle.
+
+### 1 — Download wheels (on a connected machine)
+
+```bash
+./scripts/download-wheels.sh
+```
+
+This launches the vllm base image, resolves exactly which packages are missing
+from the base image (`vllm[audio]` extras, `orjson`, `conch-triton-kernels`,
+and any `transformers` upgrade), and downloads those wheels into `wheels/`.
+The `wheels/*.whl` files are git-ignored; ship them separately.
+
+### 2 — Bundle for transfer
+
+```bash
+# Update the git bundle
+git bundle create vllm-service.bundle --all
+
+# Archive the wheels
+tar czf wheels.tar.gz wheels/
+```
+
+Transfer both `vllm-service.bundle` and `wheels.tar.gz` to the airgapped
+server.
+
+### 3 — Build on the airgapped server
+
+```bash
+git clone vllm-service.bundle vllm-service
+cd vllm-service
+tar xzf ../wheels.tar.gz
+
+OFFLINE_BUILD=1 docker compose up --build --pull never
+```
+
+Setting `OFFLINE_BUILD=1` tells the Dockerfile to install from `wheels/`
+using `--no-index --find-links` instead of reaching out to PyPI.  All three
+variables (`OFFLINE_BUILD`, `HTTP_PROXY`, …) can also be put in `.env`.
+
 ## Updating the model catalog
 
 `litellm.config.yaml` is model-agnostic: all model names are read at startup

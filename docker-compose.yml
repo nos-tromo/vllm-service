@@ -5,6 +5,7 @@ x-proxy-build-args: &proxy-build-args
   http_proxy: ${http_proxy:-}
   https_proxy: ${https_proxy:-}
   no_proxy: ${no_proxy:-}
+  OFFLINE_BUILD: ${OFFLINE_BUILD:-}
 
 x-env-file: &env-file
   - .env

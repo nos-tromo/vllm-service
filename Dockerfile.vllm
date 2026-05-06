@@ -12,7 +12,19 @@ ARG http_proxy
 ARG https_proxy
 ARG no_proxy
 
+ARG OFFLINE_BUILD=
+
+ENV UV_CACHE_DIR=/root/.cache/uv \
+    UV_LINK_MODE=copy
+
 COPY --from=uvbin /uv /usr/local/bin/uv
 
-RUN uv pip install --no-cache --system \
-    'vllm[audio]' orjson 'transformers>=5.5.0' conch-triton-kernels
+RUN --mount=type=cache,target=/root/.cache/uv \
+    --mount=type=bind,source=wheels,target=/tmp/wheels \
+    if [ -z "${OFFLINE_BUILD}" ]; then \
+        uv pip install --system \
+            'vllm[audio]' orjson 'transformers>=5.5.0' conch-triton-kernels; \
+    else \
+        uv pip install --system --no-index --find-links /tmp/wheels \
+            'vllm[audio]' orjson 'transformers>=5.5.0' conch-triton-kernels; \
+    fi
