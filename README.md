@@ -96,11 +96,26 @@ If the consuming app is outside that network, use a host or reverse-proxy URL:
 ## Airgapped / offline deployment
 
 When the target server has no internet access the `uv pip install` step in
-`Dockerfile.vllm` fails because it cannot reach PyPI.  The recommended
-workflow is to pre-download the required wheels on an internet-connected
-machine and ship them alongside the git bundle.
+`Dockerfile.vllm` fails because it cannot reach PyPI.  The Dockerfile supports
+two strategies, described below.  **The wheels approach (strategy B) is
+confirmed working and is the recommended path.**
 
-### 1 — Download wheels (on a connected machine)
+### Strategy A — BuildKit cache (if the server was previously online)
+
+If the server ran a successful build using a proxy in the past, the Docker
+BuildKit cache may already contain the required packages.  Try building without
+`OFFLINE_BUILD` first:
+
+```bash
+docker compose up --build --pull never
+```
+
+If the BuildKit cache is warm the build succeeds without network access.  If it
+fails with a PyPI connection error, fall back to strategy B.
+
+### Strategy B — pre-downloaded wheels (recommended)
+
+#### 1 — Download wheels (on a connected machine)
 
 ```bash
 ./scripts/download-wheels.sh
@@ -111,7 +126,7 @@ from the base image (`vllm[audio]` extras, `orjson`, `conch-triton-kernels`,
 and any `transformers` upgrade), and downloads those wheels into `wheels/`.
 The `wheels/*.whl` files are git-ignored; ship them separately.
 
-### 2 — Bundle for transfer
+#### 2 — Bundle for transfer
 
 ```bash
 # Update the git bundle
@@ -124,7 +139,7 @@ tar czf wheels.tar.gz wheels/
 Transfer both `vllm-service.bundle` and `wheels.tar.gz` to the airgapped
 server.
 
-### 3 — Build on the airgapped server
+#### 3 — Build on the airgapped server
 
 ```bash
 git clone vllm-service.bundle vllm-service
@@ -135,8 +150,8 @@ OFFLINE_BUILD=1 docker compose up --build --pull never
 ```
 
 Setting `OFFLINE_BUILD=1` tells the Dockerfile to install from `wheels/`
-using `--no-index --find-links` instead of reaching out to PyPI.  All three
-variables (`OFFLINE_BUILD`, `HTTP_PROXY`, …) can also be put in `.env`.
+using `--no-index --find-links` instead of reaching out to PyPI.  The variable
+can also be set permanently in `.env`.
 
 ## Updating the model catalog
 

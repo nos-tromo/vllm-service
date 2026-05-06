@@ -1,5 +1,8 @@
 *.code-workspace
 *.env*
-wheels/*.whl
+*.bundle
+*.tar.gz
+
+**/*.whl
 
 !.env.example
