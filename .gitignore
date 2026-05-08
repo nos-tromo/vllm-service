@@ -1,4 +1,10 @@
 *.code-workspace
 *.env*
 
+**/.vscode/**
+
 !.env.example
+
+# Distributable image bundle artifacts (do not commit)
+*.tar.gz
+*.bundle

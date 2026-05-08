@@ -1,5 +1,8 @@
-ARG VLLM_OPENAI_IMAGE=vllm/vllm-openai:v0.17.1
+ARG VLLM_OPENAI_IMAGE=docker.io/vllm/vllm-openai:v0.20.1@sha256:9eff9734a30b6713a8566217d36f8277630fd2d31cec7f0a0292835901a23aa4
 
 FROM ${VLLM_OPENAI_IMAGE}
 
-RUN pip install --no-cache-dir 'vllm[audio]' orjson 'transformers>=5.5.0' conch-triton-kernels
+# Add vLLM's audio extras (av, scipy, soundfile, mistral_common[audio]) plus
+# orjson — vLLM's `ORJSONResponse` uses it opportunistically for faster
+# OpenAI-endpoint serialization and falls back to stdlib json if absent.
+RUN pip install --no-cache-dir 'vllm[audio]==0.20.1' orjson
