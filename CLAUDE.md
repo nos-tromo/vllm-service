@@ -1,0 +1,147 @@
+# CLAUDE.md
+
+This file provides guidance to Claude Code (claude.ai/code) when working with code in this repository.
+
+## What this repo is
+
+A pure infrastructure repo: a Docker Compose stack that fronts several vLLM
+backends with a single LiteLLM Proxy router. There is **no application source
+code** — everything is configuration (`docker-compose.yml`, `Dockerfile.vllm`,
+`litellm.config.yaml`, `.env`).
+
+## Common commands
+
+Prerequisites (one-time per host):
+
+```bash
+docker network create inference-net
+docker volume create huggingface-cache
+cp .env.example .env   # then edit model IDs / API key / GPU placement
+```
+
+Bring the stack up:
+
+```bash
+docker compose up --build                       # core: router, chat, embed, rerank
+docker compose --profile media up --build       # add translate + audio
+```
+
+Other useful operations:
+
+```bash
+docker compose logs -f router                   # follow LiteLLM proxy logs
+docker compose logs -f chat                     # follow a single backend
+docker compose restart chat                     # reload one backend after .env change
+docker compose ps                               # health status of each service
+docker compose down                             # stop all
+```
+
+Build and bundle commands:
+
+```bash
+make build           # build core stack only (chat, embed, rerank) — lower VRAM
+make build-media     # build core + media services (translate, audio)
+make bundle          # build + ship core stack as versioned .tar.gz pair
+make bundle-media    # build + ship core + media as versioned .tar.gz pair
+```
+
+There is no test suite or linter.
+
+## Architecture
+
+### Routing model
+
+`router` (LiteLLM Proxy, port 4000 inside / `${ROUTER_HOST_PORT:-9000}` on host)
+is the **only** entry point. Clients always send to the router and select a
+backend by the `model` field in the request body — there is no path-based
+dispatch. `litellm.config.yaml` maps each `model_name` (read from env vars at
+startup) to an upstream `api_base` (`http://chat:8000/v1`, `http://embed:8000/v1`,
+etc.).
+
+LiteLLM natively exposes `/v1/chat/completions`, `/v1/completions`,
+`/v1/embeddings`, `/v1/audio/transcriptions`, `/v1/audio/translations`, and
+`/v1/models`. vLLM-specific paths (`/v1/rerank`, `/pooling`, `/tokenize`) are
+forwarded by `pass_through_endpoints` in `litellm.config.yaml`.
+
+### Backends
+
+Each backend is the same `Dockerfile.vllm` image launched with a different model
+and per-service env-driven flags:
+
+- `chat` — general LLM (`TEXT_MODEL`)
+- `embed` — embeddings, `--runner pooling --convert embed` (`EMBED_MODEL`)
+- `rerank` — reranker, `--runner pooling` (`RERANK_MODEL`)
+- `translate` *(profile: media)* — TranslateGemma fork (`TRANSLATE_MODEL`)
+- `audio` *(profile: media)* — Whisper (`WHISPER_MODEL`)
+
+Each buildable service in `docker-compose.yml` carries
+`image: vllm-service-<svc>:${VLLM_SERVICE_VERSION:-latest}`. Bare `docker
+compose build` produces `:latest` tags for dev workflows; `make bundle*`
+exports `VLLM_SERVICE_VERSION=<date>-<short-sha>` so the same compose file
+also produces version-tagged tarballs for offline shipping.
+
+All backends listen on internal port 8000 and expose only `vllm-net` — they are
+not reachable from outside the compose project. Only `router` joins the external
+`inference-net` (with alias `vllm-router`) for cross-project consumers.
+
+### Dependency overlay
+
+The vLLM base image (`vllm/vllm-openai:v0.20.1`, pinned by digest) ships with
+plain vLLM and its full CUDA runtime preinstalled in the system Python prefix.
+The Dockerfile adds vLLM's `[audio]` extras (`av`, `scipy`, `soundfile`,
+`mistral_common[audio]`) so the `audio` (Whisper) and `translate` services
+have what they need, plus `orjson` — vLLM picks it up opportunistically for
+faster OpenAI-endpoint JSON serialization (falls back to stdlib `json` if
+absent, so it's a perf bump rather than a hard requirement).
+
+No lockfile, no `uv`, no `pyproject.toml` — the overlay is one line. If you
+add another dependency later and want transitive pinning, that's the moment
+to reintroduce a lockfile-driven workflow; for one extras specifier the
+ergonomics aren't worth it.
+
+### Service startup ordering
+
+`depends_on … condition: service_healthy` chains the backends serially:
+`chat → embed → rerank → audio → translate → router`. This is intentional — vLLM
+backends compete for GPU memory at startup, so they are brought up one at a time.
+Healthchecks hit `http://localhost:8000/health` (backends) and
+`/health/liveliness` (router). Allow ~120s `start_period` before treating a
+backend as unhealthy.
+
+### Configuration surface
+
+All tuning is done via `.env` (see `.env.example`). Per-service env vars follow
+the pattern `<SERVICE>_<KNOB>` (e.g. `CHAT_GPU_MEMORY_UTILIZATION`,
+`TRANSLATE_MAX_MODEL_LEN`, `EMBED_HF_OVERRIDES`). The chat and translate
+entrypoints use a shell builder pattern (`set -- vllm serve …` then conditional
+`set -- "$@" --flag`) so optional flags are only passed when the corresponding
+env var is set — when adding a new optional vLLM flag, follow that same pattern
+rather than hard-coding it in `command:`.
+
+`OPENAI_API_KEY` serves double duty: it is both the upstream API key passed to
+each vLLM `--api-key` and the LiteLLM `master_key` that gates the router.
+
+`HF_HUB_OFFLINE=1` and `TRANSFORMERS_OFFLINE=1` are the default — models are
+expected to already be present in the shared `huggingface-cache` volume. To
+download a new model, temporarily flip both to `0` (and set `HF_TOKEN` if the
+model is gated).
+
+### Switching models
+
+Update the relevant `*_MODEL` variable in `.env` and restart the stack. **No
+edits to `litellm.config.yaml` are needed** — model names are resolved via
+`os.environ/<VAR>` at startup. Clients must send the exact model ID string in
+their request `model` field; `/v1/models` returns the active set.
+
+### TranslateGemma quirk
+
+`translate` runs `Infomaniak-AI/vllm-translategemma-4b-it` (a vLLM-compatible
+repackaging — the stock `google/translategemma-*` cannot be served by a vanilla
+OpenAI client). Clients must encode source/target/text inline:
+
+```
+<<<source>>>{iso_src}<<<target>>>{iso_tgt}<<<text>>>{text}
+```
+
+Trained for ~2K context — keep `TRANSLATE_MAX_MODEL_LEN=2048` unless you have a
+specific reason to raise it.
