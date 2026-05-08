@@ -1,6 +1,6 @@
 # Build-host helpers for the vLLM service stack.
 
-.PHONY: build build-media bundle bundle-media up up-media
+.PHONY: build build-media bundle bundle-media no-build no-build-media up up-media
 
 # Versioning: use date + git short hash for image tags, but allow override via env var.
 VLLM_SERVICE_VERSION ?= $(shell date +%Y-%m-%d)-$(shell git rev-parse --short HEAD)
