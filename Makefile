@@ -22,6 +22,14 @@ bundle:
 bundle-media:
 	./scripts/bundle_images.sh media
 
+# Core stack only (chat, embed, rerank).
+no-build:
+	docker compose up -d --no-build
+
+# Core + media services (translate, audio).
+no-build-media:
+	docker compose --profile media up -d --no-build
+
 # Start core stack only (chat, embed, rerank).
 up:
 	docker compose up -d
