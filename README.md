@@ -82,6 +82,57 @@ If the consuming app is outside that network, use a host or reverse-proxy URL:
    OPENAI_API_KEY=<token>
    ```
 
+## Offline image bundles
+
+For airgapped hosts, customer deployments, or any environment without
+Docker Hub access, `make bundle` produces a versioned `.tar.gz` pair you
+can ship alongside `docker-compose.yml`, `litellm.config.yaml`, and `.env`.
+
+### Producing the bundle
+
+On a build host with internet:
+
+```bash
+make bundle           # core only (chat, embed, rerank)
+make bundle-media     # core + media (translate, audio)
+```
+
+This computes `VLLM_SERVICE_VERSION` as `YYYY-MM-DD-<short-sha>` (override by
+exporting it before invocation), builds the locally-buildable services with
+that version tag, pulls the externally-hosted images (LiteLLM Proxy), then
+writes two gzipped tarballs in the cwd:
+
+| File | Contents |
+|---|---|
+| `vllm-service-built-<profile>-<version>.tar.gz` | Locally-built `vllm-service-{chat,embed,rerank,...}` images. |
+| `vllm-service-pulled-<profile>-<version>.tar.gz` | Externally-hosted images (LiteLLM router); re-tagged so the `name:tag@digest` references in `docker-compose.yml` resolve after `docker load`. |
+
+The compose file references the version through
+`image: vllm-service-<svc>:${VLLM_SERVICE_VERSION:-latest}`, so it falls
+back to `:latest` for normal dev workflows and uses the pinned tag whenever
+the variable is set.
+
+### Loading and running the bundle
+
+Ship the two tarballs along with the matching `docker-compose.yml`,
+`litellm.config.yaml`, and a `.env`. Then on the target host:
+
+```bash
+docker load -i vllm-service-built-core-<version>.tar.gz
+docker load -i vllm-service-pulled-core-<version>.tar.gz
+export VLLM_SERVICE_VERSION=<version>
+docker compose up --no-build -d
+```
+
+The version is embedded in the tarball filenames, so the operator just
+reads it off the file. Verify with `docker images | grep vllm-service`
+between `load` and `up`.
+
+> `--no-build` does **not** suppress pulls from a registry. If the tagged
+> image isn't loaded locally, Compose still tries to resolve it against
+> Docker Hub and errors with a DNS / "no such host" failure on offline
+> machines. Always `docker load` first.
+
 ## Networking
 
 - `vllm-net` is private to this compose project and carries traffic between the
