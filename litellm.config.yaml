@@ -19,22 +19,23 @@ model_list:
       api_base: http://chat:8000/v1
       api_key: os.environ/OPENAI_API_KEY
 
-  # Translation - TranslateGemma (Infomaniak vLLM-optimized fork).
-  # Clients wrap text using the delimiter format:
-  #   <<<source>>>{iso_src}<<<target>>>{iso_tgt}<<<text>>>{text}
-  - model_name: os.environ/TRANSLATE_MODEL
-    litellm_params:
-      model: os.environ/TRANSLATE_MODEL
-      custom_llm_provider: openai
-      api_base: http://translate:8000/v1
-      api_key: os.environ/OPENAI_API_KEY
-
   # Embeddings
   - model_name: os.environ/EMBED_MODEL
     litellm_params:
       model: os.environ/EMBED_MODEL
       custom_llm_provider: openai
       api_base: http://embed:8000/v1
+      api_key: os.environ/OPENAI_API_KEY
+
+  # Reranking — must use hosted_vllm provider; LiteLLM's native /v1/rerank
+  # route takes precedence over pass_through_endpoints and rejects openai.
+  # api_base has no /v1 suffix: hosted_vllm appends /rerank directly,
+  # matching vLLM's canonical endpoint (JinaAI format, not OpenAI-style).
+  - model_name: os.environ/RERANK_MODEL
+    litellm_params:
+      model: os.environ/RERANK_MODEL
+      custom_llm_provider: hosted_vllm
+      api_base: http://rerank:8000
       api_key: os.environ/OPENAI_API_KEY
 
   # Audio transcription / translation
@@ -45,6 +46,15 @@ model_list:
       api_base: http://audio:8000/v1
       api_key: os.environ/OPENAI_API_KEY
 
+  # Translation
+  - model_name: os.environ/TRANSLATE_MODEL
+    litellm_params:
+      model: os.environ/TRANSLATE_MODEL
+      custom_llm_provider: openai
+      api_base: http://translate:8000/v1
+      api_key: os.environ/OPENAI_API_KEY
+
+
 general_settings:
   # The master key gates access to the proxy. Clients must present it as
   # `Authorization: Bearer <key>`. Reuses OPENAI_API_KEY from .env so the
@@ -54,10 +64,6 @@ general_settings:
   # Pass-through endpoints for vLLM-specific paths that LiteLLM does not
   # map natively. Forwards the request body unchanged to the upstream.
   pass_through_endpoints:
-    - path: "/v1/rerank"
-      target: "http://rerank:8000/v1/rerank"
-      headers:
-        content-type: "application/json"
     - path: "/pooling"
       target: "http://embed:8000/pooling"
       headers:
@@ -72,6 +78,9 @@ litellm_settings:
   # not understand, rather than erroring out the request.
   drop_params: true
   set_verbose: false
+  # Last-resort guard: if a request still exceeds the model's context window,
+  # truncate the oldest messages rather than returning a hard 400 error.
+  trim_messages_to_fit_context: os.environ/LITELLM_TRIM_MESSAGES
 
 router_settings:
   routing_strategy: simple-shuffle

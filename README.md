@@ -19,7 +19,7 @@ field in the request body, and natively exposes:
 Additional vLLM-specific endpoints are pass-through forwarded by LiteLLM to the
 relevant backend:
 
-- `/v1/rerank`
+- `/rerank`
 - `/pooling`
 - `/tokenize`
 
@@ -32,8 +32,8 @@ Internally it runs:
 
 The following services are optional and only started with `--profile media`:
 
-- `translate`
 - `audio`
+- `translate`
 
 Model-to-backend routing is declared in `litellm.config.yaml`. Clients select a
 backend purely by the `model` field they send; there is no path-based dispatch.
@@ -70,7 +70,7 @@ alias directly:
 
    ```bash
    INFERENCE_PROVIDER=vllm
-   OPENAI_API_BASE=http://vllm-router:9000/v1
+   OPENAI_API_BASE=http://vllm-router:4000/v1
    OPENAI_API_KEY=<token>
    ```
 
@@ -139,22 +139,43 @@ between `load` and `up`.
   router and the worker containers.
 - `inference-net` is an external shared Docker network used for cross-project
   service discovery and reverse-proxy access.
-- Only the `router` service joins `inference-net`; `chat`, `translate`, `embed`,
-  `rerank`, and `audio` stay on the private network.
+- Only the `router` service joins `inference-net`; `chat`, `embed`,
+  `rerank`, `audio`, and `translate` stay on the private network.
 - The `router` service keeps its `vllm-router` alias on `inference-net` so
   existing consumers do not need to change their `OPENAI_API_BASE`.
 
 ## Updating the model catalog
 
 `litellm.config.yaml` is model-agnostic: all model names are read at startup
-from the environment variables `TEXT_MODEL`, `TRANSLATE_MODEL`, `EMBED_MODEL`,
-and `WHISPER_MODEL`. To switch a model, update the relevant variable in `.env`
-and restart the stack. No changes to `litellm.config.yaml` are required.
+from the environment variables `TEXT_MODEL`, `EMBED_MODEL`, `RERANK_MODEL`,
+`TRANSLATE_MODEL`, and `WHISPER_MODEL`. To switch a model, update the relevant
+variable in `.env` and restart the stack. No changes to `litellm.config.yaml`
+are required.
 
 Clients must use the exact model ID set in `.env` as the `model` field in
 their requests (e.g. `"model": "BAAI/bge-m3"`). The `/v1/models` endpoint
 returns the currently active IDs.
 
+## Calling the audio service
+
+The audio service runs Whisper via vLLM and exposes OpenAI-compatible
+`/v1/audio/transcriptions` and `/v1/audio/translations` endpoints.
+
+```bash
+curl http://vllm-router:9000/v1/audio/transcriptions \
+  -H "Authorization: Bearer $OPENAI_API_KEY" \
+  -F model="$WHISPER_MODEL" \
+  -F file="@recording.mp3"
+```
+
+The maximum accepted file size defaults to 200 MB and can be raised with
+`VLLM_MAX_AUDIO_CLIP_FILESIZE_MB` in `.env`.
+
+The audio service is only started when the `media` profile is active:
+
+```bash
+docker compose --profile media up
+```
 
 ## Calling the translate service
 
@@ -164,7 +185,7 @@ a vLLM-compatible repackaging of Google's TranslateGemma 4B. Unlike a general
 chat model, it expects the source language, target language, and text to be
 encoded in the message content using a delimiter format:
 
-```
+```python
 <<<source>>>{iso_src}<<<target>>>{iso_tgt}<<<text>>>{text_to_translate}
 ```
 
@@ -187,27 +208,6 @@ The model is trained for a ~2K context window, so keep `TRANSLATE_MAX_MODEL_LEN`
 at 2048 unless you have a specific reason to raise it.
 
 The translate service is only started when the `media` profile is active:
-
-```bash
-docker compose --profile media up
-```
-
-## Calling the audio service
-
-The audio service runs Whisper via vLLM and exposes OpenAI-compatible
-`/v1/audio/transcriptions` and `/v1/audio/translations` endpoints.
-
-```bash
-curl http://vllm-router:9000/v1/audio/transcriptions \
-  -H "Authorization: Bearer $OPENAI_API_KEY" \
-  -F model="$WHISPER_MODEL" \
-  -F file="@recording.mp3"
-```
-
-The maximum accepted file size defaults to 200 MB and can be raised with
-`VLLM_MAX_AUDIO_CLIP_FILESIZE_MB` in `.env`.
-
-The audio service is only started when the `media` profile is active:
 
 ```bash
 docker compose --profile media up
