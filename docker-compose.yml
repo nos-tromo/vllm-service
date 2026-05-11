@@ -8,6 +8,7 @@ x-env-file: &env-file
   - .env
 
 x-vllm-env: &vllm-env
+  <<: *no-proxy-env
   NVIDIA_VISIBLE_DEVICES: all
   HF_HUB_OFFLINE: ${HF_HUB_OFFLINE:-1}
   TRANSFORMERS_OFFLINE: ${TRANSFORMERS_OFFLINE:-1}
@@ -54,6 +55,7 @@ services:
         condition: service_healthy
         required: false
     environment:
+      <<: *no-proxy-env
       TRANSLATE_MODEL: ${TRANSLATE_MODEL:-Infomaniak-AI/vllm-translategemma-4b-it}
       WHISPER_MODEL: ${WHISPER_MODEL:-openai/whisper-large-v3}
     ports:
@@ -206,7 +208,7 @@ services:
         --port 8000
         --gpu-memory-utilization "$${AUDIO_GPU_MEMORY_UTILIZATION:-0.15}"
     environment:
-      <<: *vllm-env
+      <<: [*no-proxy-env, *vllm-env]
       VLLM_MAX_AUDIO_CLIP_FILESIZE_MB: ${VLLM_MAX_AUDIO_CLIP_FILESIZE_MB:-200}
     volumes: *vllm-volumes
     healthcheck: *vllm-healthcheck
