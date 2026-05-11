@@ -1,6 +1,6 @@
 # Build-host helpers for the vLLM service stack.
 
-.PHONY: build build-media bundle bundle-media no-build no-build-media up up-media stop stop-media
+.PHONY: bundle bundle-media build build-media no-build no-build-media up up-media stop stop-media
 
 # Versioned image tag.
 # On production: read from .vllm-service-version written by bundle_images.sh.
@@ -12,14 +12,6 @@ VLLM_SERVICE_VERSION ?= $(shell \
       echo "$$(date +%Y-%m-%d)$${_s:+-$$_s}"; } )
 export VLLM_SERVICE_VERSION
 
-# Core stack only (chat, embed, rerank).
-build:
-	DOCKER_BUILDKIT=1 docker compose build
-
-# Core + media services (translate, audio).
-build-media:
-	DOCKER_BUILDKIT=1 docker compose --profile media build
-
 # Build core stack and ship as versioned .tar.gz pair (built + pulled).
 bundle:
 	./scripts/bundle_images.sh
@@ -29,20 +21,28 @@ bundle-media:
 	./scripts/bundle_images.sh media
 
 # Core stack only (chat, embed, rerank).
+build:
+	DOCKER_BUILDKIT=1 docker compose build
+
+# Core + media services (translate, audio).
+build-media:
+	DOCKER_BUILDKIT=1 docker compose --profile media build
+
+# Core stack only (chat, embed, rerank).
 no-build:
-	docker compose up -d --no-build
+	docker compose up --no-build
 
 # Core + media services (translate, audio).
 no-build-media:
-	docker compose --profile media up -d --no-build
+	docker compose --profile media up --no-build
 
 # Start core stack only (chat, embed, rerank).
 up:
-	docker compose up -d
+	docker compose up
 
 # Start media services only (audio, translate).
 up-media:
-	docker compose --profile media up -d
+	docker compose --profile media up
 
 # Stop all services.
 stop:
