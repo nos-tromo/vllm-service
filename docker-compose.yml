@@ -208,7 +208,7 @@ services:
         --port 8000
         --gpu-memory-utilization "$${AUDIO_GPU_MEMORY_UTILIZATION:-0.15}"
     environment:
-      <<: [*no-proxy-env, *vllm-env]
+      <<: *vllm-env
       VLLM_MAX_AUDIO_CLIP_FILESIZE_MB: ${VLLM_MAX_AUDIO_CLIP_FILESIZE_MB:-200}
     volumes: *vllm-volumes
     healthcheck: *vllm-healthcheck
