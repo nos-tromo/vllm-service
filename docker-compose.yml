@@ -1,5 +1,9 @@
 name: vllm-service
 
+x-no-proxy-env: &no-proxy-env
+  NO_PROXY: "router,chat,embed,rerank,audio,translate,localhost,127.0.0.1,172.16.0.0/12,10.0.0.0/8${EXTRA_NO_PROXY:-}"
+  no_proxy: "router,chat,embed,rerank,audio,translate,localhost,127.0.0.1,172.16.0.0/12,10.0.0.0/8${EXTRA_NO_PROXY:-}"
+
 x-env-file: &env-file
   - .env
 
