@@ -1,9 +1,15 @@
 # Build-host helpers for the vLLM service stack.
 
-.PHONY: build build-media bundle bundle-media no-build no-build-media up up-media
+.PHONY: build build-media bundle bundle-media no-build no-build-media up up-media stop stop-media
 
-# Versioning: use date + git short hash for image tags, but allow override via env var.
-VLLM_SERVICE_VERSION ?= $(shell date +%Y-%m-%d)-$(shell git rev-parse --short HEAD)
+# Versioned image tag.
+# On production: read from .vllm-service-version written by bundle_images.sh.
+# On dev: compute YYYY-MM-DD[-<short-sha>] on the fly.
+# Override entirely by exporting VLLM_SERVICE_VERSION before invoking make.
+VLLM_SERVICE_VERSION ?= $(shell \
+    cat .vllm-service-version 2>/dev/null || \
+    { _s=$$(git rev-parse --short HEAD 2>/dev/null); \
+      echo "$$(date +%Y-%m-%d)$${_s:+-$$_s}"; } )
 export VLLM_SERVICE_VERSION
 
 # Core stack only (chat, embed, rerank).
@@ -37,3 +43,11 @@ up:
 # Start media services only (audio, translate).
 up-media:
 	docker compose --profile media up -d
+
+# Stop all services.
+stop:
+	docker compose stop
+
+# Stop the core + media services (audio, translate).
+stop-media:
+	docker compose --profile media stop
