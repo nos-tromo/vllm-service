@@ -1,6 +1,6 @@
 # Build-host helpers for the vLLM service stack.
 
-.PHONY: bundle bundle-media build build-media no-build no-build-media up up-media stop stop-media
+.PHONY: bundle bundle-media build build-media up up-media stop stop-media
 
 # Versioned image tag.
 # On production: read from .vllm-service-version written by bundle_images.sh.
@@ -29,20 +29,12 @@ build-media:
 	DOCKER_BUILDKIT=1 docker compose --profile media build
 
 # Core stack only (chat, embed, rerank).
-no-build:
+up:
 	docker compose up --no-build
 
 # Core + media services (translate, audio).
-no-build-media:
-	docker compose --profile media up --no-build
-
-# Start core stack only (chat, embed, rerank).
-up:
-	docker compose up
-
-# Start media services only (audio, translate).
 up-media:
-	docker compose --profile media up
+	docker compose --profile media up --no-build
 
 # Stop all services.
 stop:
