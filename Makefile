@@ -1,6 +1,6 @@
 # Build-host helpers for the vLLM service stack.
 
-.PHONY: bundle bundle-media build build-media up up-media stop stop-media
+.PHONY: network volume bundle bundle-media build build-media up up-media stop stop-media
 
 # Versioned image tag.
 # On production: read from .vllm-service-version written by bundle_images.sh.
@@ -11,6 +11,14 @@ VLLM_SERVICE_VERSION ?= $(shell \
     { _s=$$(git rev-parse --short HEAD 2>/dev/null); \
       echo "$$(date +%Y-%m-%d)$${_s:+-$$_s}"; } )
 export VLLM_SERVICE_VERSION
+
+# Create the external Docker network (one-time per host; idempotent)
+network:
+	DOCKER_BUILDKIT=1 docker network create inference-net
+
+# Create the external Docker volume for Hugging Face cache (one-time per host; idempotent
+volume:
+	docker volume create huggingface-cache
 
 # Build core stack and ship as versioned .tar.gz pair (built + pulled).
 bundle:
