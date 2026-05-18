@@ -1,18 +1,24 @@
 # Build-host helpers for the vLLM service stack.
 
-.PHONY: build build-media bundle bundle-media up up-media
+.PHONY: network volume bundle bundle-media build build-media up up-media stop stop-media
 
-# Versioning: use date + git short hash for image tags, but allow override via env var.
-VLLM_SERVICE_VERSION ?= $(shell date +%Y-%m-%d)-$(shell git rev-parse --short HEAD)
+# Versioned image tag.
+# On production: read from .vllm-service-version written by bundle_images.sh.
+# On dev: compute YYYY-MM-DD[-<short-sha>] on the fly.
+# Override entirely by exporting VLLM_SERVICE_VERSION before invoking make.
+VLLM_SERVICE_VERSION ?= $(shell \
+    cat .vllm-service-version 2>/dev/null || \
+    { _s=$$(git rev-parse --short HEAD 2>/dev/null); \
+      echo "$$(date +%Y-%m-%d)$${_s:+-$$_s}"; } )
 export VLLM_SERVICE_VERSION
 
-# Core stack only (chat, embed, rerank).
-build:
-	DOCKER_BUILDKIT=1 docker compose build
+# Create the external Docker network (one-time per host; idempotent)
+network:
+	DOCKER_BUILDKIT=1 docker network create inference-net
 
-# Core + media services (translate, audio).
-build-media:
-	DOCKER_BUILDKIT=1 docker compose --profile media build
+# Create the external Docker volume for Hugging Face cache (one-time per host; idempotent
+volume:
+	docker volume create huggingface-cache
 
 # Build core stack and ship as versioned .tar.gz pair (built + pulled).
 bundle:
@@ -22,10 +28,26 @@ bundle:
 bundle-media:
 	./scripts/bundle_images.sh media
 
-# Start core stack only (chat, embed, rerank).
-up:
-	docker compose up -d
+# Core stack only (chat, embed, rerank).
+build:
+	DOCKER_BUILDKIT=1 docker compose build
 
-# Start media services only (audio, translate).
+# Core + media services (translate, audio).
+build-media:
+	DOCKER_BUILDKIT=1 docker compose --profile media build
+
+# Core stack only (chat, embed, rerank).
+up:
+	docker compose up --no-build
+
+# Core + media services (translate, audio).
 up-media:
-	docker compose --profile media up -d
+	docker compose --profile media up --no-build
+
+# Stop all services.
+stop:
+	docker compose stop
+
+# Stop the core + media services (audio, translate).
+stop-media:
+	docker compose --profile media stop

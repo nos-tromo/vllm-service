@@ -1,9 +1,15 @@
 name: vllm-service
 
+x-no-proxy-env: &no-proxy-env
+  NO_PROXY: "router,chat,embed,rerank,audio,translate,localhost,127.0.0.1,172.16.0.0/12,10.0.0.0/8${EXTRA_NO_PROXY:-}"
+  no_proxy: "router,chat,embed,rerank,audio,translate,localhost,127.0.0.1,172.16.0.0/12,10.0.0.0/8${EXTRA_NO_PROXY:-}"
+
 x-env-file: &env-file
-  - .env
+  - path: .env
+    required: false
 
 x-vllm-env: &vllm-env
+  <<: *no-proxy-env
   NVIDIA_VISIBLE_DEVICES: all
   HF_HUB_OFFLINE: ${HF_HUB_OFFLINE:-1}
   TRANSFORMERS_OFFLINE: ${TRANSFORMERS_OFFLINE:-1}
@@ -50,6 +56,7 @@ services:
         condition: service_healthy
         required: false
     environment:
+      <<: *no-proxy-env
       TRANSLATE_MODEL: ${TRANSLATE_MODEL:-Infomaniak-AI/vllm-translategemma-4b-it}
       WHISPER_MODEL: ${WHISPER_MODEL:-openai/whisper-large-v3}
     ports:

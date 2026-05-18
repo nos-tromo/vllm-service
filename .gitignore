@@ -1,10 +1,11 @@
 *.code-workspace
 *.env*
 
+.DS_Store
 **/.vscode/**
-
 !.env.example
 
 # Distributable image bundle artifacts (do not commit)
 *.tar.gz
 *.bundle
+.vllm-service-version

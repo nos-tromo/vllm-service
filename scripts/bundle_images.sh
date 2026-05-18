@@ -1,7 +1,13 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
-# Profile arg: empty (default) = core stack; "media" = adds audio + translate.
+# Always compute a fresh version from git so repeated bundle runs produce
+# distinct tags. Uses the commit date (not the build date) for reproducibility.
+# Falls back to today's date when not in a git repo.
+# .vllm-service-version (if present) is never used as input here — it is only
+# written as output for production hosts.
+# To pin a specific tag, set VLLM_SERVICE_VERSION_OVERRIDE in your shell before
+# invoking make.
 PROFILE_ARG="${1:-}"
 if [[ -n "$PROFILE_ARG" && "$PROFILE_ARG" != "media" ]]; then
   echo "Usage: $0 [media]" >&2
@@ -12,8 +18,19 @@ COMPOSE_PROFILE_FLAGS=()
 [[ -n "$PROFILE_ARG" ]] && COMPOSE_PROFILE_FLAGS=(--profile "$PROFILE_ARG")
 
 # YYYY-MM-DD plus short git sha; override by exporting VLLM_SERVICE_VERSION beforehand.
-export VLLM_SERVICE_VERSION="${VLLM_SERVICE_VERSION:-$(date +%Y-%m-%d)-$(git rev-parse --short HEAD)}"
+if [[ -n "${VLLM_SERVICE_VERSION_OVERRIDE:-}" ]]; then
+  export VLLM_SERVICE_VERSION="$VLLM_SERVICE_VERSION_OVERRIDE"
+else
+  _git_sha=$(git rev-parse --short HEAD 2>/dev/null || true)
+  _git_date=$(git log -1 --format=%cs 2>/dev/null || true)
+  _date="${_git_date:-$(date +%Y-%m-%d)}"
+  export VLLM_SERVICE_VERSION="${_date}${_git_sha:+-${_git_sha}}"
+fi
 echo "VLLM_SERVICE_VERSION=$VLLM_SERVICE_VERSION"
+
+# Persist the version so production hosts can run 'make no-build-*' without
+# git or the original build date. Copy this file alongside docker-compose.yml.
+echo "$VLLM_SERVICE_VERSION" > .vllm-service-version
 
 docker compose ${COMPOSE_PROFILE_FLAGS[@]+"${COMPOSE_PROFILE_FLAGS[@]}"} build
 docker compose ${COMPOSE_PROFILE_FLAGS[@]+"${COMPOSE_PROFILE_FLAGS[@]}"} pull --ignore-buildable
