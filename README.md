@@ -22,6 +22,7 @@ relevant backend:
 - `/rerank`
 - `/pooling`
 - `/tokenize`
+- `/gliner` (zero-shot NER; non-OpenAI shape)
 
 Internally it runs:
 
@@ -29,6 +30,7 @@ Internally it runs:
 - `chat`
 - `embed`
 - `rerank`
+- `ner` (GLiNER, served via Ray Serve rather than vLLM)
 
 The following services are optional and only started with `--profile media`:
 
@@ -104,7 +106,7 @@ writes two gzipped tarballs in the cwd:
 
 | File | Contents |
 |---|---|
-| `vllm-service-built-<profile>-<version>.tar.gz` | Locally-built `vllm-service-{chat,embed,rerank,...}` images. |
+| `vllm-service-built-<profile>-<version>.tar.gz` | Locally-built `vllm-service-{chat,embed,rerank,ner,...}` images. |
 | `vllm-service-pulled-<profile>-<version>.tar.gz` | Externally-hosted images (LiteLLM router); re-tagged so the `name:tag@digest` references in `docker-compose.yml` resolve after `docker load`. |
 
 The compose file references the version through
@@ -140,7 +142,7 @@ between `load` and `up`.
 - `inference-net` is an external shared Docker network used for cross-project
   service discovery and reverse-proxy access.
 - Only the `router` service joins `inference-net`; `chat`, `embed`,
-  `rerank`, `audio`, and `translate` stay on the private network.
+  `rerank`, `ner`, `audio`, and `translate` stay on the private network.
 - The `router` service keeps its `vllm-router` alias on `inference-net` so
   existing consumers do not need to change their `OPENAI_API_BASE`.
 
@@ -155,6 +157,10 @@ are required.
 Clients must use the exact model ID set in `.env` as the `model` field in
 their requests (e.g. `"model": "BAAI/bge-m3"`). The `/v1/models` endpoint
 returns the currently active IDs.
+
+`NER_MODEL` is the exception: GLiNER's server has no OpenAI-shaped endpoint,
+so it is not in `model_list` and does not appear in `/v1/models`. Switching
+it still works by updating `NER_MODEL` in `.env` and restarting `ner`.
 
 ## Calling the audio service
 
@@ -212,3 +218,42 @@ The translate service is only started when the `media` profile is active:
 ```bash
 docker compose --profile media up
 ```
+
+## Calling the NER service
+
+The `ner` service runs [GLiNER](https://github.com/urchade/GLiNER), a
+zero-shot Named Entity Recognition model, behind Ray Serve. Unlike the
+other backends it is **not** vLLM and does **not** expose OpenAI-compatible
+routes — its request/response shape is GLiNER-native, and it is reached
+through the router's `/gliner` pass-through:
+
+```bash
+curl http://vllm-router:9000/gliner \
+  -H "Authorization: Bearer $OPENAI_API_KEY" \
+  -H "Content-Type: application/json" \
+  -d '{
+    "text": "Alice works at Acme Corp in Berlin.",
+    "labels": ["person", "organization", "location"],
+    "threshold": 0.5
+  }'
+```
+
+Response:
+
+```json
+{
+  "entities": [
+    {"start": 0,  "end": 5,  "text": "Alice",     "label": "person",       "score": 0.97},
+    {"start": 15, "end": 24, "text": "Acme Corp", "label": "organization", "score": 0.92},
+    {"start": 28, "end": 34, "text": "Berlin",    "label": "location",     "score": 0.95}
+  ]
+}
+```
+
+`labels` is the candidate set for this single request — GLiNER is
+zero-shot, so labels can change request to request without retraining.
+
+The default model is `gliner-community/gliner_large-v2.5` on CUDA. For
+CPU-only hosts, set both `NER_MODEL=gliner-community/gliner_medium-v2.5`
+and `NER_DEVICE=cpu` in `.env`. See `.env.example` for the full list of
+`NER_*` knobs (dtype, batch size, FlashDeBERTa, sequence packing, etc.).

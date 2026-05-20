@@ -60,19 +60,33 @@ etc.).
 
 LiteLLM natively exposes `/v1/chat/completions`, `/v1/completions`,
 `/v1/embeddings`, `/v1/audio/transcriptions`, `/v1/audio/translations`, and
-`/v1/models`. vLLM-specific paths (`/v1/rerank`, `/pooling`, `/tokenize`) are
-forwarded by `pass_through_endpoints` in `litellm.config.yaml`.
+`/v1/models`. vLLM-specific paths (`/v1/rerank`, `/pooling`, `/tokenize`) and
+GLiNER's `/gliner` are forwarded by `pass_through_endpoints` in
+`litellm.config.yaml`. `/gliner` is the only pass-through whose upstream is
+*not* a vLLM container — it goes to the `ner` service (Ray Serve).
 
 ### Backends
 
-Each backend is the same `Dockerfile.vllm` image launched with a different model
-and per-service env-driven flags:
+Most backends share the same `Dockerfile.vllm` image, launched with a
+different model and per-service env-driven flags:
 
 - `chat` — general LLM (`TEXT_MODEL`)
 - `embed` — embeddings, `--runner pooling --convert embed` (`EMBED_MODEL`)
 - `rerank` — reranker, `--runner pooling` (`RERANK_MODEL`)
 - `translate` *(profile: media)* — TranslateGemma fork (`TRANSLATE_MODEL`)
 - `audio` *(profile: media)* — Whisper (`WHISPER_MODEL`)
+
+`ner` is the one exception — it uses **`Dockerfile.gliner`** (pytorch base +
+`gliner[serve]`) and runs Ray Serve, not vLLM. GLiNER's span-matching head
+isn't a stock HF classification head and the DeBERTa-v2/v3 disentangled
+attention used by the v2.5 checkpoints isn't natively supported by vLLM,
+so vLLM-native serving is not viable. The endpoint is `POST /gliner` with
+body `{text, labels, threshold}` and is reached via the router's
+`/gliner` pass-through (not `/v1/...`).
+
+- `ner` — GLiNER zero-shot NER via Ray Serve (`NER_MODEL`, default
+  `gliner-community/gliner_large-v2.5` on CUDA; set `NER_DEVICE=cpu` with
+  the `gliner_medium-v2.5` variant for CPU-only hosts)
 
 Each buildable service in `docker-compose.yml` carries
 `image: vllm-service-<svc>:${VLLM_SERVICE_VERSION:-latest}`. Bare `docker
@@ -102,9 +116,10 @@ ergonomics aren't worth it.
 ### Service startup ordering
 
 `depends_on … condition: service_healthy` chains the backends serially:
-`chat → embed → rerank → audio → translate → router`. This is intentional — vLLM
+`chat → embed → rerank → ner → audio → translate → router`. This is intentional —
 backends compete for GPU memory at startup, so they are brought up one at a time.
-Healthchecks hit `http://localhost:8000/health` (backends) and
+Healthchecks hit `http://localhost:8000/health` (vLLM backends),
+`http://localhost:8000/-/healthz` (the `ner` Ray Serve container), and
 `/health/liveliness` (router). Allow ~120s `start_period` before treating a
 backend as unhealthy.
 
@@ -112,11 +127,13 @@ backend as unhealthy.
 
 All tuning is done via `.env` (see `.env.example`). Per-service env vars follow
 the pattern `<SERVICE>_<KNOB>` (e.g. `CHAT_GPU_MEMORY_UTILIZATION`,
-`TRANSLATE_MAX_MODEL_LEN`, `EMBED_HF_OVERRIDES`). The chat and translate
-entrypoints use a shell builder pattern (`set -- vllm serve …` then conditional
-`set -- "$@" --flag`) so optional flags are only passed when the corresponding
-env var is set — when adding a new optional vLLM flag, follow that same pattern
-rather than hard-coding it in `command:`.
+`TRANSLATE_MAX_MODEL_LEN`, `EMBED_HF_OVERRIDES`, `NER_ENABLE_FLASHDEBERTA`). The
+`chat`, `translate`, and `ner` entrypoints use a shell builder pattern (`set --
+<cmd> …` then conditional `set -- "$@" --flag`) so optional flags are only
+passed when the corresponding env var is set — when adding a new optional flag,
+follow that same pattern rather than hard-coding it in `command:`. The `ner`
+shell builder invokes `python -m gliner.serve` instead of `vllm serve`, but the
+structure is identical.
 
 `OPENAI_API_KEY` serves double duty: it is both the upstream API key passed to
 each vLLM `--api-key` and the LiteLLM `master_key` that gates the router.
@@ -132,6 +149,11 @@ Update the relevant `*_MODEL` variable in `.env` and restart the stack. **No
 edits to `litellm.config.yaml` are needed** — model names are resolved via
 `os.environ/<VAR>` at startup. Clients must send the exact model ID string in
 their request `model` field; `/v1/models` returns the active set.
+
+`NER_MODEL` is the exception: GLiNER's server has no OpenAI-shaped routes, so
+it is not declared in `model_list` and does not appear in `/v1/models`.
+Clients hit `/gliner` directly with a GLiNER-native body and never use the
+`model` field. Switching `NER_MODEL` and restarting `ner` still works.
 
 ### TranslateGemma quirk
 
