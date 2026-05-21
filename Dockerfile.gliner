@@ -10,7 +10,12 @@ RUN apt-get update \
 
 # `gliner[serve]` pulls in ray[serve] plus the deployment helpers
 # (dynamic batching, memory-aware batch sizing, optional FlashDeBERTa).
-RUN pip install --no-cache-dir 'gliner[serve]==0.2.26'
+# --break-system-packages is required on PyTorch 2.11+ (Debian PEP 668).
+# gliner.serve module was introduced in v0.2.27 (PR #346); v0.2.26 on PyPI
+# does not have it. Install from the pinned commit tarball (no git required)
+# int8 quantization on GPU requires the 'torchao' package
+RUN pip install --no-cache-dir --break-system-packages \
+    'gliner[serve] @ https://github.com/urchade/GLiNER/archive/910a1aefb300f17bb67d31d4a92890c8d78aaa4b.tar.gz' torchao
 
 ENV TOKENIZERS_PARALLELISM=true
 
