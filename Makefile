@@ -18,7 +18,7 @@ network:
 
 # Create the external Docker volume for Hugging Face cache (one-time per host; idempotent
 volume:
-	docker volume create huggingface-cache
+	DOCKER_BUILDKIT=1 docker volume create huggingface-cache
 
 # Build core stack and ship as versioned .tar.gz pair (built + pulled).
 bundle:
@@ -38,16 +38,16 @@ build-media:
 
 # Core stack only (chat, embed, rerank).
 up:
-	docker compose up --no-build
+	DOCKER_BUILDKIT=1 docker compose up --no-build
 
 # Core + media services (translate, audio).
 up-media:
-	docker compose --profile media up --no-build
+	DOCKER_BUILDKIT=1 docker compose --profile media up --no-build
 
 # Stop all services.
 stop:
-	docker compose stop
+	DOCKER_BUILDKIT=1 docker compose stop
 
 # Stop the core + media services (audio, translate).
 stop-media:
-	docker compose --profile media stop
+	DOCKER_BUILDKIT=1 docker compose --profile media stop
