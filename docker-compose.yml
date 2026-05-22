@@ -51,10 +51,10 @@ services:
         condition: service_healthy
       ner:
         condition: service_healthy
-      translate:
+      audio:
         condition: service_healthy
         required: false
-      audio:
+      translate:
         condition: service_healthy
         required: false
     environment:
