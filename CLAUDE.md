@@ -6,43 +6,56 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 A pure infrastructure repo: a Docker Compose stack that fronts several vLLM
 backends with a single LiteLLM Proxy router. There is **no application source
-code** — everything is configuration (`docker-compose.yml`, `Dockerfile.vllm`,
-`litellm.config.yaml`, `.env`).
+code** — everything is configuration. The Docker assets live under `docker/`
+(`docker/compose.yaml`, `docker/compose.override.yaml`, `docker/Dockerfile.vllm`,
+`docker/Dockerfile.gliner`, `docker/litellm.config.yaml`) plus `.env` and
+`.dockerignore` at the repo root.
 
 ## Common commands
+
+The `Makefile` is the entry point — it points Compose at `docker/compose.yaml`,
+since a bare `docker compose` from the repo root no longer finds the compose
+file. The service set is read from `PROFILE` in `.env`: empty = core stack;
+`PROFILE=media` adds translate + audio. Override per-invocation as
+`make up PROFILE=media`.
 
 Prerequisites (one-time per host):
 
 ```bash
-docker network create inference-net
-docker volume create huggingface-cache
+make network           # create the external inference-net
+make volume            # create the huggingface-cache Docker volume
 cp .env.example .env   # then edit model IDs / API key / GPU placement
 ```
 
 Bring the stack up:
 
 ```bash
-docker compose up --build                       # core: router, chat, embed, rerank
-docker compose --profile media up --build       # add translate + audio
+make build             # build images for the active service set
+make up                # core: router, chat, embed, rerank, ner
+make up PROFILE=media  # add translate + audio
 ```
 
-Other useful operations:
+`make up` layers `docker/compose.override.yaml` so the router is published on
+the host for dev. The base `docker/compose.yaml` is the production shape and
+publishes no host ports.
+
+Other useful operations use the raw compose form, pointed at the compose file
+(append `--profile media` when the media service set is active):
 
 ```bash
-docker compose logs -f router                   # follow LiteLLM proxy logs
-docker compose logs -f chat                     # follow a single backend
-docker compose restart chat                     # reload one backend after .env change
-docker compose ps                               # health status of each service
-docker compose down                             # stop all
+docker compose --env-file .env -f docker/compose.yaml logs -f router    # follow LiteLLM proxy logs
+docker compose --env-file .env -f docker/compose.yaml logs -f chat      # follow a single backend
+docker compose --env-file .env -f docker/compose.yaml restart chat      # reload one backend after .env change
+docker compose --env-file .env -f docker/compose.yaml ps                # health status of each service
+make stop                                                               # stop the active service set
 ```
 
 Build and bundle commands:
 
 ```bash
-make build           # build core stack only (chat, embed, rerank) — lower VRAM
-make build-media     # build core + media services (translate, audio)
-make bundle          # build + ship core stack as versioned .tar.gz pair
-make bundle-media    # build + ship core + media as versioned .tar.gz pair
+make build               # build images for the active service set
+make bundle              # build + ship the active service set as versioned .tar.gz pair
+make bundle PROFILE=media  # build + ship core + media as versioned .tar.gz pair
 ```
 
 There is no test suite or linter.
@@ -51,23 +64,24 @@ There is no test suite or linter.
 
 ### Routing model
 
-`router` (LiteLLM Proxy, port 4000 inside / `${ROUTER_HOST_PORT:-9000}` on host)
-is the **only** entry point. Clients always send to the router and select a
-backend by the `model` field in the request body — there is no path-based
-dispatch. `litellm.config.yaml` maps each `model_name` (read from env vars at
-startup) to an upstream `api_base` (`http://chat:8000/v1`, `http://embed:8000/v1`,
-etc.).
+`router` (LiteLLM Proxy, port 4000 inside, published on
+`${ROUTER_HOST_PORT:-9000}` on the host by `docker/compose.override.yaml`
+when `make up` is used) is the **only** entry point. Clients always send to
+the router and select a backend by the `model` field in the request body —
+there is no path-based dispatch. `docker/litellm.config.yaml` maps each
+`model_name` (read from env vars at startup) to an upstream `api_base`
+(`http://chat:8000/v1`, `http://embed:8000/v1`, etc.).
 
 LiteLLM natively exposes `/v1/chat/completions`, `/v1/completions`,
 `/v1/embeddings`, `/v1/audio/transcriptions`, `/v1/audio/translations`, and
 `/v1/models`. vLLM-specific paths (`/v1/rerank`, `/pooling`, `/tokenize`) and
 GLiNER's `/gliner` are forwarded by `pass_through_endpoints` in
-`litellm.config.yaml`. `/gliner` is the only pass-through whose upstream is
-*not* a vLLM container — it goes to the `ner` service (Ray Serve).
+`docker/litellm.config.yaml`. `/gliner` is the only pass-through whose upstream
+is *not* a vLLM container — it goes to the `ner` service (Ray Serve).
 
 ### Backends
 
-Most backends share the same `Dockerfile.vllm` image, launched with a
+Most backends share the same `docker/Dockerfile.vllm` image, launched with a
 different model and per-service env-driven flags:
 
 - `chat` — general LLM (`TEXT_MODEL`)
@@ -76,8 +90,8 @@ different model and per-service env-driven flags:
 - `translate` *(profile: media)* — TranslateGemma fork (`TRANSLATE_MODEL`)
 - `audio` *(profile: media)* — Whisper (`WHISPER_MODEL`)
 
-`ner` is the one exception — it uses **`Dockerfile.gliner`** (pytorch base +
-`gliner[serve]`) and runs Ray Serve, not vLLM. GLiNER's span-matching head
+`ner` is the one exception — it uses **`docker/Dockerfile.gliner`** (pytorch
+base + `gliner[serve]`) and runs Ray Serve, not vLLM. GLiNER's span-matching head
 isn't a stock HF classification head and the DeBERTa-v2/v3 disentangled
 attention used by the v2.5 checkpoints isn't natively supported by vLLM,
 so vLLM-native serving is not viable. The endpoint is `POST /gliner` with
@@ -88,11 +102,12 @@ body `{text, labels, threshold}` and is reached via the router's
   `gliner-community/gliner_large-v2.5` on CUDA; set `NER_DEVICE=cpu` with
   the `gliner_medium-v2.5` variant for CPU-only hosts)
 
-Each buildable service in `docker-compose.yml` carries
-`image: vllm-service-<svc>:${VLLM_SERVICE_VERSION:-latest}`. Bare `docker
-compose build` produces `:latest` tags for dev workflows; `make bundle*`
-exports `VLLM_SERVICE_VERSION=<date>-<short-sha>` so the same compose file
-also produces version-tagged tarballs for offline shipping.
+Each buildable service in `docker/compose.yaml` carries
+`image: vllm-service-<svc>:${VLLM_SERVICE_VERSION:-latest}`. A raw `docker
+compose -f docker/compose.yaml build` produces `:latest` tags for dev
+workflows; `make bundle` exports `VLLM_SERVICE_VERSION=<date>-<short-sha>` so
+the same compose file also produces version-tagged tarballs for offline
+shipping.
 
 All backends listen on internal port 8000 and expose only `vllm-net` — they are
 not reachable from outside the compose project. Only `router` joins the external
@@ -146,9 +161,9 @@ model is gated).
 ### Switching models
 
 Update the relevant `*_MODEL` variable in `.env` and restart the stack. **No
-edits to `litellm.config.yaml` are needed** — model names are resolved via
-`os.environ/<VAR>` at startup. Clients must send the exact model ID string in
-their request `model` field; `/v1/models` returns the active set.
+edits to `docker/litellm.config.yaml` are needed** — model names are resolved
+via `os.environ/<VAR>` at startup. Clients must send the exact model ID string
+in their request `model` field; `/v1/models` returns the active set.
 
 `NER_MODEL` is the exception: GLiNER's server has no OpenAI-shaped routes, so
 it is not declared in `model_list` and does not appear in `/v1/models`.
