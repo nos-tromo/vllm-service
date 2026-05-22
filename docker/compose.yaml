@@ -5,7 +5,7 @@ x-no-proxy-env: &no-proxy-env
   no_proxy: "router,chat,embed,rerank,ner,audio,translate,localhost,127.0.0.1,172.16.0.0/12,10.0.0.0/8${EXTRA_NO_PROXY:-}"
 
 x-env-file: &env-file
-  - path: .env
+  - path: ../.env
     required: false
 
 x-vllm-env: &vllm-env
@@ -61,8 +61,6 @@ services:
       <<: *no-proxy-env
       TRANSLATE_MODEL: ${TRANSLATE_MODEL:-Infomaniak-AI/vllm-translategemma-4b-it}
       WHISPER_MODEL: ${WHISPER_MODEL:-openai/whisper-large-v3}
-    ports:
-      - "${ROUTER_HOST_PORT:-9000}:4000"
     volumes:
       - ./litellm.config.yaml:/app/config.yaml:ro
     command: ["--config", "/app/config.yaml", "--port", "4000", "--host", "0.0.0.0"]
@@ -82,8 +80,8 @@ services:
   chat:
     image: vllm-service-chat:${VLLM_SERVICE_VERSION:-latest}
     build:
-      context: .
-      dockerfile: Dockerfile.vllm
+      context: ..
+      dockerfile: docker/Dockerfile.vllm
     gpus: all
     env_file: *env-file
     ipc: host
@@ -129,8 +127,8 @@ services:
   embed:
     image: vllm-service-embed:${VLLM_SERVICE_VERSION:-latest}
     build:
-      context: .
-      dockerfile: Dockerfile.vllm
+      context: ..
+      dockerfile: docker/Dockerfile.vllm
     gpus: all
     env_file: *env-file
     ipc: host
@@ -164,8 +162,8 @@ services:
   rerank:
     image: vllm-service-rerank:${VLLM_SERVICE_VERSION:-latest}
     build:
-      context: .
-      dockerfile: Dockerfile.vllm
+      context: ..
+      dockerfile: docker/Dockerfile.vllm
     gpus: all
     env_file: *env-file
     ipc: host
@@ -198,8 +196,8 @@ services:
     #   POST /gliner {"text", "labels", "threshold"} -> {"entities": [...]}
     image: vllm-service-ner:${VLLM_SERVICE_VERSION:-latest}
     build:
-      context: .
-      dockerfile: Dockerfile.gliner
+      context: ..
+      dockerfile: docker/Dockerfile.gliner
     gpus: all
     env_file: *env-file
     ipc: host
@@ -251,8 +249,8 @@ services:
   audio:
     image: vllm-service-audio:${VLLM_SERVICE_VERSION:-latest}
     build:
-      context: .
-      dockerfile: Dockerfile.vllm
+      context: ..
+      dockerfile: docker/Dockerfile.vllm
     profiles: [media]
     gpus: all
     env_file: *env-file
@@ -281,8 +279,8 @@ services:
   translate:
     image: vllm-service-translate:${VLLM_SERVICE_VERSION:-latest}
     build:
-      context: .
-      dockerfile: Dockerfile.vllm
+      context: ..
+      dockerfile: docker/Dockerfile.vllm
     profiles: [media]
     gpus: all
     env_file: *env-file
