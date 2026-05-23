@@ -1,0 +1,24 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  validate:
+    # Pinned to nos-tromo/.github@ddb514a until v1 is tagged.
+    uses: nos-tromo/.github/.github/workflows/infra-validation.yml@ddb514ae048b7f7cf16682219dbf66a892b50bdc
+    with:
+      compose-files: '-f docker/compose.yaml -f docker/compose.override.yaml'
+      compose-profiles: '--profile media'
+      dockerfiles-glob: 'docker/Dockerfile.*'
+      shell-scripts-glob: 'scripts/*.sh'
