@@ -1,6 +1,15 @@
 # Build-host helpers for the vLLM service stack.
+#
+# The service set is read from PROFILE in .env: leave it empty for the core
+# stack (chat, embed, rerank, ner); set PROFILE=media to also start audio +
+# translate. Override per-invocation with `make up PROFILE=media`.
 
-.PHONY: network volume bundle bundle-media build build-media up up-media stop stop-media
+.DEFAULT_GOAL := help
+
+.PHONY: help network volumes build bundle up stop
+
+# Service-set profile. Read from .env; empty = core stack.
+PROFILE ?= $(strip $(shell test -f .env && grep -E '^PROFILE=' .env | cut -d= -f2))
 
 # Versioned image tag.
 # On production: read from .vllm-service-version written by bundle_images.sh.
@@ -12,42 +21,43 @@ VLLM_SERVICE_VERSION ?= $(shell \
       echo "$$(date +%Y-%m-%d)$${_s:+-$$_s}"; } )
 export VLLM_SERVICE_VERSION
 
-# Create the external Docker network (one-time per host; idempotent)
+COMPOSE      := docker compose --env-file .env -f docker/compose.yaml -f docker/compose.override.yaml
+# Empty PROFILE -> no flag (core stack); PROFILE=media -> --profile media.
+PROFILE_FLAG := $(if $(PROFILE),--profile $(PROFILE),)
+
+help:
+	@echo "vllm-service — build-host helpers. Active service set: $(if $(PROFILE),$(PROFILE),core)"
+	@echo
+	@echo "  make network   create the external inference-net"
+	@echo "  make volumes   create the huggingface-cache Docker volume"
+	@echo "  make build     build images for the active service set"
+	@echo "  make bundle    ship images as a versioned .tar.gz pair"
+	@echo "  make up        run the active service set (no rebuild)"
+	@echo "  make stop      stop the active service set"
+	@echo
+	@echo "Leave PROFILE empty in .env for the core stack; set PROFILE=media"
+	@echo "to add audio + translate. Override: make up PROFILE=media"
+
+# Create the external Docker network (one-time per host; idempotent).
 network:
-	DOCKER_BUILDKIT=1 docker network create inference-net
+	docker network create inference-net >/dev/null 2>&1 || true
 
-# Create the external Docker volume for Hugging Face cache (one-time per host; idempotent
-volume:
-	docker volume create huggingface-cache
+# Create the external Hugging Face cache volume (one-time per host; idempotent).
+volumes:
+	docker volume create huggingface-cache >/dev/null 2>&1 || true
 
-# Build core stack and ship as versioned .tar.gz pair (built + pulled).
-bundle:
-	./scripts/bundle_images.sh
-
-# Same as `bundle` but adds the media profile (audio + translate).
-bundle-media:
-	./scripts/bundle_images.sh media
-
-# Core stack only (chat, embed, rerank).
+# Build images for the active service set.
 build:
-	DOCKER_BUILDKIT=1 docker compose build
+	DOCKER_BUILDKIT=1 $(COMPOSE) $(PROFILE_FLAG) build
 
-# Core + media services (translate, audio).
-build-media:
-	DOCKER_BUILDKIT=1 docker compose --profile media build
+# Build images and ship as a versioned .tar.gz pair (built + pulled).
+bundle:
+	./scripts/bundle_images.sh $(PROFILE)
 
-# Core stack only (chat, embed, rerank).
+# Run the active service set without rebuilding images.
 up:
-	docker compose up --no-build
+	$(COMPOSE) $(PROFILE_FLAG) up --no-build
 
-# Core + media services (translate, audio).
-up-media:
-	docker compose --profile media up --no-build
-
-# Stop all services.
+# Stop the active service set.
 stop:
-	docker compose stop
-
-# Stop the core + media services (audio, translate).
-stop-media:
-	docker compose --profile media stop
+	$(COMPOSE) $(PROFILE_FLAG) stop

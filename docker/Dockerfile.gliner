@@ -1,0 +1,22 @@
+ARG PYTORCH_IMAGE=docker.io/pytorch/pytorch:2.11.0-cuda12.8-cudnn9-runtime@sha256:eee11b3b3872a8c838e35ef48f08b2d5def2080902c7f666831310ca1a0ef2be
+
+FROM ${PYTORCH_IMAGE}
+
+# curl is needed for the docker-compose healthcheck against Ray Serve's
+# /-/healthz endpoint; the slim pytorch image does not ship with it.
+RUN apt-get update \
+    && apt-get install -y --no-install-recommends curl \
+    && rm -rf /var/lib/apt/lists/*
+
+# `gliner[serve]` pulls in ray[serve] plus the deployment helpers
+# (dynamic batching, memory-aware batch sizing, optional FlashDeBERTa).
+# --break-system-packages is required on PyTorch 2.11+ (Debian PEP 668).
+# gliner.serve module was introduced in v0.2.27 (PR #346); v0.2.26 on PyPI
+# does not have it. Install from the pinned commit tarball (no git required)
+# int8 quantization on GPU requires the 'torchao' package
+RUN pip install --no-cache-dir --break-system-packages \
+    'gliner[serve] @ https://github.com/urchade/GLiNER/archive/910a1aefb300f17bb67d31d4a92890c8d78aaa4b.tar.gz' torchao
+
+ENV TOKENIZERS_PARALLELISM=true
+
+EXPOSE 8000

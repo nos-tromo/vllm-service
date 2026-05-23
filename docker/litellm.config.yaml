@@ -72,6 +72,15 @@ general_settings:
       target: "http://embed:8000/tokenize"
       headers:
         content-type: "application/json"
+    # GLiNER zero-shot NER. Not OpenAI-compatible — clients POST
+    #   {"text": "...", "labels": [...], "threshold": 0.5}
+    # and receive {"entities": [{"start", "end", "text", "label", "score"}]}.
+    # The ner backend does not appear in /v1/models because it is not in
+    # model_list — it has no OpenAI-shaped endpoint to route by model name.
+    - path: "/gliner"
+      target: "http://ner:8000/gliner"
+      headers:
+        content-type: "application/json"
 
 litellm_settings:
   # Silently drop OpenAI-only params that the upstream vLLM backend does

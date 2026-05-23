@@ -22,6 +22,7 @@ relevant backend:
 - `/rerank`
 - `/pooling`
 - `/tokenize`
+- `/gliner` (zero-shot NER; non-OpenAI shape)
 
 Internally it runs:
 
@@ -29,39 +30,52 @@ Internally it runs:
 - `chat`
 - `embed`
 - `rerank`
+- `ner` (GLiNER, served via Ray Serve rather than vLLM)
 
 The following services are optional and only started with `--profile media`:
 
 - `audio`
 - `translate`
 
-Model-to-backend routing is declared in `litellm.config.yaml`. Clients select a
-backend purely by the `model` field they send; there is no path-based dispatch.
+Model-to-backend routing is declared in `docker/litellm.config.yaml`. Clients
+select a backend purely by the `model` field they send; there is no path-based
+dispatch.
 
 ## Usage
 
+The Docker assets live under `docker/`: a base `compose.yaml`, a
+`compose.override.yaml` dev overlay, the Dockerfiles, and
+`litellm.config.yaml`. The `Makefile` is the entry point — it points Compose
+at `docker/compose.yaml`, since a bare `docker compose` from the repo root no
+longer finds the compose file.
+
 1. Copy `.env.example` to `.env` and set the model IDs, API key, and any
-   GPU-placement settings. If host port `9000` is already in use, set
-   `ROUTER_HOST_PORT` in `.env` to another free port such as `9001`.
+   GPU-placement settings. `make up` publishes the router on host port
+   `9000`; if that port is already in use, set `ROUTER_HOST_PORT` in `.env`
+   to another free port such as `9001`.
 2. Ensure the external `huggingface-cache` Docker volume exists.
 3. Initialize the shared proxy network and persistent model cache:
 
    ```bash
-   docker network create inference-net
-   docker volume create huggingface-cache
+   make network   # create the external inference-net
+   make volume    # create the huggingface-cache Docker volume
    ```
 
-4. Start the core stack:
+4. Build and start the stack. The service set is read from `PROFILE` in
+   `.env`: leave it empty for the core stack, or set `PROFILE=media` to also
+   start the `translate` and `audio` services. Override per-invocation as
+   `make up PROFILE=media`:
 
    ```bash
-   docker compose up --build
+   make build           # build images for the active service set
+   make up              # core stack (router, chat, embed, rerank, ner)
+   make up PROFILE=media  # core + media (translate, audio)
    ```
 
-   To also start the `translate` and `audio` services, add the `media` profile:
-
-   ```bash
-   docker compose --profile media up --build
-   ```
+   `make up` layers `docker/compose.override.yaml` so the router is published
+   on the host for local development. The base `docker/compose.yaml` is the
+   production shape and publishes no host ports — in-network consumers reach
+   the router as `vllm-router:4000` on `inference-net` regardless.
 
 5. Point third-party app at the router.
 
@@ -86,15 +100,17 @@ If the consuming app is outside that network, use a host or reverse-proxy URL:
 
 For airgapped hosts, customer deployments, or any environment without
 Docker Hub access, `make bundle` produces a versioned `.tar.gz` pair you
-can ship alongside `docker-compose.yml`, `litellm.config.yaml`, and `.env`.
+can ship alongside the `docker/` directory (which holds `compose.yaml` and
+`litellm.config.yaml`) and `.env`.
 
 ### Producing the bundle
 
-On a build host with internet:
+On a build host with internet (`make bundle` follows `PROFILE` from `.env`;
+override with `make bundle PROFILE=media`):
 
 ```bash
-make bundle           # core only (chat, embed, rerank)
-make bundle-media     # core + media (translate, audio)
+make bundle              # core only (chat, embed, rerank)
+make bundle PROFILE=media  # core + media (translate, audio)
 ```
 
 This computes `VLLM_SERVICE_VERSION` as `YYYY-MM-DD-<short-sha>` (override by
@@ -104,8 +120,8 @@ writes two gzipped tarballs in the cwd:
 
 | File | Contents |
 |---|---|
-| `vllm-service-built-<profile>-<version>.tar.gz` | Locally-built `vllm-service-{chat,embed,rerank,...}` images. |
-| `vllm-service-pulled-<profile>-<version>.tar.gz` | Externally-hosted images (LiteLLM router); re-tagged so the `name:tag@digest` references in `docker-compose.yml` resolve after `docker load`. |
+| `vllm-service-built-<profile>-<version>.tar.gz` | Locally-built `vllm-service-{chat,embed,rerank,ner,...}` images. |
+| `vllm-service-pulled-<profile>-<version>.tar.gz` | Externally-hosted images (LiteLLM router); re-tagged so the `name:tag@digest` references in `docker/compose.yaml` resolve after `docker load`. |
 
 The compose file references the version through
 `image: vllm-service-<svc>:${VLLM_SERVICE_VERSION:-latest}`, so it falls
@@ -114,15 +130,19 @@ the variable is set.
 
 ### Loading and running the bundle
 
-Ship the two tarballs along with the matching `docker-compose.yml`,
-`litellm.config.yaml`, and a `.env`. Then on the target host:
+Ship the two tarballs along with the matching `docker/` directory (which
+holds `compose.yaml` and `litellm.config.yaml`) and a `.env`. Then on the
+target host:
 
 ```bash
 docker load -i vllm-service-built-core-<version>.tar.gz
 docker load -i vllm-service-pulled-core-<version>.tar.gz
 export VLLM_SERVICE_VERSION=<version>
-docker compose up --no-build -d
+docker compose --env-file .env -f docker/compose.yaml up --no-build -d
 ```
+
+The target host runs the production shape — `docker/compose.yaml` without
+the dev override — so no host ports are published.
 
 The version is embedded in the tarball filenames, so the operator just
 reads it off the file. Verify with `docker images | grep vllm-service`
@@ -140,21 +160,25 @@ between `load` and `up`.
 - `inference-net` is an external shared Docker network used for cross-project
   service discovery and reverse-proxy access.
 - Only the `router` service joins `inference-net`; `chat`, `embed`,
-  `rerank`, `audio`, and `translate` stay on the private network.
+  `rerank`, `ner`, `audio`, and `translate` stay on the private network.
 - The `router` service keeps its `vllm-router` alias on `inference-net` so
   existing consumers do not need to change their `OPENAI_API_BASE`.
 
 ## Updating the model catalog
 
-`litellm.config.yaml` is model-agnostic: all model names are read at startup
-from the environment variables `TEXT_MODEL`, `EMBED_MODEL`, `RERANK_MODEL`,
-`TRANSLATE_MODEL`, and `WHISPER_MODEL`. To switch a model, update the relevant
-variable in `.env` and restart the stack. No changes to `litellm.config.yaml`
-are required.
+`docker/litellm.config.yaml` is model-agnostic: all model names are read at
+startup from the environment variables `TEXT_MODEL`, `EMBED_MODEL`,
+`RERANK_MODEL`, `TRANSLATE_MODEL`, and `WHISPER_MODEL`. To switch a model,
+update the relevant variable in `.env` and restart the stack. No changes to
+`docker/litellm.config.yaml` are required.
 
 Clients must use the exact model ID set in `.env` as the `model` field in
 their requests (e.g. `"model": "BAAI/bge-m3"`). The `/v1/models` endpoint
 returns the currently active IDs.
+
+`NER_MODEL` is the exception: GLiNER's server has no OpenAI-shaped endpoint,
+so it is not in `model_list` and does not appear in `/v1/models`. Switching
+it still works by updating `NER_MODEL` in `.env` and restarting `ner`.
 
 ## Calling the audio service
 
@@ -171,10 +195,11 @@ curl http://vllm-router:9000/v1/audio/transcriptions \
 The maximum accepted file size defaults to 200 MB and can be raised with
 `VLLM_MAX_AUDIO_CLIP_FILESIZE_MB` in `.env`.
 
-The audio service is only started when the `media` profile is active:
+The audio service is only started when the `media` profile is active —
+set `PROFILE=media` in `.env` or override per-invocation:
 
 ```bash
-docker compose --profile media up
+make up PROFILE=media
 ```
 
 ## Calling the translate service
@@ -207,8 +232,48 @@ curl http://vllm-router:9000/v1/chat/completions \
 The model is trained for a ~2K context window, so keep `TRANSLATE_MAX_MODEL_LEN`
 at 2048 unless you have a specific reason to raise it.
 
-The translate service is only started when the `media` profile is active:
+The translate service is only started when the `media` profile is active —
+set `PROFILE=media` in `.env` or override per-invocation:
 
 ```bash
-docker compose --profile media up
+make up PROFILE=media
 ```
+
+## Calling the NER service
+
+The `ner` service runs [GLiNER](https://github.com/urchade/GLiNER), a
+zero-shot Named Entity Recognition model, behind Ray Serve. Unlike the
+other backends it is **not** vLLM and does **not** expose OpenAI-compatible
+routes — its request/response shape is GLiNER-native, and it is reached
+through the router's `/gliner` pass-through:
+
+```bash
+curl http://vllm-router:9000/gliner \
+  -H "Authorization: Bearer $OPENAI_API_KEY" \
+  -H "Content-Type: application/json" \
+  -d '{
+    "text": "Alice works at Acme Corp in Berlin.",
+    "labels": ["person", "organization", "location"],
+    "threshold": 0.5
+  }'
+```
+
+Response:
+
+```json
+{
+  "entities": [
+    {"start": 0,  "end": 5,  "text": "Alice",     "label": "person",       "score": 0.97},
+    {"start": 15, "end": 24, "text": "Acme Corp", "label": "organization", "score": 0.92},
+    {"start": 28, "end": 34, "text": "Berlin",    "label": "location",     "score": 0.95}
+  ]
+}
+```
+
+`labels` is the candidate set for this single request — GLiNER is
+zero-shot, so labels can change request to request without retraining.
+
+The default model is `gliner-community/gliner_large-v2.5` on CUDA. For
+CPU-only hosts, set both `NER_MODEL=gliner-community/gliner_medium-v2.5`
+and `NER_DEVICE=cpu` in `.env`. See `.env.example` for the full list of
+`NER_*` knobs (dtype, batch size, FlashDeBERTa, sequence packing, etc.).

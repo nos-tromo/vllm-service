@@ -1,11 +1,11 @@
 name: vllm-service
 
 x-no-proxy-env: &no-proxy-env
-  NO_PROXY: "router,chat,embed,rerank,audio,translate,localhost,127.0.0.1,172.16.0.0/12,10.0.0.0/8${EXTRA_NO_PROXY:-}"
-  no_proxy: "router,chat,embed,rerank,audio,translate,localhost,127.0.0.1,172.16.0.0/12,10.0.0.0/8${EXTRA_NO_PROXY:-}"
+  NO_PROXY: "router,chat,embed,rerank,ner,audio,translate,localhost,127.0.0.1,172.16.0.0/12,10.0.0.0/8${EXTRA_NO_PROXY:-}"
+  no_proxy: "router,chat,embed,rerank,ner,audio,translate,localhost,127.0.0.1,172.16.0.0/12,10.0.0.0/8${EXTRA_NO_PROXY:-}"
 
 x-env-file: &env-file
-  - path: .env
+  - path: ../.env
     required: false
 
 x-vllm-env: &vllm-env
@@ -49,18 +49,18 @@ services:
         condition: service_healthy
       rerank:
         condition: service_healthy
-      translate:
+      ner:
+        condition: service_healthy
+      audio:
         condition: service_healthy
         required: false
-      audio:
+      translate:
         condition: service_healthy
         required: false
     environment:
       <<: *no-proxy-env
       TRANSLATE_MODEL: ${TRANSLATE_MODEL:-Infomaniak-AI/vllm-translategemma-4b-it}
       WHISPER_MODEL: ${WHISPER_MODEL:-openai/whisper-large-v3}
-    ports:
-      - "${ROUTER_HOST_PORT:-9000}:4000"
     volumes:
       - ./litellm.config.yaml:/app/config.yaml:ro
     command: ["--config", "/app/config.yaml", "--port", "4000", "--host", "0.0.0.0"]
@@ -80,8 +80,8 @@ services:
   chat:
     image: vllm-service-chat:${VLLM_SERVICE_VERSION:-latest}
     build:
-      context: .
-      dockerfile: Dockerfile.vllm
+      context: ..
+      dockerfile: docker/Dockerfile.vllm
     gpus: all
     env_file: *env-file
     ipc: host
@@ -127,8 +127,8 @@ services:
   embed:
     image: vllm-service-embed:${VLLM_SERVICE_VERSION:-latest}
     build:
-      context: .
-      dockerfile: Dockerfile.vllm
+      context: ..
+      dockerfile: docker/Dockerfile.vllm
     gpus: all
     env_file: *env-file
     ipc: host
@@ -162,8 +162,8 @@ services:
   rerank:
     image: vllm-service-rerank:${VLLM_SERVICE_VERSION:-latest}
     build:
-      context: .
-      dockerfile: Dockerfile.vllm
+      context: ..
+      dockerfile: docker/Dockerfile.vllm
     gpus: all
     env_file: *env-file
     ipc: host
@@ -187,17 +187,76 @@ services:
     networks:
       - vllm-net
 
-  audio:
-    image: vllm-service-audio:${VLLM_SERVICE_VERSION:-latest}
+  ner:
+    # GLiNER zero-shot NER served via Ray Serve. Unlike the other backends,
+    # this is NOT a vLLM container — GLiNER's span-matching head isn't a
+    # stock HF classification head and the DeBERTa-v2/v3 attention used by
+    # the v2.5 checkpoints is not natively supported by vLLM, so we use
+    # the upstream Ray-Serve-based server instead. Endpoint shape:
+    #   POST /gliner {"text", "labels", "threshold"} -> {"entities": [...]}
+    image: vllm-service-ner:${VLLM_SERVICE_VERSION:-latest}
     build:
-      context: .
-      dockerfile: Dockerfile.vllm
-    profiles: [media]
+      context: ..
+      dockerfile: docker/Dockerfile.gliner
     gpus: all
     env_file: *env-file
     ipc: host
     depends_on:
       rerank:
+        condition: service_healthy
+    entrypoint: ["/bin/sh", "-lc"]
+    command:
+      - >-
+        export CUDA_VISIBLE_DEVICES="$${NER_CUDA_VISIBLE_DEVICES:-0}";
+        set -- python -m gliner.serve
+        --model "$${NER_MODEL:-gliner-community/gliner_large-v2.5}"
+        --device "$${NER_DEVICE:-cuda}"
+        --dtype "$${NER_DTYPE:-bfloat16}"
+        --port 8000
+        --max-batch-size "$${NER_MAX_BATCH_SIZE:-32}"
+        --batch-wait-timeout-ms "$${NER_BATCH_WAIT_TIMEOUT_MS:-10}"
+        --target-memory-fraction "$${NER_TARGET_MEMORY_FRACTION:-0.8}"
+        --num-replicas "$${NER_NUM_REPLICAS:-1}";
+        if [ -n "$${NER_QUANTIZATION:-}" ]; then
+          set -- "$@" --quantization "$${NER_QUANTIZATION}";
+        fi;
+        if [ "$${NER_ENABLE_FLASHDEBERTA:-false}" = "true" ]; then
+          set -- "$@" --enable-flashdeberta;
+        fi;
+        if [ "$${NER_ENABLE_SEQUENCE_PACKING:-false}" = "true" ]; then
+          set -- "$@" --enable-sequence-packing;
+        fi;
+        if [ "$${NER_DISABLE_COMPILE:-false}" = "true" ]; then
+          set -- "$@" --no-compile;
+        fi;
+        exec "$@"
+    environment:
+      <<: *no-proxy-env
+      NVIDIA_VISIBLE_DEVICES: all
+      HF_HUB_OFFLINE: ${HF_HUB_OFFLINE:-1}
+      TRANSFORMERS_OFFLINE: ${TRANSFORMERS_OFFLINE:-1}
+    volumes: *vllm-volumes
+    healthcheck:
+      test: ["CMD-SHELL", "curl -sf http://localhost:8000/-/healthz || exit 1"]
+      interval: 10s
+      timeout: 5s
+      retries: 60
+      start_period: 120s
+    deploy: *cuda-deploy
+    networks:
+      - vllm-net
+
+  audio:
+    image: vllm-service-audio:${VLLM_SERVICE_VERSION:-latest}
+    build:
+      context: ..
+      dockerfile: docker/Dockerfile.vllm
+    profiles: [media]
+    gpus: all
+    env_file: *env-file
+    ipc: host
+    depends_on:
+      ner:
         condition: service_healthy
     entrypoint: ["/bin/sh", "-lc"]
     command:
@@ -220,8 +279,8 @@ services:
   translate:
     image: vllm-service-translate:${VLLM_SERVICE_VERSION:-latest}
     build:
-      context: .
-      dockerfile: Dockerfile.vllm
+      context: ..
+      dockerfile: docker/Dockerfile.vllm
     profiles: [media]
     gpus: all
     env_file: *env-file

@@ -32,8 +32,8 @@ echo "VLLM_SERVICE_VERSION=$VLLM_SERVICE_VERSION"
 # git or the original build date. Copy this file alongside docker-compose.yml.
 echo "$VLLM_SERVICE_VERSION" > .vllm-service-version
 
-docker compose ${COMPOSE_PROFILE_FLAGS[@]+"${COMPOSE_PROFILE_FLAGS[@]}"} build
-docker compose ${COMPOSE_PROFILE_FLAGS[@]+"${COMPOSE_PROFILE_FLAGS[@]}"} pull --ignore-buildable
+docker compose --env-file .env -f docker/compose.yaml ${COMPOSE_PROFILE_FLAGS[@]+"${COMPOSE_PROFILE_FLAGS[@]}"} build
+docker compose --env-file .env -f docker/compose.yaml ${COMPOSE_PROFILE_FLAGS[@]+"${COMPOSE_PROFILE_FLAGS[@]}"} pull --ignore-buildable
 
 # Partition compose's image list into built (no slash) and pulled (registry refs).
 # Docker Desktop sometimes drops the name:tag binding when you pull
@@ -57,7 +57,7 @@ while IFS= read -r img; do
   else
     built+=("$img")
   fi
-done < <(docker compose ${COMPOSE_PROFILE_FLAGS[@]+"${COMPOSE_PROFILE_FLAGS[@]}"} config --images)
+done < <(docker compose --env-file .env -f docker/compose.yaml ${COMPOSE_PROFILE_FLAGS[@]+"${COMPOSE_PROFILE_FLAGS[@]}"} config --images)
 
 echo "Built images:  ${built[*]:-<none>}"
 echo "Pulled images: ${pulled[*]:-<none>}"
