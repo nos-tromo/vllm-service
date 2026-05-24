@@ -8,7 +8,7 @@ A pure infrastructure repo: a Docker Compose stack that fronts several vLLM
 backends with a single LiteLLM Proxy router. There is **no application source
 code** — everything is configuration. The Docker assets live under `docker/`
 (`docker/compose.yaml`, `docker/compose.override.yaml`, `docker/compose.ner-only.yaml`,
-`docker/Dockerfile.vllm`, `docker/Dockerfile.gliner`,
+`docker/Dockerfile.vllm`, `docker/Dockerfile.gliner.cuda`,
 `docker/Dockerfile.gliner.cpu`, `docker/litellm.config.yaml`) plus `.env` and
 `.dockerignore` at the repo root.
 
@@ -123,7 +123,7 @@ different model and per-service env-driven flags:
 - `translate` *(profile: media)* — TranslateGemma fork (`TRANSLATE_MODEL`)
 - `audio` *(profile: media)* — Whisper (`WHISPER_MODEL`)
 
-`ner` is the one exception — it uses **`docker/Dockerfile.gliner`** (pytorch
+`ner` is the one exception — it uses **`docker/Dockerfile.gliner.cuda`** (pytorch
 base + `gliner[serve]`) and runs Ray Serve, not vLLM. GLiNER's span-matching head
 isn't a stock HF classification head and the DeBERTa-v2/v3 disentangled
 attention used by the v2.5 checkpoints isn't natively supported by vLLM,
