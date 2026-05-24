@@ -197,7 +197,7 @@ services:
     image: vllm-service-ner:${VLLM_SERVICE_VERSION:-latest}
     build:
       context: ..
-      dockerfile: docker/Dockerfile.gliner
+      dockerfile: docker/Dockerfile.gliner.cuda
     gpus: all
     env_file: *env-file
     ipc: host

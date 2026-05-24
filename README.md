@@ -41,6 +41,12 @@ Model-to-backend routing is declared in `docker/litellm.config.yaml`. Clients
 select a backend purely by the `model` field they send; there is no path-based
 dispatch.
 
+For hosts that cannot run the CUDA stack (Mac dev boxes, ROCm or CPU-only
+Linux running Ollama for chat/embed), this repo also ships an **NER-only
+deployment** in `docker/compose.ner-only.yaml` — a single `gliner-ner`
+container on `inference-net`, no router, no GPU. See "NER-only deployment"
+below.
+
 ## Usage
 
 The Docker assets live under `docker/`: a base `compose.yaml`, a
@@ -96,6 +102,61 @@ If the consuming app is outside that network, use a host or reverse-proxy URL:
    OPENAI_API_KEY=<token>
    ```
 
+## NER-only deployment
+
+`docker/compose.ner-only.yaml` is a standalone compose project for hosts
+that don't run the full vLLM stack — typically because they're on macOS,
+have no NVIDIA GPU, or rely on Ollama for chat/embeddings. It runs one
+container, `gliner-ner`, built from `Dockerfile.gliner.cpu` (non-CUDA
+PyTorch base, multi-arch). No LiteLLM router, no GPU reservation.
+
+Bring it up:
+
+```bash
+make network            # if not already created
+make volumes            # if not already created
+make build-ner-only     # builds vllm-service-gliner-cpu
+make up-ner-only        # starts the gliner-ner container
+```
+
+On first start the container downloads the GLiNER weights to the shared
+`huggingface-cache` volume (~1.2 GB for the medium variant). The
+healthcheck reports healthy once Ray Serve is accepting requests. If your
+host is offline you'll need to pre-populate the cache by temporarily
+setting `HF_HUB_OFFLINE=0` and `TRANSFORMERS_OFFLINE=0` in `.env`.
+
+Consumers on `inference-net` reach it directly — there's no router in this
+shape:
+
+```bash
+curl http://gliner-ner:8000/gliner \
+  -H "Content-Type: application/json" \
+  -d '{
+    "text": "Alice works at Acme Corp in Berlin.",
+    "labels": ["person", "organization", "location"],
+    "threshold": 0.3
+  }'
+```
+
+No `Authorization` header is required: the container has no built-in
+Bearer-token gate, and `inference-net` is a private Docker network shared
+only between trusted compose projects (the same posture `data-net` uses
+for Qdrant).
+
+Override defaults via `.env` — only `NER_*` knobs apply in this shape:
+
+```bash
+NER_MODEL=gliner-community/gliner_medium-v2.5   # default in ner-only
+NER_DEVICE=cpu                                  # default in ner-only
+# NER_MAX_BATCH_SIZE=8
+# NER_BATCH_WAIT_TIMEOUT_MS=50
+# NER_NUM_REPLICAS=1
+```
+
+CPU GLiNER (medium-v2.5) lands around 200 ms – 1 s per request on modern
+CPUs. Fine for batch ingestion workloads; not suitable for interactive
+per-keystroke use.
+
 ## Offline image bundles
 
 For airgapped hosts, customer deployments, or any environment without
@@ -109,8 +170,9 @@ On a build host with internet (`make bundle` follows `PROFILE` from `.env`;
 override with `make bundle PROFILE=media`):
 
 ```bash
-make bundle              # core only (chat, embed, rerank)
+make bundle              # core only (chat, embed, rerank, ner, router)
 make bundle PROFILE=media  # core + media (translate, audio)
+make bundle-ner-only     # NER-only shape (just vllm-service-gliner-cpu)
 ```
 
 This computes `VLLM_SERVICE_VERSION` as `YYYY-MM-DD-<short-sha>` (override by
@@ -277,3 +339,8 @@ The default model is `gliner-community/gliner_large-v2.5` on CUDA. For
 CPU-only hosts, set both `NER_MODEL=gliner-community/gliner_medium-v2.5`
 and `NER_DEVICE=cpu` in `.env`. See `.env.example` for the full list of
 `NER_*` knobs (dtype, batch size, FlashDeBERTa, sequence packing, etc.).
+
+> Hosts that can't run the CUDA stack at all should use the
+> [NER-only deployment](#ner-only-deployment) instead — same `/gliner`
+> request/response shape, but reached at `http://gliner-ner:8000/gliner`
+> with no Bearer auth.

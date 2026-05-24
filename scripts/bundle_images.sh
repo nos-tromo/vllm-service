@@ -9,13 +9,28 @@ set -euo pipefail
 # To pin a specific tag, set VLLM_SERVICE_VERSION_OVERRIDE in your shell before
 # invoking make.
 PROFILE_ARG="${1:-}"
-if [[ -n "$PROFILE_ARG" && "$PROFILE_ARG" != "media" ]]; then
-  echo "Usage: $0 [media]" >&2
-  exit 2
-fi
-PROFILE_LABEL="${PROFILE_ARG:-core}"
+COMPOSE_FILE="docker/compose.yaml"
 COMPOSE_PROFILE_FLAGS=()
-[[ -n "$PROFILE_ARG" ]] && COMPOSE_PROFILE_FLAGS=(--profile "$PROFILE_ARG")
+case "$PROFILE_ARG" in
+  "")
+    PROFILE_LABEL="core"
+    ;;
+  "media")
+    PROFILE_LABEL="media"
+    COMPOSE_PROFILE_FLAGS=(--profile "$PROFILE_ARG")
+    ;;
+  "ner-only")
+    # Separate compose project — different topology (single CPU container
+    # on inference-net, no router), so it has its own compose file and
+    # carries no compose profile.
+    PROFILE_LABEL="ner-only"
+    COMPOSE_FILE="docker/compose.ner-only.yaml"
+    ;;
+  *)
+    echo "Usage: $0 [media|ner-only]" >&2
+    exit 2
+    ;;
+esac
 
 # YYYY-MM-DD plus short git sha; override by exporting VLLM_SERVICE_VERSION beforehand.
 if [[ -n "${VLLM_SERVICE_VERSION_OVERRIDE:-}" ]]; then
@@ -32,8 +47,8 @@ echo "VLLM_SERVICE_VERSION=$VLLM_SERVICE_VERSION"
 # git or the original build date. Copy this file alongside docker-compose.yml.
 echo "$VLLM_SERVICE_VERSION" > .vllm-service-version
 
-docker compose --env-file .env -f docker/compose.yaml ${COMPOSE_PROFILE_FLAGS[@]+"${COMPOSE_PROFILE_FLAGS[@]}"} build
-docker compose --env-file .env -f docker/compose.yaml ${COMPOSE_PROFILE_FLAGS[@]+"${COMPOSE_PROFILE_FLAGS[@]}"} pull --ignore-buildable
+docker compose --env-file .env -f "$COMPOSE_FILE" ${COMPOSE_PROFILE_FLAGS[@]+"${COMPOSE_PROFILE_FLAGS[@]}"} build
+docker compose --env-file .env -f "$COMPOSE_FILE" ${COMPOSE_PROFILE_FLAGS[@]+"${COMPOSE_PROFILE_FLAGS[@]}"} pull --ignore-buildable
 
 # Partition compose's image list into built (no slash) and pulled (registry refs).
 # Docker Desktop sometimes drops the name:tag binding when you pull
@@ -57,7 +72,7 @@ while IFS= read -r img; do
   else
     built+=("$img")
   fi
-done < <(docker compose --env-file .env -f docker/compose.yaml ${COMPOSE_PROFILE_FLAGS[@]+"${COMPOSE_PROFILE_FLAGS[@]}"} config --images)
+done < <(docker compose --env-file .env -f "$COMPOSE_FILE" ${COMPOSE_PROFILE_FLAGS[@]+"${COMPOSE_PROFILE_FLAGS[@]}"} config --images)
 
 echo "Built images:  ${built[*]:-<none>}"
 echo "Pulled images: ${pulled[*]:-<none>}"

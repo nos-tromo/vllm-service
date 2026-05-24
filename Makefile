@@ -1,14 +1,23 @@
 # Build-host helpers for the vLLM service stack.
 #
-# The service set is read from PROFILE in .env: leave it empty for the core
-# stack (chat, embed, rerank, ner); set PROFILE=media to also start audio +
-# translate. Override per-invocation with `make up PROFILE=media`.
+# Two deployment shapes:
+#
+# 1. Full stack (CUDA host) — chat, embed, rerank, ner, router; optional
+#    audio + translate via PROFILE=media. Lives in docker/compose.yaml.
+#    Targets: build, up, stop, bundle.
+#
+# 2. NER-only (Mac, CPU-only, ROCm host running Ollama for chat/embed) —
+#    just the GLiNER service on inference-net, no router, no GPU
+#    requirement. Lives in docker/compose.ner-only.yaml.
+#    Targets: build-ner-only, up-ner-only, stop-ner-only, bundle-ner-only.
 
 .DEFAULT_GOAL := help
 
-.PHONY: help network volumes build bundle up stop
+.PHONY: help network volumes \
+        build bundle up stop \
+        build-ner-only bundle-ner-only up-ner-only stop-ner-only
 
-# Service-set profile. Read from .env; empty = core stack.
+# Service-set profile for the full stack. Read from .env; empty = core stack.
 PROFILE ?= $(strip $(shell test -f .env && grep -E '^PROFILE=' .env | cut -d= -f2))
 
 # Versioned image tag.
@@ -21,22 +30,32 @@ VLLM_SERVICE_VERSION ?= $(shell \
       echo "$$(date +%Y-%m-%d)$${_s:+-$$_s}"; } )
 export VLLM_SERVICE_VERSION
 
-COMPOSE      := docker compose --env-file .env -f docker/compose.yaml -f docker/compose.override.yaml
+COMPOSE          := docker compose --env-file .env -f docker/compose.yaml -f docker/compose.override.yaml
+COMPOSE_NER_ONLY := docker compose --env-file .env -f docker/compose.ner-only.yaml -f docker/compose.ner-only.override.yaml
 # Empty PROFILE -> no flag (core stack); PROFILE=media -> --profile media.
 PROFILE_FLAG := $(if $(PROFILE),--profile $(PROFILE),)
 
 help:
-	@echo "vllm-service — build-host helpers. Active service set: $(if $(PROFILE),$(PROFILE),core)"
+	@echo "vllm-service — build-host helpers."
 	@echo
-	@echo "  make network   create the external inference-net"
-	@echo "  make volumes   create the huggingface-cache Docker volume"
-	@echo "  make build     build images for the active service set"
-	@echo "  make bundle    ship images as a versioned .tar.gz pair"
-	@echo "  make up        run the active service set (no rebuild)"
-	@echo "  make stop      stop the active service set"
+	@echo "Full stack (CUDA, active service set: $(if $(PROFILE),$(PROFILE),core)):"
+	@echo "  make network          create the external inference-net"
+	@echo "  make volumes          create the huggingface-cache Docker volume"
+	@echo "  make build            build images for the active service set"
+	@echo "  make bundle           ship images as a versioned .tar.gz pair"
+	@echo "  make up               run the active service set (no rebuild)"
+	@echo "  make stop             stop the active service set"
 	@echo
-	@echo "Leave PROFILE empty in .env for the core stack; set PROFILE=media"
-	@echo "to add audio + translate. Override: make up PROFILE=media"
+	@echo "  Leave PROFILE empty in .env for the core stack; set PROFILE=media"
+	@echo "  to add audio + translate. Override: make up PROFILE=media"
+	@echo
+	@echo "NER-only stack (CPU; pairs with Ollama on non-CUDA hosts):"
+	@echo "  make build-ner-only   build the gliner-cpu image"
+	@echo "  make bundle-ner-only  ship the gliner-cpu image as a versioned .tar.gz"
+	@echo "  make up-ner-only      run the GLiNER service on inference-net"
+	@echo "  make stop-ner-only    stop the GLiNER service"
+
+# --- Full stack ---------------------------------------------------------
 
 # Create the external Docker network (one-time per host; idempotent).
 network:
@@ -61,3 +80,21 @@ up:
 # Stop the active service set.
 stop:
 	$(COMPOSE) $(PROFILE_FLAG) stop
+
+# --- NER-only stack -----------------------------------------------------
+#
+# Uses the same external inference-net + huggingface-cache as the full
+# stack, so `make network` and `make volumes` remain the one-time
+# prerequisites.
+
+build-ner-only:
+	DOCKER_BUILDKIT=1 $(COMPOSE_NER_ONLY) build
+
+bundle-ner-only:
+	./scripts/bundle_images.sh ner-only
+
+up-ner-only:
+	$(COMPOSE_NER_ONLY) up --no-build
+
+stop-ner-only:
+	$(COMPOSE_NER_ONLY) stop

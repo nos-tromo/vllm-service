@@ -1,0 +1,43 @@
+ARG UV_IMAGE=ghcr.io/astral-sh/uv:python3.11-bookworm-slim@sha256:4f5d923c9dcea037f57bda425dd209f3ec643da2f0b74227f68d09dab0b3bb36
+
+FROM ${UV_IMAGE}
+
+# curl is needed for the docker-compose healthcheck against Ray Serve's
+# /-/healthz endpoint. build-essential covers transitive deps that build
+# from source on platforms without a prebuilt wheel.
+RUN apt-get update \
+    && apt-get install -y --no-install-recommends \
+        curl \
+        build-essential \
+    && rm -rf /var/lib/apt/lists/*
+
+# CPU-only PyTorch from the dedicated index. The default PyPI wheel for
+# linux/amd64 pulls a CUDA build; pinning to the cpu index avoids that.
+# linux/arm64 wheels at the same index are CPU-only by definition.
+# uv pip install --system writes to the image's Python (the uv-managed
+# standalone Python that ships with the astral/uv image); --compile-bytecode
+# pre-compiles .pyc files to match pip's behavior so first-run import isn't
+# slowed by JIT bytecode compilation.
+RUN uv pip install --system --no-cache --compile-bytecode \
+    --index-url https://download.pytorch.org/whl/cpu \
+    torch
+
+# Same pinned gliner.serve commit as Dockerfile.gliner.cuda so the request /
+# response shape matches the CUDA variant. No torchao — int8 quantization
+# is a GPU-only optimization that the CPU server does not use.
+RUN uv pip install --system --no-cache --compile-bytecode \
+    'gliner[serve] @ https://github.com/urchade/GLiNER/archive/910a1aefb300f17bb67d31d4a92890c8d78aaa4b.tar.gz'
+
+# Force Ray Serve's HTTP proxy to bind 0.0.0.0 instead of the default
+# 127.0.0.1. Upstream gliner.serve.server calls
+#   ray_serve.start(detached=True, http_options={"port": config.http_port})
+# with no host parameter, so the proxy is unreachable from sibling
+# containers on the Docker network even when /-/healthz reports ready.
+# There is no CLI flag or env var to override this upstream; we patch the
+# installed file at build time. The assert makes the build fail loudly if
+# upstream changes the line (so we notice when bumping the gliner pin).
+RUN python -c "import gliner.serve.server, pathlib; p=pathlib.Path(gliner.serve.server.__file__); t=p.read_text(); m='http_options={\"port\": config.http_port}'; assert m in t, f'gliner.serve.server bind-host patch target not found in {p}'; p.write_text(t.replace(m, 'http_options={\"host\": \"0.0.0.0\", \"port\": config.http_port}'))"
+
+ENV TOKENIZERS_PARALLELISM=true
+
+EXPOSE 8000
