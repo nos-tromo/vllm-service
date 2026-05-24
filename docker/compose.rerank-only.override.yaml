@@ -1,0 +1,15 @@
+### Dev override for the rerank-only stack — publishes the rerank service
+### on the host.
+###
+### NOT auto-loaded: it lives in docker/ and the Makefile passes explicit
+### -f flags. `make up-rerank-only` layers this on top of
+### docker/compose.rerank-only.yaml so the service is reachable at
+### localhost:${RERANK_HOST_PORT} for direct testing. The base
+### docker/compose.rerank-only.yaml is the production shape — sibling
+### containers reach the service as `rerank-cpu:8000` on inference-net
+### regardless of this override.
+
+services:
+  rerank-cpu:
+    ports:
+      - "${RERANK_HOST_PORT:-8001}:8000"

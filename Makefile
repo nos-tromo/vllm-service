@@ -10,12 +10,20 @@
 #    just the GLiNER service on inference-net, no router, no GPU
 #    requirement. Lives in docker/compose.ner-only.yaml.
 #    Targets: build-ner-only, up-ner-only, stop-ner-only, bundle-ner-only.
+#
+# 3. Rerank-only (same hosts as NER-only) — a single FastAPI/FlagEmbedding
+#    rerank container on inference-net, no router, no GPU requirement.
+#    Lives in docker/compose.rerank-only.yaml. Pairs with `ner-only` so a
+#    CPU host can offer both /gliner and /rerank to docint/chorus.
+#    Targets: build-rerank-only, up-rerank-only, stop-rerank-only,
+#             bundle-rerank-only.
 
 .DEFAULT_GOAL := help
 
 .PHONY: help network volumes \
         build bundle up stop \
-        build-ner-only bundle-ner-only up-ner-only stop-ner-only
+        build-ner-only bundle-ner-only up-ner-only stop-ner-only \
+        build-rerank-only bundle-rerank-only up-rerank-only stop-rerank-only
 
 # Service-set profile for the full stack. Read from .env; empty = core stack.
 PROFILE ?= $(strip $(shell test -f .env && grep -E '^PROFILE=' .env | cut -d= -f2))
@@ -30,8 +38,9 @@ VLLM_SERVICE_VERSION ?= $(shell \
       echo "$$(date +%Y-%m-%d)$${_s:+-$$_s}"; } )
 export VLLM_SERVICE_VERSION
 
-COMPOSE          := docker compose --env-file .env -f docker/compose.yaml -f docker/compose.override.yaml
-COMPOSE_NER_ONLY := docker compose --env-file .env -f docker/compose.ner-only.yaml -f docker/compose.ner-only.override.yaml
+COMPOSE             := docker compose --env-file .env -f docker/compose.yaml -f docker/compose.override.yaml
+COMPOSE_NER_ONLY    := docker compose --env-file .env -f docker/compose.ner-only.yaml -f docker/compose.ner-only.override.yaml
+COMPOSE_RERANK_ONLY := docker compose --env-file .env -f docker/compose.rerank-only.yaml -f docker/compose.rerank-only.override.yaml
 # Empty PROFILE -> no flag (core stack); PROFILE=media -> --profile media.
 PROFILE_FLAG := $(if $(PROFILE),--profile $(PROFILE),)
 
@@ -54,6 +63,12 @@ help:
 	@echo "  make bundle-ner-only  ship the gliner-cpu image as a versioned .tar.gz"
 	@echo "  make up-ner-only      run the GLiNER service on inference-net"
 	@echo "  make stop-ner-only    stop the GLiNER service"
+	@echo
+	@echo "Rerank-only stack (CPU; pairs with Ollama on non-CUDA hosts):"
+	@echo "  make build-rerank-only  build the rerank-cpu image"
+	@echo "  make bundle-rerank-only ship the rerank-cpu image as a versioned .tar.gz"
+	@echo "  make up-rerank-only     run the rerank service on inference-net"
+	@echo "  make stop-rerank-only   stop the rerank service"
 
 # --- Full stack ---------------------------------------------------------
 
@@ -98,3 +113,21 @@ up-ner-only:
 
 stop-ner-only:
 	$(COMPOSE_NER_ONLY) stop
+
+# --- Rerank-only stack --------------------------------------------------
+#
+# Uses the same external inference-net + huggingface-cache as the full
+# stack, so `make network` and `make volumes` remain the one-time
+# prerequisites.
+
+build-rerank-only:
+	DOCKER_BUILDKIT=1 $(COMPOSE_RERANK_ONLY) build
+
+bundle-rerank-only:
+	./scripts/bundle_images.sh rerank-only
+
+up-rerank-only:
+	$(COMPOSE_RERANK_ONLY) up --no-build
+
+stop-rerank-only:
+	$(COMPOSE_RERANK_ONLY) stop
