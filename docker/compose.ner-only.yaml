@@ -40,7 +40,9 @@ services:
         --max-batch-size "$${NER_MAX_BATCH_SIZE:-8}"
         --batch-wait-timeout-ms "$${NER_BATCH_WAIT_TIMEOUT_MS:-50}"
         --target-memory-fraction "$${NER_TARGET_MEMORY_FRACTION:-0.5}"
-        --num-replicas "$${NER_NUM_REPLICAS:-1}";
+        --num-replicas "$${NER_NUM_REPLICAS:-1}"
+        --num-gpus-per-replica "$${NER_NUM_GPUS_PER_REPLICA:-0}"
+        --num-cpus-per-replica "$${NER_NUM_CPUS_PER_REPLICA:-1}";
         if [ "$${NER_ENABLE_FLASHDEBERTA:-false}" = "true" ]; then
           set -- "$@" --enable-flashdeberta;
         fi;
@@ -55,6 +57,12 @@ services:
       <<: *no-proxy-env
       HF_HUB_OFFLINE: ${HF_HUB_OFFLINE:-1}
       TRANSFORMERS_OFFLINE: ${TRANSFORMERS_OFFLINE:-1}
+    # Ray's object store wants ≥30% of host RAM in /dev/shm. Docker's default
+    # is 64 MB, which triggers a "will harm performance" warning and degrades
+    # batched throughput. The full-stack `ner` service avoids this with
+    # `ipc: host`, but that's a Linux-only escape hatch and isn't safe to
+    # use unconditionally on developer laptops, so we bump shm_size instead.
+    shm_size: "${NER_SHM_SIZE:-3gb}"
     volumes:
       - huggingface-cache:/root/.cache/huggingface/hub
     healthcheck:
