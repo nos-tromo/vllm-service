@@ -1,0 +1,29 @@
+ARG PYTHON_IMAGE=python:3.11-slim-bookworm
+
+FROM ${PYTHON_IMAGE}
+
+# curl is needed for the docker-compose healthcheck against Ray Serve's
+# /-/healthz endpoint. build-essential covers transitive deps that build
+# from source on platforms without a prebuilt wheel.
+RUN apt-get update \
+    && apt-get install -y --no-install-recommends \
+        curl \
+        build-essential \
+    && rm -rf /var/lib/apt/lists/*
+
+# CPU-only PyTorch from the dedicated index. The default PyPI wheel for
+# linux/amd64 pulls a CUDA build; pinning to the cpu index avoids that.
+# linux/arm64 wheels at the same index are CPU-only by definition.
+RUN pip install --no-cache-dir --break-system-packages \
+    --index-url https://download.pytorch.org/whl/cpu \
+    torch
+
+# Same pinned gliner.serve commit as Dockerfile.gliner so the request /
+# response shape matches the CUDA variant. No torchao — int8 quantization
+# is a GPU-only optimization that the CPU server does not use.
+RUN pip install --no-cache-dir --break-system-packages \
+    'gliner[serve] @ https://github.com/urchade/GLiNER/archive/910a1aefb300f17bb67d31d4a92890c8d78aaa4b.tar.gz'
+
+ENV TOKENIZERS_PARALLELISM=true
+
+EXPOSE 8000

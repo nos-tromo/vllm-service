@@ -1,0 +1,79 @@
+name: vllm-service-ner-only
+
+# Standalone GLiNER NER stack. Not a profile of compose.yaml — a separate
+# compose project for hosts that cannot run the full CUDA stack (macOS,
+# CPU-only Linux, AMD/ROCm boxes running Ollama for chat/embed).
+#
+# Topology:
+#   - one container, `gliner-ner`, on the external `inference-net`
+#   - no LiteLLM router, no vLLM backends, no GPU reservation
+#   - the existing pass-through URL `http://vllm-router:4000/gliner` is
+#     unavailable in this shape; consumers point at `http://gliner-ner:8000/gliner`
+#
+# Auth: the container has no built-in Bearer-token gate (Ray Serve has no
+# auth by default). `inference-net` is a private Docker network shared only
+# between trusted compose projects, mirroring how `data-net` exposes Qdrant.
+
+x-no-proxy-env: &no-proxy-env
+  NO_PROXY: "gliner-ner,localhost,127.0.0.1,172.16.0.0/12,10.0.0.0/8${EXTRA_NO_PROXY:-}"
+  no_proxy: "gliner-ner,localhost,127.0.0.1,172.16.0.0/12,10.0.0.0/8${EXTRA_NO_PROXY:-}"
+
+x-env-file: &env-file
+  - path: ../.env
+    required: false
+
+services:
+  gliner-ner:
+    image: vllm-service-gliner-cpu:${VLLM_SERVICE_VERSION:-latest}
+    build:
+      context: ..
+      dockerfile: docker/Dockerfile.gliner.cpu
+    env_file: *env-file
+    entrypoint: ["/bin/sh", "-lc"]
+    command:
+      - >-
+        set -- python -m gliner.serve
+        --model "$${NER_MODEL:-gliner-community/gliner_medium-v2.5}"
+        --device "$${NER_DEVICE:-cpu}"
+        --dtype "$${NER_DTYPE:-float32}"
+        --port 8000
+        --max-batch-size "$${NER_MAX_BATCH_SIZE:-8}"
+        --batch-wait-timeout-ms "$${NER_BATCH_WAIT_TIMEOUT_MS:-50}"
+        --target-memory-fraction "$${NER_TARGET_MEMORY_FRACTION:-0.5}"
+        --num-replicas "$${NER_NUM_REPLICAS:-1}";
+        if [ "$${NER_ENABLE_FLASHDEBERTA:-false}" = "true" ]; then
+          set -- "$@" --enable-flashdeberta;
+        fi;
+        if [ "$${NER_ENABLE_SEQUENCE_PACKING:-false}" = "true" ]; then
+          set -- "$@" --enable-sequence-packing;
+        fi;
+        if [ "$${NER_DISABLE_COMPILE:-true}" = "true" ]; then
+          set -- "$@" --no-compile;
+        fi;
+        exec "$@"
+    environment:
+      <<: *no-proxy-env
+      HF_HUB_OFFLINE: ${HF_HUB_OFFLINE:-1}
+      TRANSFORMERS_OFFLINE: ${TRANSFORMERS_OFFLINE:-1}
+    volumes:
+      - huggingface-cache:/root/.cache/huggingface/hub
+    healthcheck:
+      test: ["CMD-SHELL", "curl -sf http://localhost:8000/-/healthz || exit 1"]
+      interval: 10s
+      timeout: 5s
+      retries: 60
+      start_period: 180s
+    networks:
+      inference-net:
+        aliases:
+          - gliner-ner
+    restart: unless-stopped
+
+volumes:
+  huggingface-cache:
+    external: true
+
+networks:
+  inference-net:
+    external: true
+    name: ${INFERENCE_NETWORK:-inference-net}

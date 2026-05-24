@@ -7,9 +7,33 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 A pure infrastructure repo: a Docker Compose stack that fronts several vLLM
 backends with a single LiteLLM Proxy router. There is **no application source
 code** — everything is configuration. The Docker assets live under `docker/`
-(`docker/compose.yaml`, `docker/compose.override.yaml`, `docker/Dockerfile.vllm`,
-`docker/Dockerfile.gliner`, `docker/litellm.config.yaml`) plus `.env` and
+(`docker/compose.yaml`, `docker/compose.override.yaml`, `docker/compose.ner-only.yaml`,
+`docker/Dockerfile.vllm`, `docker/Dockerfile.gliner`,
+`docker/Dockerfile.gliner.cpu`, `docker/litellm.config.yaml`) plus `.env` and
 `.dockerignore` at the repo root.
+
+## Deployment shapes
+
+Two independent compose projects, picked per host:
+
+- **Full stack** (`docker/compose.yaml`, CUDA-required) — chat, embed, rerank,
+  ner, router; optional audio + translate via `PROFILE=media`. The original
+  shape; reached as `http://vllm-router:4000/...` on `inference-net`.
+  GLiNER is routed via the router's `/gliner` pass-through.
+- **NER-only** (`docker/compose.ner-only.yaml`, CPU OK) — a single
+  `gliner-ner` container on `inference-net`, no router, no GPU requirement.
+  Intended for hosts that run Ollama (or another non-vLLM provider) for
+  chat/embeddings but still want NER out of the consuming app. Reached
+  directly as `http://gliner-ner:8000/gliner` on `inference-net`; there is
+  no Bearer auth (trust `inference-net` the way `data-net` is trusted for
+  Qdrant). Uses the CPU-only `Dockerfile.gliner.cpu` (non-CUDA PyTorch
+  base, multi-arch) and defaults `NER_MODEL` to `gliner_medium-v2.5`.
+
+The two shapes are **not profiles of one compose file** — they have
+different images, different networks, and different topologies. Pick one
+per host. Both reuse the same external `inference-net` network and
+`huggingface-cache` volume, so the one-time `make network` / `make volumes`
+prerequisites apply to both.
 
 ## Common commands
 
@@ -38,6 +62,15 @@ make up PROFILE=media  # add translate + audio
 `make up` layers `docker/compose.override.yaml` so the router is published on
 the host for dev. The base `docker/compose.yaml` is the production shape and
 publishes no host ports.
+
+Or, for the NER-only shape (no CUDA, no router — pairs with Ollama):
+
+```bash
+make build-ner-only    # builds vllm-service-gliner-cpu
+make up-ner-only       # one gliner-ner container on inference-net
+make stop-ner-only
+make bundle-ner-only   # versioned .tar.gz of the gliner-cpu image
+```
 
 Other useful operations use the raw compose form, pointed at the compose file
 (append `--profile media` when the media service set is active):
