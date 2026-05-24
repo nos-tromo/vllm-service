@@ -170,11 +170,14 @@ per-keystroke use.
 same audience as NER-only — hosts without an NVIDIA GPU that still want
 to offer rerank to the consuming app. It runs one container,
 `rerank-cpu`, built from `Dockerfile.rerank.cpu` (uv-managed Python 3.11,
-CPU torch, `FlagEmbedding`). No LiteLLM router, no GPU reservation. The
+CPU torch, `transformers`). No LiteLLM router, no GPU reservation. The
 container ships a tiny FastAPI server (`docker/rerank_server.py`) that
-wraps `FlagReranker` and exposes the **same Jina-shape `POST /rerank`
-contract** as the full-stack vLLM `rerank` service, so consumers can
-target either backend by changing only the base URL.
+drives a Hugging Face cross-encoder directly (tokenize → forward →
+sigmoid — the same forward pass FlagEmbedding does internally for
+bge-reranker-style models, without FlagEmbedding's heavyweight
+`ir-datasets`/`zlib-state` dep tree). Exposes the **same Jina-shape
+`POST /rerank` contract** as the full-stack vLLM `rerank` service, so
+consumers can target either backend by changing only the base URL.
 
 Bring it up:
 

@@ -11,10 +11,11 @@ backends with a single LiteLLM Proxy router. The Docker assets live under
 `docker/Dockerfile.vllm`, `docker/Dockerfile.gliner.cuda`,
 `docker/Dockerfile.gliner.cpu`, `docker/Dockerfile.rerank.cpu`,
 `docker/litellm.config.yaml`) plus `.env` and `.dockerignore` at the repo
-root. The only Python source is `docker/rerank_server.py` — a ~90-line
-FastAPI wrapper around `FlagReranker` that the rerank-only shape ships
-because there is no off-the-shelf CPU server that speaks the Jina-shape
-`/rerank` contract the full stack exposes.
+root. The only Python source is `docker/rerank_server.py` — a small
+FastAPI wrapper around a Hugging Face sequence-classification cross-
+encoder that the rerank-only shape ships because there is no off-the-
+shelf CPU server that speaks the Jina-shape `/rerank` contract the
+full stack exposes.
 
 ## Deployment shapes
 
@@ -41,8 +42,9 @@ Three independent compose projects, picked per host:
   relevance_score}]}` contract as the full-stack vLLM `rerank` service,
   so consumers (docint's `VLLMRerankPostprocessor`) target either
   backend by changing the base URL alone. Uses `Dockerfile.rerank.cpu`
-  (uv-managed Python 3.11, CPU torch, FlagEmbedding) and ships a tiny
-  FastAPI server at `docker/rerank_server.py`.
+  (uv-managed Python 3.11, CPU torch, transformers) and ships a tiny
+  FastAPI server at `docker/rerank_server.py` that drives the cross-
+  encoder directly (tokenize → forward → sigmoid).
 
 The shapes are **not profiles of one compose file** — they have different
 images, different topologies, and (rerank-only and ner-only) no router. Pick
@@ -236,8 +238,14 @@ Clients hit `/gliner` directly with a GLiNER-native body and never use the
 ### Rerank-only shape (CPU)
 
 The `rerank-only` compose project runs `docker/rerank_server.py` — a small
-FastAPI app that wraps `FlagEmbedding.FlagReranker` and exposes the same
-Jina-shape `POST /rerank` contract as the full-stack vLLM `rerank` service:
+FastAPI app that loads a Hugging Face cross-encoder
+(`AutoModelForSequenceClassification`), tokenizes each (query, document)
+pair, takes the seq-classification logit, and sigmoid-normalizes — the
+same forward pass FlagEmbedding does internally for bge-reranker-style
+models, just without the heavyweight FlagEmbedding dep tree
+(`ir-datasets` → `zlib-state`, fails to build on aarch64). Exposes the
+same Jina-shape `POST /rerank` contract as the full-stack vLLM `rerank`
+service:
 
 ```
 POST /rerank
