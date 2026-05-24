@@ -31,7 +31,7 @@ VLLM_SERVICE_VERSION ?= $(shell \
 export VLLM_SERVICE_VERSION
 
 COMPOSE          := docker compose --env-file .env -f docker/compose.yaml -f docker/compose.override.yaml
-COMPOSE_NER_ONLY := docker compose --env-file .env -f docker/compose.ner-only.yaml
+COMPOSE_NER_ONLY := docker compose --env-file .env -f docker/compose.ner-only.yaml -f docker/compose.ner-only.override.yaml
 # Empty PROFILE -> no flag (core stack); PROFILE=media -> --profile media.
 PROFILE_FLAG := $(if $(PROFILE),--profile $(PROFILE),)
 

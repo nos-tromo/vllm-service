@@ -1,0 +1,14 @@
+### Dev override for the ner-only stack — publishes GLiNER on the host.
+###
+### NOT auto-loaded: it lives in docker/ and the Makefile passes explicit -f
+### flags. `make up-ner-only` layers this on top of
+### docker/compose.ner-only.yaml so the service is reachable at
+### localhost:${NER_HOST_PORT} for direct testing. The base
+### docker/compose.ner-only.yaml is the production shape — sibling
+### containers reach the service as `gliner-ner:8000` on inference-net
+### regardless of this override.
+
+services:
+  gliner-ner:
+    ports:
+      - "${NER_HOST_PORT:-8000}:8000"
