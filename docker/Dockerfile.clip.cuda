@@ -1,0 +1,32 @@
+ARG PYTORCH_IMAGE=docker.io/pytorch/pytorch:2.11.0-cuda12.8-cudnn9-runtime@sha256:eee11b3b3872a8c838e35ef48f08b2d5def2080902c7f666831310ca1a0ef2be
+
+FROM ${PYTORCH_IMAGE}
+
+# curl for the docker-compose /health probe; the slim pytorch image
+# does not ship with it.
+RUN apt-get update \
+    && apt-get install -y --no-install-recommends curl \
+    && rm -rf /var/lib/apt/lists/*
+
+# Pillow + transformers ride on top of the cu128 torch baked into the
+# pytorch base image. --break-system-packages required on PyTorch 2.11+
+# (Debian PEP 668).
+# transformers<5 because transformers 5.x has a CLIP regression:
+# CLIPModel.get_text_features / get_image_features return the raw
+# encoder BaseModelOutputWithPooling instead of the projected
+# text/image embedding. The same patch applies to Dockerfile.clip.cpu.
+RUN pip install --no-cache-dir --break-system-packages \
+    'fastapi>=0.115.0' \
+    'uvicorn[standard]>=0.32.0' \
+    'python-multipart>=0.0.9' \
+    'pydantic>=2.0' \
+    'transformers>=4.44.2,<5.0' \
+    'pillow>=11.0.0,<12.0.0'
+
+COPY docker/clip_server.py /app/clip_server.py
+
+ENV TOKENIZERS_PARALLELISM=true
+
+EXPOSE 8000
+
+CMD ["uvicorn", "--app-dir", "/app", "clip_server:app", "--host", "0.0.0.0", "--port", "8000"]

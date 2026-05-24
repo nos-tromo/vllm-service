@@ -27,13 +27,20 @@ case "$PROFILE_ARG" in
     COMPOSE_FILE="docker/compose.ner-only.yaml"
     ;;
   "rerank-only")
-    # Separate compose project — single FastAPI/FlagEmbedding container
+    # Separate compose project — single FastAPI/transformers container
     # on inference-net, no router, no GPU. Same topology shape as ner-only.
     PROFILE_LABEL="rerank-only"
     COMPOSE_FILE="docker/compose.rerank-only.yaml"
     ;;
+  "clip-only")
+    # Separate compose project — single FastAPI/transformers CLIP
+    # image+text container on inference-net, no router, no GPU. Same
+    # topology shape as ner-only/rerank-only.
+    PROFILE_LABEL="clip-only"
+    COMPOSE_FILE="docker/compose.clip-only.yaml"
+    ;;
   *)
-    echo "Usage: $0 [media|ner-only|rerank-only]" >&2
+    echo "Usage: $0 [media|ner-only|rerank-only|clip-only]" >&2
     exit 2
     ;;
 esac

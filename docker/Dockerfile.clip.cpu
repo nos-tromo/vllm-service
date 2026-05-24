@@ -1,0 +1,39 @@
+ARG UV_IMAGE=ghcr.io/astral-sh/uv:python3.11-bookworm-slim@sha256:4f5d923c9dcea037f57bda425dd209f3ec643da2f0b74227f68d09dab0b3bb36
+
+FROM ${UV_IMAGE}
+
+# curl for the docker-compose /health probe; build-essential for any
+# wheel that needs to compile from source.
+RUN apt-get update \
+    && apt-get install -y --no-install-recommends \
+        curl \
+        build-essential \
+    && rm -rf /var/lib/apt/lists/*
+
+# CPU-only PyTorch from the dedicated index — same approach as
+# Dockerfile.gliner.cpu and Dockerfile.rerank.cpu.
+RUN uv pip install --system --no-cache --compile-bytecode \
+    --index-url https://download.pytorch.org/whl/cpu \
+    torch
+
+# CLIP inference uses transformers + Pillow directly, mirroring the
+# legacy in-process implementation that docint used to ship.
+# transformers<5 because transformers 5.x has a CLIP regression:
+# CLIPModel.get_text_features / get_image_features return the raw
+# encoder BaseModelOutputWithPooling instead of the projected
+# text/image embedding. The same patch applies to Dockerfile.clip.cuda.
+RUN uv pip install --system --no-cache --compile-bytecode \
+    'fastapi>=0.115.0' \
+    'uvicorn[standard]>=0.32.0' \
+    'python-multipart>=0.0.9' \
+    'pydantic>=2.0' \
+    'transformers>=4.44.2,<5.0' \
+    'pillow>=11.0.0,<12.0.0'
+
+COPY docker/clip_server.py /app/clip_server.py
+
+ENV TOKENIZERS_PARALLELISM=true
+
+EXPOSE 8000
+
+CMD ["uvicorn", "--app-dir", "/app", "clip_server:app", "--host", "0.0.0.0", "--port", "8000"]

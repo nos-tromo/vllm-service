@@ -1,8 +1,8 @@
 name: vllm-service
 
 x-no-proxy-env: &no-proxy-env
-  NO_PROXY: "router,chat,embed,rerank,ner,audio,translate,localhost,127.0.0.1,172.16.0.0/12,10.0.0.0/8${EXTRA_NO_PROXY:-}"
-  no_proxy: "router,chat,embed,rerank,ner,audio,translate,localhost,127.0.0.1,172.16.0.0/12,10.0.0.0/8${EXTRA_NO_PROXY:-}"
+  NO_PROXY: "router,chat,embed,rerank,ner,clip,audio,translate,localhost,127.0.0.1,172.16.0.0/12,10.0.0.0/8${EXTRA_NO_PROXY:-}"
+  no_proxy: "router,chat,embed,rerank,ner,clip,audio,translate,localhost,127.0.0.1,172.16.0.0/12,10.0.0.0/8${EXTRA_NO_PROXY:-}"
 
 x-env-file: &env-file
   - path: ../.env
@@ -50,6 +50,8 @@ services:
       rerank:
         condition: service_healthy
       ner:
+        condition: service_healthy
+      clip:
         condition: service_healthy
       audio:
         condition: service_healthy
@@ -246,6 +248,48 @@ services:
     networks:
       - vllm-net
 
+  clip:
+    # CLIP image+text embedding tower. Same image/text encoder docint
+    # used to load in-process (openai/clip-vit-base-patch32 by default).
+    # FastAPI wrapper at docker/clip_server.py exposes /clip/embed_image
+    # (multipart or base64 JSON), /clip/embed_text, and /clip/dimension.
+    # Routed by LiteLLM as a pass-through; clients POST to
+    #   http://<router>:${ROUTER_HOST_PORT}/clip/embed_{image,text}
+    image: vllm-service-clip:${VLLM_SERVICE_VERSION:-latest}
+    build:
+      context: ..
+      dockerfile: docker/Dockerfile.clip.cuda
+    gpus: all
+    env_file: *env-file
+    ipc: host
+    depends_on:
+      ner:
+        condition: service_healthy
+    entrypoint: ["/bin/sh", "-lc"]
+    command:
+      - >-
+        export CUDA_VISIBLE_DEVICES="$${CLIP_CUDA_VISIBLE_DEVICES:-0}";
+        exec uvicorn --app-dir /app clip_server:app
+        --host 0.0.0.0
+        --port 8000
+    environment:
+      <<: *no-proxy-env
+      NVIDIA_VISIBLE_DEVICES: all
+      HF_HUB_OFFLINE: ${HF_HUB_OFFLINE:-1}
+      TRANSFORMERS_OFFLINE: ${TRANSFORMERS_OFFLINE:-1}
+      CLIP_MODEL: ${CLIP_MODEL:-openai/clip-vit-base-patch32}
+      CLIP_DEVICE: ${CLIP_DEVICE:-cuda}
+    volumes: *vllm-volumes
+    healthcheck:
+      test: ["CMD-SHELL", "curl -sf http://localhost:8000/health || exit 1"]
+      interval: 10s
+      timeout: 5s
+      retries: 60
+      start_period: 120s
+    deploy: *cuda-deploy
+    networks:
+      - vllm-net
+
   audio:
     image: vllm-service-audio:${VLLM_SERVICE_VERSION:-latest}
     build:
@@ -256,7 +300,7 @@ services:
     env_file: *env-file
     ipc: host
     depends_on:
-      ner:
+      clip:
         condition: service_healthy
     entrypoint: ["/bin/sh", "-lc"]
     command:

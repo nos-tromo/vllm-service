@@ -8,18 +8,19 @@ A pure infrastructure repo: a Docker Compose stack that fronts several vLLM
 backends with a single LiteLLM Proxy router. The Docker assets live under
 `docker/` (`docker/compose.yaml`, `docker/compose.override.yaml`,
 `docker/compose.ner-only.yaml`, `docker/compose.rerank-only.yaml`,
-`docker/Dockerfile.vllm`, `docker/Dockerfile.gliner.cuda`,
-`docker/Dockerfile.gliner.cpu`, `docker/Dockerfile.rerank.cpu`,
-`docker/litellm.config.yaml`) plus `.env` and `.dockerignore` at the repo
-root. The only Python source is `docker/rerank_server.py` — a small
-FastAPI wrapper around a Hugging Face sequence-classification cross-
-encoder that the rerank-only shape ships because there is no off-the-
-shelf CPU server that speaks the Jina-shape `/rerank` contract the
-full stack exposes.
+`docker/compose.clip-only.yaml`, `docker/Dockerfile.vllm`,
+`docker/Dockerfile.gliner.cuda`, `docker/Dockerfile.gliner.cpu`,
+`docker/Dockerfile.rerank.cpu`, `docker/Dockerfile.clip.cuda`,
+`docker/Dockerfile.clip.cpu`, `docker/litellm.config.yaml`) plus `.env`
+and `.dockerignore` at the repo root. The only Python sources are
+`docker/rerank_server.py` and `docker/clip_server.py` — small FastAPI
+wrappers around Hugging Face models that ship because there is no
+off-the-shelf CPU server that speaks the Jina-shape `/rerank` or
+`/clip` contracts the full stack exposes.
 
 ## Deployment shapes
 
-Three independent compose projects, picked per host:
+Four independent compose projects, picked per host:
 
 - **Full stack** (`docker/compose.yaml`, CUDA-required) — chat, embed, rerank,
   ner, router; optional audio + translate via `PROFILE=media`. The original
@@ -45,14 +46,25 @@ Three independent compose projects, picked per host:
   (uv-managed Python 3.11, CPU torch, transformers) and ships a tiny
   FastAPI server at `docker/rerank_server.py` that drives the cross-
   encoder directly (tokenize → forward → sigmoid).
+- **CLIP-only** (`docker/compose.clip-only.yaml`, CPU OK) — a single
+  `clip-embed` container on `inference-net`, no router, no GPU. Same
+  audience as NER-only / Rerank-only; co-deployable so a non-CUDA host
+  can offer `/gliner`, `/rerank`, and `/clip/embed_{image,text}` at
+  once. Reached as `http://clip-embed:8000/clip/*`. Speaks the same
+  contract the full-stack `clip` service exposes (also a FastAPI app
+  on the same Python file), so docint's image-ingestion path
+  (`docint/utils/clip_client.py`) targets either backend by changing
+  the base URL alone. Uses `Dockerfile.clip.cpu` (uv-managed
+  Python 3.11, CPU torch, transformers, Pillow) and ships
+  `docker/clip_server.py`.
 
 The shapes are **not profiles of one compose file** — they have different
-images, different topologies, and (rerank-only and ner-only) no router. Pick
-one per host. They reuse the same external `inference-net` network and
-`huggingface-cache` volume, so the one-time `make network` / `make volumes`
-prerequisites apply to all of them. The `ner-only` and `rerank-only` shapes
-can coexist on a single host because they target different network aliases
-and host ports.
+images, different topologies, and (ner-only, rerank-only, clip-only) no
+router. Pick one per host. They reuse the same external `inference-net`
+network and `huggingface-cache` volume, so the one-time
+`make network` / `make volumes` prerequisites apply to all of them. The
+three CPU-only shapes can coexist on a single host because they target
+different network aliases and host ports.
 
 ## Common commands
 
@@ -101,6 +113,16 @@ make stop-rerank-only
 make bundle-rerank-only   # versioned .tar.gz of the rerank-cpu image
 ```
 
+Or, for the CLIP-only shape (no CUDA, no router — pairs with Ollama,
+typically co-deployed with NER-only and Rerank-only):
+
+```bash
+make build-clip-only      # builds vllm-service-clip-cpu
+make up-clip-only         # one clip-embed container on inference-net
+make stop-clip-only
+make bundle-clip-only     # versioned .tar.gz of the clip-cpu image
+```
+
 Other useful operations use the raw compose form, pointed at the compose file
 (append `--profile media` when the media service set is active):
 
@@ -120,10 +142,10 @@ make bundle              # build + ship the active service set as versioned .tar
 make bundle PROFILE=media  # build + ship core + media as versioned .tar.gz pair
 ```
 
-There is no test suite or linter. The one Python file
-(`docker/rerank_server.py`) is small enough to verify by curl against the
-running `rerank-only` container — see the Architecture / Rerank-only
-section below.
+There is no test suite or linter. The Python files
+(`docker/rerank_server.py`, `docker/clip_server.py`) are small enough to
+verify by curl against the running standalone containers — see the
+Architecture / Rerank-only and Architecture / CLIP-only sections below.
 
 ## Architecture
 
@@ -270,6 +292,53 @@ Smoke-test:
 curl -fsS -X POST http://localhost:${RERANK_HOST_PORT:-8001}/rerank \
   -H 'Content-Type: application/json' \
   -d '{"query": "what is RAG", "documents": ["retrieval augmented generation", "lunch menu"], "top_n": 2}'
+```
+
+### CLIP-only shape (CPU)
+
+The `clip-only` compose project runs `docker/clip_server.py` — a small
+FastAPI app that loads a Hugging Face CLIP model (`CLIPModel` +
+`AutoProcessor`), runs the image or text tower, and L2-normalizes the
+output. Same forward pass the legacy in-process
+`CLIPImageEmbeddingBackend` ran in docint, so existing `_images` Qdrant
+collections stay compatible as long as `CLIP_MODEL` matches the
+ingestion-time model. Endpoints:
+
+```
+POST /clip/embed_image      # multipart `file=<bytes>` OR JSON {"image_b64": ...}
+  -> {"embedding": [float, ...], "dimension": int}
+
+POST /clip/embed_text       # JSON {"text": "..."}
+  -> {"embedding": [float, ...], "dimension": int}
+
+GET  /clip/dimension        # one-shot fetch for collection compat checks
+  -> {"dimension": int}
+```
+
+Model identity is fixed at container startup via `CLIP_MODEL` (default
+`openai/clip-vit-base-patch32`). The full-stack `clip` service runs
+the same file on the same FastAPI surface, and the LiteLLM router
+exposes `/clip/embed_image` (multipart), `/clip/embed_text`, and
+`/clip/dimension` as pass-throughs.
+
+`GET /health` returns
+`{"status": "ok", "model": "...", "dimension": N, "device": "..."}`
+and is the healthcheck target.
+
+Smoke-test:
+
+```bash
+# text tower
+curl -fsS -X POST http://localhost:${CLIP_HOST_PORT:-8002}/clip/embed_text \
+  -H 'Content-Type: application/json' \
+  -d '{"text": "a photo of a cat"}'
+
+# image tower (multipart)
+curl -fsS -X POST http://localhost:${CLIP_HOST_PORT:-8002}/clip/embed_image \
+  -F 'file=@/path/to/img.jpg'
+
+# dimension probe
+curl -fsS http://localhost:${CLIP_HOST_PORT:-8002}/clip/dimension
 ```
 
 ### TranslateGemma quirk
