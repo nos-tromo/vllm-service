@@ -7,7 +7,7 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 A pure infrastructure repo: a Docker Compose stack that fronts several vLLM
 backends with a single LiteLLM Proxy router. The Docker assets live under
 `docker/` (`docker/compose.yaml`, `docker/compose.override.yaml`,
-`docker/compose.ner-only.yaml`, `docker/compose.rerank-only.yaml`,
+`docker/compose.gliner-only.yaml`, `docker/compose.rerank-only.yaml`,
 `docker/compose.clip-only.yaml`, `docker/Dockerfile.vllm`,
 `docker/Dockerfile.gliner.cuda`, `docker/Dockerfile.gliner.cpu`,
 `docker/Dockerfile.rerank.cpu`, `docker/Dockerfile.clip.cuda`,
@@ -26,7 +26,7 @@ Four independent compose projects, picked per host:
   ner, router; optional audio + translate via `PROFILE=media`. The original
   shape; reached as `http://vllm-router:4000/...` on `inference-net`.
   GLiNER is routed via the router's `/gliner` pass-through.
-- **NER-only** (`docker/compose.ner-only.yaml`, CPU OK) — a single
+- **NER-only** (`docker/compose.gliner-only.yaml`, CPU OK) — a single
   `gliner-ner` container on `inference-net`, no router, no GPU requirement.
   Intended for hosts that run Ollama (or another non-vLLM provider) for
   chat/embeddings but still want NER out of the consuming app. Reached
@@ -59,7 +59,7 @@ Four independent compose projects, picked per host:
   `docker/clip_server.py`.
 
 The shapes are **not profiles of one compose file** — they have different
-images, different topologies, and (ner-only, rerank-only, clip-only) no
+images, different topologies, and (gliner-only, rerank-only, clip-only) no
 router. Pick one per host. They reuse the same external `inference-net`
 network and `huggingface-cache` volume, so the one-time
 `make network` / `make volumes` prerequisites apply to all of them. The
@@ -97,10 +97,10 @@ publishes no host ports.
 Or, for the NER-only shape (no CUDA, no router — pairs with Ollama):
 
 ```bash
-make build-ner-only    # builds vllm-service-gliner-cpu
-make up-ner-only       # one gliner-ner container on inference-net
-make stop-ner-only
-make bundle-ner-only   # versioned .tar.gz of the gliner-cpu image
+make build-gliner-only    # builds vllm-service-gliner-cpu
+make up-gliner-only       # one gliner-ner container on inference-net
+make stop-gliner-only
+make bundle-gliner-only   # versioned .tar.gz of the gliner-cpu image
 ```
 
 Or, for the Rerank-only shape (no CUDA, no router — pairs with Ollama,

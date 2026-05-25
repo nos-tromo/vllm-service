@@ -8,12 +8,12 @@
 #
 # 2. NER-only (Mac, CPU-only, ROCm host running Ollama for chat/embed) —
 #    just the GLiNER service on inference-net, no router, no GPU
-#    requirement. Lives in docker/compose.ner-only.yaml.
-#    Targets: build-ner-only, up-ner-only, stop-ner-only, bundle-ner-only.
+#    requirement. Lives in docker/compose.gliner-only.yaml.
+#    Targets: build-gliner-only, up-gliner-only, stop-gliner-only, bundle-gliner-only.
 #
 # 3. Rerank-only (same hosts as NER-only) — a single FastAPI/transformers
 #    rerank container on inference-net, no router, no GPU requirement.
-#    Lives in docker/compose.rerank-only.yaml. Pairs with `ner-only` so a
+#    Lives in docker/compose.rerank-only.yaml. Pairs with `gliner-only` so a
 #    CPU host can offer both /gliner and /rerank to docint/chorus.
 #    Targets: build-rerank-only, up-rerank-only, stop-rerank-only,
 #             bundle-rerank-only.
@@ -21,7 +21,7 @@
 # 4. CLIP-only (same hosts as NER-only / Rerank-only) — a single
 #    FastAPI/transformers CLIP image+text container on inference-net,
 #    no router, no GPU requirement. Lives in docker/compose.clip-only.yaml.
-#    Pairs with `ner-only` and `rerank-only` so a CPU host can offer
+#    Pairs with `gliner-only` and `rerank-only` so a CPU host can offer
 #    /gliner, /rerank, and /clip/embed_{image,text} together.
 #    Targets: build-clip-only, up-clip-only, stop-clip-only,
 #             bundle-clip-only.
@@ -30,7 +30,7 @@
 
 .PHONY: help network volumes \
         build bundle up stop \
-        build-ner-only bundle-ner-only up-ner-only stop-ner-only \
+        build-gliner-only bundle-gliner-only up-gliner-only stop-gliner-only \
         build-rerank-only bundle-rerank-only up-rerank-only stop-rerank-only \
         build-clip-only bundle-clip-only up-clip-only stop-clip-only
 
@@ -48,7 +48,7 @@ VLLM_SERVICE_VERSION ?= $(shell \
 export VLLM_SERVICE_VERSION
 
 COMPOSE             := docker compose --env-file .env -f docker/compose.yaml -f docker/compose.override.yaml
-COMPOSE_NER_ONLY    := docker compose --env-file .env -f docker/compose.ner-only.yaml -f docker/compose.ner-only.override.yaml
+COMPOSE_NER_ONLY    := docker compose --env-file .env -f docker/compose.gliner-only.yaml -f docker/compose.gliner-only.override.yaml
 COMPOSE_RERANK_ONLY := docker compose --env-file .env -f docker/compose.rerank-only.yaml -f docker/compose.rerank-only.override.yaml
 COMPOSE_CLIP_ONLY   := docker compose --env-file .env -f docker/compose.clip-only.yaml -f docker/compose.clip-only.override.yaml
 # Empty PROFILE -> no flag (core stack); PROFILE=media -> --profile media.
@@ -69,10 +69,10 @@ help:
 	@echo "  to add audio + translate. Override: make up PROFILE=media"
 	@echo
 	@echo "NER-only stack (CPU; pairs with Ollama on non-CUDA hosts):"
-	@echo "  make build-ner-only   build the gliner-cpu image"
-	@echo "  make bundle-ner-only  ship the gliner-cpu image as a versioned .tar.gz"
-	@echo "  make up-ner-only      run the GLiNER service on inference-net"
-	@echo "  make stop-ner-only    stop the GLiNER service"
+	@echo "  make build-gliner-only   build the gliner-cpu image"
+	@echo "  make bundle-gliner-only  ship the gliner-cpu image as a versioned .tar.gz"
+	@echo "  make up-gliner-only      run the GLiNER service on inference-net"
+	@echo "  make stop-gliner-only    stop the GLiNER service"
 	@echo
 	@echo "Rerank-only stack (CPU; pairs with Ollama on non-CUDA hosts):"
 	@echo "  make build-rerank-only  build the rerank-cpu image"
@@ -118,16 +118,16 @@ stop:
 # stack, so `make network` and `make volumes` remain the one-time
 # prerequisites.
 
-build-ner-only:
+build-gliner-only:
 	DOCKER_BUILDKIT=1 $(COMPOSE_NER_ONLY) build
 
-bundle-ner-only:
-	./scripts/bundle_images.sh ner-only
+bundle-gliner-only:
+	./scripts/bundle_images.sh gliner-only
 
-up-ner-only:
+up-gliner-only:
 	$(COMPOSE_NER_ONLY) up --no-build
 
-stop-ner-only:
+stop-gliner-only:
 	$(COMPOSE_NER_ONLY) stop
 
 # --- Rerank-only stack --------------------------------------------------

@@ -47,7 +47,7 @@ For hosts that cannot run the CUDA stack (Mac dev boxes, ROCm or CPU-only
 Linux running Ollama for chat/embed), this repo also ships three standalone
 CPU deployments:
 
-- **NER-only** (`docker/compose.ner-only.yaml`) — a single `gliner-ner`
+- **NER-only** (`docker/compose.gliner-only.yaml`) — a single `gliner-ner`
   container exposing `/gliner`. See "NER-only deployment" below.
 - **Rerank-only** (`docker/compose.rerank-only.yaml`) — a single
   `rerank-cpu` container exposing the same Jina-shape `/rerank` contract
@@ -117,7 +117,7 @@ If the consuming app is outside that network, use a host or reverse-proxy URL:
 
 ## NER-only deployment
 
-`docker/compose.ner-only.yaml` is a standalone compose project for hosts
+`docker/compose.gliner-only.yaml` is a standalone compose project for hosts
 that don't run the full vLLM stack — typically because they're on macOS,
 have no NVIDIA GPU, or rely on Ollama for chat/embeddings. It runs one
 container, `gliner-ner`, built from `Dockerfile.gliner.cpu` (non-CUDA
@@ -128,8 +128,8 @@ Bring it up:
 ```bash
 make network            # if not already created
 make volumes            # if not already created
-make build-ner-only     # builds vllm-service-gliner-cpu
-make up-ner-only        # starts the gliner-ner container
+make build-gliner-only     # builds vllm-service-gliner-cpu
+make up-gliner-only        # starts the gliner-ner container
 ```
 
 On first start the container downloads the GLiNER weights to the shared
@@ -159,8 +159,8 @@ for Qdrant).
 Override defaults via `.env` — only `NER_*` knobs apply in this shape:
 
 ```bash
-NER_MODEL=gliner-community/gliner_medium-v2.5   # default in ner-only
-NER_DEVICE=cpu                                  # default in ner-only
+NER_MODEL=gliner-community/gliner_medium-v2.5   # default in gliner-only
+NER_DEVICE=cpu                                  # default in gliner-only
 # NER_MAX_BATCH_SIZE=8
 # NER_BATCH_WAIT_TIMEOUT_MS=50
 # NER_NUM_REPLICAS=1
@@ -338,7 +338,7 @@ override with `make bundle PROFILE=media`):
 ```bash
 make bundle              # core only (chat, embed, rerank, ner, clip, router)
 make bundle PROFILE=media  # core + media (translate, audio)
-make bundle-ner-only     # NER-only shape (just vllm-service-gliner-cpu)
+make bundle-gliner-only     # NER-only shape (just vllm-service-gliner-cpu)
 make bundle-rerank-only  # Rerank-only shape (just vllm-service-rerank-cpu)
 make bundle-clip-only    # CLIP-only shape (just vllm-service-clip-cpu)
 ```
@@ -509,6 +509,6 @@ and `NER_DEVICE=cpu` in `.env`. See `.env.example` for the full list of
 `NER_*` knobs (dtype, batch size, FlashDeBERTa, sequence packing, etc.).
 
 > Hosts that can't run the CUDA stack at all should use the
-> [NER-only deployment](#ner-only-deployment) instead — same `/gliner`
+> [NER-only deployment](#gliner-only-deployment) instead — same `/gliner`
 > request/response shape, but reached at `http://gliner-ner:8000/gliner`
 > with no Bearer auth.

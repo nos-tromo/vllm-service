@@ -19,28 +19,28 @@ case "$PROFILE_ARG" in
     PROFILE_LABEL="media"
     COMPOSE_PROFILE_FLAGS=(--profile "$PROFILE_ARG")
     ;;
-  "ner-only")
+  "gliner-only")
     # Separate compose project — different topology (single CPU container
     # on inference-net, no router), so it has its own compose file and
     # carries no compose profile.
-    PROFILE_LABEL="ner-only"
-    COMPOSE_FILE="docker/compose.ner-only.yaml"
+    PROFILE_LABEL="gliner-only"
+    COMPOSE_FILE="docker/compose.gliner-only.yaml"
     ;;
   "rerank-only")
     # Separate compose project — single FastAPI/transformers container
-    # on inference-net, no router, no GPU. Same topology shape as ner-only.
+    # on inference-net, no router, no GPU. Same topology shape as gliner-only.
     PROFILE_LABEL="rerank-only"
     COMPOSE_FILE="docker/compose.rerank-only.yaml"
     ;;
   "clip-only")
     # Separate compose project — single FastAPI/transformers CLIP
     # image+text container on inference-net, no router, no GPU. Same
-    # topology shape as ner-only/rerank-only.
+    # topology shape as gliner-only/rerank-only.
     PROFILE_LABEL="clip-only"
     COMPOSE_FILE="docker/compose.clip-only.yaml"
     ;;
   *)
-    echo "Usage: $0 [media|ner-only|rerank-only|clip-only]" >&2
+    echo "Usage: $0 [media|gliner-only|rerank-only|clip-only]" >&2
     exit 2
     ;;
 esac

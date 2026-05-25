@@ -16,7 +16,7 @@ name: vllm-service-clip-only
 # projects, mirroring how `data-net` exposes Qdrant and how the
 # `gliner-ner` and `rerank-cpu` services expose their endpoints.
 #
-# Pair with `compose.ner-only.yaml` and `compose.rerank-only.yaml` on
+# Pair with `compose.gliner-only.yaml` and `compose.rerank-only.yaml` on
 # the same host to give a non-CUDA dev box the full GLiNER + rerank +
 # CLIP set against `inference-net`.
 
