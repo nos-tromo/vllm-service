@@ -24,12 +24,22 @@ x-env-file: &env-file
   - path: ../.env
     required: false
 
+# Shared logging — the local driver rotates and compresses
+# per-container; tail with `docker compose logs -f <svc>`.
+x-logging: &default-logging
+  driver: "local"
+  options:
+    max-size: "50m"
+    max-file: "5"
+    compress: "true"
+
 services:
   rerank-cpu:
     image: vllm-service-rerank-cpu:${VLLM_SERVICE_VERSION:-latest}
     build:
       context: ..
       dockerfile: docker/Dockerfile.rerank.cpu
+    logging: *default-logging
     env_file: *env-file
     environment:
       <<: *no-proxy-env
