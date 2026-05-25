@@ -1,5 +1,6 @@
 *.code-workspace
 *.env*
+.mypy_cache/
 .remember/
 .venv/
 .vscode/

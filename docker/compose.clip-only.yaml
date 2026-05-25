@@ -1,0 +1,65 @@
+name: vllm-service-clip-only
+
+# Standalone CPU CLIP stack. Not a profile of compose.yaml — a separate
+# compose project for hosts that cannot run the full CUDA stack (macOS,
+# CPU-only Linux, AMD/ROCm boxes running Ollama for chat/embed).
+#
+# Topology:
+#   - one container, `clip-embed`, on the external `inference-net`
+#   - no LiteLLM router, no vLLM backends, no GPU reservation
+#   - the existing pass-through URLs `http://vllm-router:4000/clip/*` are
+#     unavailable in this shape; consumers point at
+#     `http://clip-embed:8000/clip/*`
+#
+# Auth: the container has no built-in Bearer-token gate. `inference-net`
+# is a private Docker network shared only between trusted compose
+# projects, mirroring how `data-net` exposes Qdrant and how the
+# `gliner-ner` and `rerank-cpu` services expose their endpoints.
+#
+# Pair with `compose.ner-only.yaml` and `compose.rerank-only.yaml` on
+# the same host to give a non-CUDA dev box the full GLiNER + rerank +
+# CLIP set against `inference-net`.
+
+x-no-proxy-env: &no-proxy-env
+  NO_PROXY: "clip-embed,localhost,127.0.0.1,172.16.0.0/12,10.0.0.0/8${EXTRA_NO_PROXY:-}"
+  no_proxy: "clip-embed,localhost,127.0.0.1,172.16.0.0/12,10.0.0.0/8${EXTRA_NO_PROXY:-}"
+
+x-env-file: &env-file
+  - path: ../.env
+    required: false
+
+services:
+  clip-embed:
+    image: vllm-service-clip-cpu:${VLLM_SERVICE_VERSION:-latest}
+    build:
+      context: ..
+      dockerfile: docker/Dockerfile.clip.cpu
+    env_file: *env-file
+    environment:
+      <<: *no-proxy-env
+      CLIP_MODEL: ${CLIP_MODEL:-openai/clip-vit-base-patch32}
+      CLIP_DEVICE: ${CLIP_DEVICE:-cpu}
+      HF_HUB_OFFLINE: ${HF_HUB_OFFLINE:-1}
+      TRANSFORMERS_OFFLINE: ${TRANSFORMERS_OFFLINE:-1}
+    volumes:
+      - huggingface-cache:/root/.cache/huggingface/hub
+    healthcheck:
+      test: ["CMD-SHELL", "curl -sf http://localhost:8000/health || exit 1"]
+      interval: 10s
+      timeout: 5s
+      retries: 60
+      start_period: 180s
+    networks:
+      inference-net:
+        aliases:
+          - clip-embed
+    restart: unless-stopped
+
+volumes:
+  huggingface-cache:
+    external: true
+
+networks:
+  inference-net:
+    external: true
+    name: ${INFERENCE_NETWORK:-inference-net}

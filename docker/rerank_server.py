@@ -121,9 +121,5 @@ def rerank(req: RerankRequest) -> RerankResponse:
 
 @app.get("/health")
 def health() -> dict[str, str]:
-    """Liveness probe target for the compose healthcheck.
-    
-    Returns: 
-        A dictionary containing the status of the service and the model ID.
-    """
+    """Liveness probe target for the compose healthcheck."""
     return {"status": "ok", "model": MODEL_ID}

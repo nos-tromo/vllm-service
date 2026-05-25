@@ -81,6 +81,20 @@ general_settings:
       target: "http://ner:8000/gliner"
       headers:
         content-type: "application/json"
+    # CLIP image+text embedding tower. Not OpenAI-compatible — clients POST
+    # an image (multipart `file` or JSON `{"image_b64": ...}`) or a query
+    # string and receive `{"embedding": [...], "dimension": int}`. Used by
+    # docint's image-ingestion path (`docint/utils/clip_client.py`).
+    # /clip/embed_image is multipart; the headers block is omitted so
+    # LiteLLM forwards the original Content-Type (multipart boundary).
+    - path: "/clip/embed_image"
+      target: "http://clip:8000/clip/embed_image"
+    - path: "/clip/embed_text"
+      target: "http://clip:8000/clip/embed_text"
+      headers:
+        content-type: "application/json"
+    - path: "/clip/dimension"
+      target: "http://clip:8000/clip/dimension"
 
 litellm_settings:
   # Silently drop OpenAI-only params that the upstream vLLM backend does

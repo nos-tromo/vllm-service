@@ -23,6 +23,7 @@ relevant backend:
 - `/pooling`
 - `/tokenize`
 - `/gliner` (zero-shot NER; non-OpenAI shape)
+- `/clip/embed_image`, `/clip/embed_text`, `/clip/dimension` (CLIP image+text tower)
 
 Internally it runs:
 
@@ -31,6 +32,7 @@ Internally it runs:
 - `embed`
 - `rerank`
 - `ner` (GLiNER, served via Ray Serve rather than vLLM)
+- `clip` (CLIP image+text tower, served via FastAPI rather than vLLM)
 
 The following services are optional and only started with `--profile media`:
 
@@ -42,7 +44,7 @@ select a backend purely by the `model` field they send; there is no path-based
 dispatch.
 
 For hosts that cannot run the CUDA stack (Mac dev boxes, ROCm or CPU-only
-Linux running Ollama for chat/embed), this repo also ships two standalone
+Linux running Ollama for chat/embed), this repo also ships three standalone
 CPU deployments:
 
 - **NER-only** (`docker/compose.ner-only.yaml`) — a single `gliner-ner`
@@ -50,9 +52,13 @@ CPU deployments:
 - **Rerank-only** (`docker/compose.rerank-only.yaml`) — a single
   `rerank-cpu` container exposing the same Jina-shape `/rerank` contract
   as the full stack. See "Rerank-only deployment" below.
+- **CLIP-only** (`docker/compose.clip-only.yaml`) — a single `clip-embed`
+  container exposing the same `/clip/embed_{image,text}` contract as the
+  full stack. See "CLIP-only deployment" below.
 
-The two can be co-deployed on the same host so the consuming app has
-both `/gliner` and `/rerank` available without the full CUDA stack.
+The three can be co-deployed on the same host so the consuming app has
+all of `/gliner`, `/rerank`, and `/clip/*` available without the full
+CUDA stack.
 
 ## Usage
 
@@ -243,6 +249,80 @@ document on modern CPUs. Fine for typical top-K rerank workloads (K ≤
 > Pair with the NER-only deployment on the same host to give a non-CUDA
 > dev box both `/gliner` and `/rerank` against `inference-net`.
 
+## CLIP-only deployment
+
+`docker/compose.clip-only.yaml` is a standalone compose project for the
+same audience as NER-only / Rerank-only. It runs one container,
+`clip-embed`, built from `Dockerfile.clip.cpu` (uv-managed Python 3.11,
+CPU torch, `transformers`, `Pillow`). No LiteLLM router, no GPU
+reservation. The container ships `docker/clip_server.py` — a small
+FastAPI app that loads the same `CLIPModel` + `AutoProcessor` pair
+docint used to load in-process, runs the image or text tower, and
+L2-normalizes the output. Exposes the **same `/clip/embed_{image,text}`
+contract** as the full-stack `clip` service, so consumers (docint's
+`clip_client.py`) target either backend by changing only the base URL.
+Default `CLIP_MODEL` is `openai/clip-vit-base-patch32` — same default
+docint used in-process, so existing `_images` Qdrant collections stay
+compatible.
+
+Bring it up:
+
+```bash
+make network            # if not already created
+make volumes            # if not already created
+make build-clip-only    # builds vllm-service-clip-cpu
+make up-clip-only       # starts the clip-embed container
+```
+
+On first start the container downloads the CLIP weights to the shared
+`huggingface-cache` volume (~600 MB for the base patch32 variant). The
+healthcheck reports healthy once FastAPI is accepting requests. If your
+host is offline you'll need to pre-populate the cache by temporarily
+setting `HF_HUB_OFFLINE=0` and `TRANSFORMERS_OFFLINE=0` in `.env`.
+
+Consumers on `inference-net` reach it directly — there's no router in
+this shape:
+
+```bash
+# text tower
+curl http://clip-embed:8000/clip/embed_text \
+  -H "Content-Type: application/json" \
+  -d '{"text": "a photo of a cat"}'
+
+# image tower (multipart)
+curl http://clip-embed:8000/clip/embed_image \
+  -F "file=@/path/to/img.jpg"
+
+# dimension probe (for Qdrant collection compat checks)
+curl http://clip-embed:8000/clip/dimension
+```
+
+Response shape for both embed endpoints:
+
+```json
+{"embedding": [0.012, -0.034, ...], "dimension": 512}
+```
+
+No `Authorization` header is required (same posture as `gliner-ner` and
+`rerank-cpu`).
+
+Override defaults via `.env` — only `CLIP_*` knobs apply in this shape:
+
+```bash
+CLIP_MODEL=openai/clip-vit-base-patch32   # default
+CLIP_DEVICE=cpu                           # default in clip-only
+# CLIP_HOST_PORT=8002                     # host publish port for dev
+```
+
+CPU CLIP base-patch32 lands around 80–200 ms per image and ~20–40 ms
+per text query on modern CPUs. Fine for the document-image ingestion
+workload docint runs; image-search latency is dominated by Qdrant
+search, not CLIP inference.
+
+> Pair with the NER-only and Rerank-only deployments on the same host
+> to give a non-CUDA dev box `/gliner`, `/rerank`, and `/clip/*`
+> against `inference-net`.
+
 ## Offline image bundles
 
 For airgapped hosts, customer deployments, or any environment without
@@ -256,10 +336,11 @@ On a build host with internet (`make bundle` follows `PROFILE` from `.env`;
 override with `make bundle PROFILE=media`):
 
 ```bash
-make bundle              # core only (chat, embed, rerank, ner, router)
+make bundle              # core only (chat, embed, rerank, ner, clip, router)
 make bundle PROFILE=media  # core + media (translate, audio)
 make bundle-ner-only     # NER-only shape (just vllm-service-gliner-cpu)
 make bundle-rerank-only  # Rerank-only shape (just vllm-service-rerank-cpu)
+make bundle-clip-only    # CLIP-only shape (just vllm-service-clip-cpu)
 ```
 
 This computes `VLLM_SERVICE_VERSION` as `YYYY-MM-DD-<short-sha>` (override by
