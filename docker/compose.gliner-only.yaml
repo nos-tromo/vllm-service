@@ -1,4 +1,4 @@
-name: vllm-service-ner-only
+name: vllm-service-gliner-only
 
 # Standalone GLiNER NER stack. Not a profile of compose.yaml — a separate
 # compose project for hosts that cannot run the full CUDA stack (macOS,
@@ -22,12 +22,22 @@ x-env-file: &env-file
   - path: ../.env
     required: false
 
+# Shared logging — the local driver rotates and compresses
+# per-container; tail with `docker compose logs -f <svc>`.
+x-logging: &default-logging
+  driver: "local"
+  options:
+    max-size: "50m"
+    max-file: "5"
+    compress: "true"
+
 services:
   gliner-ner:
     image: vllm-service-gliner-cpu:${VLLM_SERVICE_VERSION:-latest}
     build:
       context: ..
       dockerfile: docker/Dockerfile.gliner.cpu
+    logging: *default-logging
     env_file: *env-file
     entrypoint: ["/bin/sh", "-lc"]
     command:

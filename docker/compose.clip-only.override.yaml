@@ -12,4 +12,4 @@
 services:
   clip-embed:
     ports:
-      - "${CLIP_HOST_PORT:-8002}:8000"
+      - "${CLIP_HOST_PORT:-8003}:8000"

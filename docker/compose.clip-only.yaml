@@ -16,7 +16,7 @@ name: vllm-service-clip-only
 # projects, mirroring how `data-net` exposes Qdrant and how the
 # `gliner-ner` and `rerank-cpu` services expose their endpoints.
 #
-# Pair with `compose.ner-only.yaml` and `compose.rerank-only.yaml` on
+# Pair with `compose.gliner-only.yaml` and `compose.rerank-only.yaml` on
 # the same host to give a non-CUDA dev box the full GLiNER + rerank +
 # CLIP set against `inference-net`.
 
@@ -28,12 +28,22 @@ x-env-file: &env-file
   - path: ../.env
     required: false
 
+# Shared logging — the local driver rotates and compresses
+# per-container; tail with `docker compose logs -f <svc>`.
+x-logging: &default-logging
+  driver: "local"
+  options:
+    max-size: "50m"
+    max-file: "5"
+    compress: "true"
+
 services:
   clip-embed:
     image: vllm-service-clip-cpu:${VLLM_SERVICE_VERSION:-latest}
     build:
       context: ..
       dockerfile: docker/Dockerfile.clip.cpu
+    logging: *default-logging
     env_file: *env-file
     environment:
       <<: *no-proxy-env

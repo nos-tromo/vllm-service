@@ -38,9 +38,19 @@ x-cuda-deploy: &cuda-deploy
     max_attempts: 5
     window: 120s
 
+# Shared logging — the local driver rotates and compresses
+# per-container; tail with `docker compose logs -f <svc>`.
+x-logging: &default-logging
+  driver: "local"
+  options:
+    max-size: "50m"
+    max-file: "5"
+    compress: "true"
+
 services:
   router:
     image: docker.io/litellm/litellm:main-v1.83.10-stable@sha256:6c82d338a60e7b273ae46bf1d8db814d2856ae010f96c44eeadde574d3893f76
+    logging: *default-logging
     env_file: *env-file
     depends_on:
       chat:
@@ -84,6 +94,7 @@ services:
     build:
       context: ..
       dockerfile: docker/Dockerfile.vllm
+    logging: *default-logging
     gpus: all
     env_file: *env-file
     ipc: host
@@ -131,6 +142,7 @@ services:
     build:
       context: ..
       dockerfile: docker/Dockerfile.vllm
+    logging: *default-logging
     gpus: all
     env_file: *env-file
     ipc: host
@@ -166,6 +178,7 @@ services:
     build:
       context: ..
       dockerfile: docker/Dockerfile.vllm
+    logging: *default-logging
     gpus: all
     env_file: *env-file
     ipc: host
@@ -200,6 +213,7 @@ services:
     build:
       context: ..
       dockerfile: docker/Dockerfile.gliner.cuda
+    logging: *default-logging
     gpus: all
     env_file: *env-file
     ipc: host
@@ -259,6 +273,7 @@ services:
     build:
       context: ..
       dockerfile: docker/Dockerfile.clip.cuda
+    logging: *default-logging
     gpus: all
     env_file: *env-file
     ipc: host
@@ -295,6 +310,7 @@ services:
     build:
       context: ..
       dockerfile: docker/Dockerfile.vllm
+    logging: *default-logging
     profiles: [media]
     gpus: all
     env_file: *env-file
@@ -325,6 +341,7 @@ services:
     build:
       context: ..
       dockerfile: docker/Dockerfile.vllm
+    logging: *default-logging
     profiles: [media]
     gpus: all
     env_file: *env-file
