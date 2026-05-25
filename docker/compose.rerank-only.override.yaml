@@ -12,4 +12,4 @@
 services:
   rerank-cpu:
     ports:
-      - "${RERANK_HOST_PORT:-8001}:8000"
+      - "${RERANK_HOST_PORT:-8002}:8000"

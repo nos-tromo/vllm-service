@@ -1,4 +1,4 @@
-name: vllm-service-ner-only
+name: vllm-service-gliner-only
 
 # Standalone GLiNER NER stack. Not a profile of compose.yaml — a separate
 # compose project for hosts that cannot run the full CUDA stack (macOS,
