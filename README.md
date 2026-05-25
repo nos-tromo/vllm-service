@@ -42,10 +42,17 @@ select a backend purely by the `model` field they send; there is no path-based
 dispatch.
 
 For hosts that cannot run the CUDA stack (Mac dev boxes, ROCm or CPU-only
-Linux running Ollama for chat/embed), this repo also ships an **NER-only
-deployment** in `docker/compose.ner-only.yaml` — a single `gliner-ner`
-container on `inference-net`, no router, no GPU. See "NER-only deployment"
-below.
+Linux running Ollama for chat/embed), this repo also ships two standalone
+CPU deployments:
+
+- **NER-only** (`docker/compose.ner-only.yaml`) — a single `gliner-ner`
+  container exposing `/gliner`. See "NER-only deployment" below.
+- **Rerank-only** (`docker/compose.rerank-only.yaml`) — a single
+  `rerank-cpu` container exposing the same Jina-shape `/rerank` contract
+  as the full stack. See "Rerank-only deployment" below.
+
+The two can be co-deployed on the same host so the consuming app has
+both `/gliner` and `/rerank` available without the full CUDA stack.
 
 ## Usage
 
@@ -157,6 +164,85 @@ CPU GLiNER (medium-v2.5) lands around 200 ms – 1 s per request on modern
 CPUs. Fine for batch ingestion workloads; not suitable for interactive
 per-keystroke use.
 
+## Rerank-only deployment
+
+`docker/compose.rerank-only.yaml` is a standalone compose project for the
+same audience as NER-only — hosts without an NVIDIA GPU that still want
+to offer rerank to the consuming app. It runs one container,
+`rerank-cpu`, built from `Dockerfile.rerank.cpu` (uv-managed Python 3.11,
+CPU torch, `transformers`). No LiteLLM router, no GPU reservation. The
+container ships a tiny FastAPI server (`docker/rerank_server.py`) that
+drives a Hugging Face cross-encoder directly (tokenize → forward →
+sigmoid — the same forward pass FlagEmbedding does internally for
+bge-reranker-style models, without FlagEmbedding's heavyweight
+`ir-datasets`/`zlib-state` dep tree). Exposes the **same Jina-shape
+`POST /rerank` contract** as the full-stack vLLM `rerank` service, so
+consumers can target either backend by changing only the base URL.
+
+Bring it up:
+
+```bash
+make network              # if not already created
+make volumes              # if not already created
+make build-rerank-only    # builds vllm-service-rerank-cpu
+make up-rerank-only       # starts the rerank-cpu container
+```
+
+On first start the container downloads the reranker weights to the
+shared `huggingface-cache` volume (~570 MB for `BAAI/bge-reranker-v2-m3`,
+the default — same model the GPU stack uses, so scores match). The
+healthcheck reports healthy once FastAPI is accepting requests. If your
+host is offline you'll need to pre-populate the cache by temporarily
+setting `HF_HUB_OFFLINE=0` and `TRANSFORMERS_OFFLINE=0` in `.env`.
+
+Consumers on `inference-net` reach it directly — there's no router in
+this shape:
+
+```bash
+curl http://rerank-cpu:8000/rerank \
+  -H "Content-Type: application/json" \
+  -d '{
+    "query": "what is RAG?",
+    "documents": [
+      "Retrieval-augmented generation grounds an LLM in retrieved context.",
+      "The cafeteria menu changes daily.",
+      "RAG combines a retriever and a generator model."
+    ],
+    "top_n": 2
+  }'
+```
+
+Response:
+
+```json
+{
+  "id": "rerank-...",
+  "model": "BAAI/bge-reranker-v2-m3",
+  "results": [
+    {"index": 0, "relevance_score": 0.96},
+    {"index": 2, "relevance_score": 0.91}
+  ]
+}
+```
+
+No `Authorization` header is required: the container has no built-in
+Bearer-token gate (same posture as `gliner-ner`).
+
+Override defaults via `.env` — only `RERANK_*` knobs apply in this shape:
+
+```bash
+RERANK_MODEL=BAAI/bge-reranker-v2-m3   # default
+# RERANK_USE_FP16=true                 # rare on CPU; default false
+# RERANK_HOST_PORT=8001                # host publish port for dev
+```
+
+CPU rerank of `BAAI/bge-reranker-v2-m3` lands around 50–300 ms per
+document on modern CPUs. Fine for typical top-K rerank workloads (K ≤
+20); large candidate sets may be noticeably slower than the GPU stack.
+
+> Pair with the NER-only deployment on the same host to give a non-CUDA
+> dev box both `/gliner` and `/rerank` against `inference-net`.
+
 ## Offline image bundles
 
 For airgapped hosts, customer deployments, or any environment without
@@ -173,6 +259,7 @@ override with `make bundle PROFILE=media`):
 make bundle              # core only (chat, embed, rerank, ner, router)
 make bundle PROFILE=media  # core + media (translate, audio)
 make bundle-ner-only     # NER-only shape (just vllm-service-gliner-cpu)
+make bundle-rerank-only  # Rerank-only shape (just vllm-service-rerank-cpu)
 ```
 
 This computes `VLLM_SERVICE_VERSION` as `YYYY-MM-DD-<short-sha>` (override by

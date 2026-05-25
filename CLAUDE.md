@@ -5,12 +5,54 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 ## What this repo is
 
 A pure infrastructure repo: a Docker Compose stack that fronts several vLLM
-backends with a single LiteLLM Proxy router. There is **no application source
-code** — everything is configuration. The Docker assets live under `docker/`
-(`docker/compose.yaml`, `docker/compose.override.yaml`, `docker/compose.ner-only.yaml`,
+backends with a single LiteLLM Proxy router. The Docker assets live under
+`docker/` (`docker/compose.yaml`, `docker/compose.override.yaml`,
+`docker/compose.ner-only.yaml`, `docker/compose.rerank-only.yaml`,
 `docker/Dockerfile.vllm`, `docker/Dockerfile.gliner.cuda`,
-`docker/Dockerfile.gliner.cpu`, `docker/litellm.config.yaml`) plus `.env` and
-`.dockerignore` at the repo root.
+`docker/Dockerfile.gliner.cpu`, `docker/Dockerfile.rerank.cpu`,
+`docker/litellm.config.yaml`) plus `.env` and `.dockerignore` at the repo
+root. The only Python source is `docker/rerank_server.py` — a small
+FastAPI wrapper around a Hugging Face sequence-classification cross-
+encoder that the rerank-only shape ships because there is no off-the-
+shelf CPU server that speaks the Jina-shape `/rerank` contract the
+full stack exposes.
+
+## Deployment shapes
+
+Three independent compose projects, picked per host:
+
+- **Full stack** (`docker/compose.yaml`, CUDA-required) — chat, embed, rerank,
+  ner, router; optional audio + translate via `PROFILE=media`. The original
+  shape; reached as `http://vllm-router:4000/...` on `inference-net`.
+  GLiNER is routed via the router's `/gliner` pass-through.
+- **NER-only** (`docker/compose.ner-only.yaml`, CPU OK) — a single
+  `gliner-ner` container on `inference-net`, no router, no GPU requirement.
+  Intended for hosts that run Ollama (or another non-vLLM provider) for
+  chat/embeddings but still want NER out of the consuming app. Reached
+  directly as `http://gliner-ner:8000/gliner` on `inference-net`; there is
+  no Bearer auth (trust `inference-net` the way `data-net` is trusted for
+  Qdrant). Uses the CPU-only `Dockerfile.gliner.cpu` (non-CUDA PyTorch
+  base, multi-arch) and defaults `NER_MODEL` to `gliner_medium-v2.5`.
+- **Rerank-only** (`docker/compose.rerank-only.yaml`, CPU OK) — a single
+  `rerank-cpu` container on `inference-net`, no router, no GPU. Same
+  audience as NER-only; pairs with it so an Ollama-on-CPU host can offer
+  both `/gliner` and `/rerank` without the full CUDA stack. Reached as
+  `http://rerank-cpu:8000/rerank` on `inference-net`. Speaks the same
+  Jina-shape `{model, query, documents, top_n}` → `{results: [{index,
+  relevance_score}]}` contract as the full-stack vLLM `rerank` service,
+  so consumers (docint's `VLLMRerankPostprocessor`) target either
+  backend by changing the base URL alone. Uses `Dockerfile.rerank.cpu`
+  (uv-managed Python 3.11, CPU torch, transformers) and ships a tiny
+  FastAPI server at `docker/rerank_server.py` that drives the cross-
+  encoder directly (tokenize → forward → sigmoid).
+
+The shapes are **not profiles of one compose file** — they have different
+images, different topologies, and (rerank-only and ner-only) no router. Pick
+one per host. They reuse the same external `inference-net` network and
+`huggingface-cache` volume, so the one-time `make network` / `make volumes`
+prerequisites apply to all of them. The `ner-only` and `rerank-only` shapes
+can coexist on a single host because they target different network aliases
+and host ports.
 
 ## Deployment shapes
 
@@ -72,6 +114,16 @@ make stop-ner-only
 make bundle-ner-only   # versioned .tar.gz of the gliner-cpu image
 ```
 
+Or, for the Rerank-only shape (no CUDA, no router — pairs with Ollama,
+typically co-deployed with NER-only):
+
+```bash
+make build-rerank-only    # builds vllm-service-rerank-cpu
+make up-rerank-only       # one rerank-cpu container on inference-net
+make stop-rerank-only
+make bundle-rerank-only   # versioned .tar.gz of the rerank-cpu image
+```
+
 Other useful operations use the raw compose form, pointed at the compose file
 (append `--profile media` when the media service set is active):
 
@@ -91,7 +143,10 @@ make bundle              # build + ship the active service set as versioned .tar
 make bundle PROFILE=media  # build + ship core + media as versioned .tar.gz pair
 ```
 
-There is no test suite or linter.
+There is no test suite or linter. The one Python file
+(`docker/rerank_server.py`) is small enough to verify by curl against the
+running `rerank-only` container — see the Architecture / Rerank-only
+section below.
 
 ## Architecture
 
@@ -202,6 +257,43 @@ in their request `model` field; `/v1/models` returns the active set.
 it is not declared in `model_list` and does not appear in `/v1/models`.
 Clients hit `/gliner` directly with a GLiNER-native body and never use the
 `model` field. Switching `NER_MODEL` and restarting `ner` still works.
+
+### Rerank-only shape (CPU)
+
+The `rerank-only` compose project runs `docker/rerank_server.py` — a small
+FastAPI app that loads a Hugging Face cross-encoder
+(`AutoModelForSequenceClassification`), tokenizes each (query, document)
+pair, takes the seq-classification logit, and sigmoid-normalizes — the
+same forward pass FlagEmbedding does internally for bge-reranker-style
+models, just without the heavyweight FlagEmbedding dep tree
+(`ir-datasets` → `zlib-state`, fails to build on aarch64). Exposes the
+same Jina-shape `POST /rerank` contract as the full-stack vLLM `rerank`
+service:
+
+```
+POST /rerank
+{"model": "...", "query": "...", "documents": [...], "top_n": 5}
+→
+{"id": "rerank-...", "model": "...",
+ "results": [{"index": 0, "relevance_score": 0.95}, ...]}
+```
+
+Model identity is fixed at container startup via `RERANK_MODEL`
+(defaults to `BAAI/bge-reranker-v2-m3`, the same model the GPU stack
+uses, so scores match). The request `model` field is accepted but not
+enforced — the server always uses the model it loaded at boot.
+`RERANK_USE_FP16=true` is honored on hosts that benefit (rare on CPU).
+
+`GET /health` returns `{"status": "ok", "model": "..."}` and is the
+healthcheck target. There is no `/-/healthz` (Ray Serve isn't used here).
+
+Smoke-test:
+
+```bash
+curl -fsS -X POST http://localhost:${RERANK_HOST_PORT:-8001}/rerank \
+  -H 'Content-Type: application/json' \
+  -d '{"query": "what is RAG", "documents": ["retrieval augmented generation", "lunch menu"], "top_n": 2}'
+```
 
 ### TranslateGemma quirk
 

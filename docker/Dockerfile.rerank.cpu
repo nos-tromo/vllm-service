@@ -1,0 +1,40 @@
+ARG UV_IMAGE=ghcr.io/astral-sh/uv:python3.11-bookworm-slim@sha256:4f5d923c9dcea037f57bda425dd209f3ec643da2f0b74227f68d09dab0b3bb36
+
+FROM ${UV_IMAGE}
+
+# curl is needed for the docker-compose healthcheck against /health.
+# build-essential covers transitive deps that build from source on
+# platforms without a prebuilt wheel.
+RUN apt-get update \
+    && apt-get install -y --no-install-recommends \
+        curl \
+        build-essential \
+    && rm -rf /var/lib/apt/lists/*
+
+# CPU-only PyTorch from the dedicated index. Same approach as
+# Dockerfile.gliner.cpu — the default PyPI wheel pulls a CUDA build on
+# linux/amd64, pinning to the cpu index avoids that.
+RUN uv pip install --system --no-cache --compile-bytecode \
+    --index-url https://download.pytorch.org/whl/cpu \
+    torch
+
+# Cross-encoder inference uses transformers directly (AutoTokenizer +
+# AutoModelForSequenceClassification + sigmoid) rather than FlagEmbedding.
+# FlagEmbedding pulls ir-datasets → zlib-state, which needs zlib.h to
+# build from source on aarch64 and is irrelevant to inference-only
+# deployments. For bge-reranker-style cross-encoders the scores are
+# identical (FlagEmbedding wraps the same forward pass).
+RUN uv pip install --system --no-cache --compile-bytecode \
+    'fastapi>=0.115.0' \
+    'uvicorn[standard]>=0.32.0' \
+    'pydantic>=2.0' \
+    'transformers>=4.44.2' \
+    'sentencepiece>=0.2.0'
+
+COPY docker/rerank_server.py /app/rerank_server.py
+
+ENV TOKENIZERS_PARALLELISM=true
+
+EXPOSE 8000
+
+CMD ["uvicorn", "--app-dir", "/app", "rerank_server:app", "--host", "0.0.0.0", "--port", "8000"]

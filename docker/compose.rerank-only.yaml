@@ -1,0 +1,61 @@
+name: vllm-service-rerank-only
+
+# Standalone CPU rerank stack. Not a profile of compose.yaml — a separate
+# compose project for hosts that cannot run the full CUDA stack (macOS,
+# CPU-only Linux, AMD/ROCm boxes running Ollama for chat/embed).
+#
+# Topology:
+#   - one container, `rerank-cpu`, on the external `inference-net`
+#   - no LiteLLM router, no vLLM backends, no GPU reservation
+#   - the existing pass-through URL `http://vllm-router:4000/rerank` is
+#     unavailable in this shape; consumers point at
+#     `http://rerank-cpu:8000/rerank`
+#
+# Auth: the container has no built-in Bearer-token gate. `inference-net`
+# is a private Docker network shared only between trusted compose
+# projects, mirroring how `data-net` exposes Qdrant and how the
+# `gliner-ner` service exposes /gliner.
+
+x-no-proxy-env: &no-proxy-env
+  NO_PROXY: "rerank-cpu,localhost,127.0.0.1,172.16.0.0/12,10.0.0.0/8${EXTRA_NO_PROXY:-}"
+  no_proxy: "rerank-cpu,localhost,127.0.0.1,172.16.0.0/12,10.0.0.0/8${EXTRA_NO_PROXY:-}"
+
+x-env-file: &env-file
+  - path: ../.env
+    required: false
+
+services:
+  rerank-cpu:
+    image: vllm-service-rerank-cpu:${VLLM_SERVICE_VERSION:-latest}
+    build:
+      context: ..
+      dockerfile: docker/Dockerfile.rerank.cpu
+    env_file: *env-file
+    environment:
+      <<: *no-proxy-env
+      RERANK_MODEL: ${RERANK_MODEL:-BAAI/bge-reranker-v2-m3}
+      RERANK_USE_FP16: ${RERANK_USE_FP16:-false}
+      HF_HUB_OFFLINE: ${HF_HUB_OFFLINE:-1}
+      TRANSFORMERS_OFFLINE: ${TRANSFORMERS_OFFLINE:-1}
+    volumes:
+      - huggingface-cache:/root/.cache/huggingface/hub
+    healthcheck:
+      test: ["CMD-SHELL", "curl -sf http://localhost:8000/health || exit 1"]
+      interval: 10s
+      timeout: 5s
+      retries: 60
+      start_period: 180s
+    networks:
+      inference-net:
+        aliases:
+          - rerank-cpu
+    restart: unless-stopped
+
+volumes:
+  huggingface-cache:
+    external: true
+
+networks:
+  inference-net:
+    external: true
+    name: ${INFERENCE_NETWORK:-inference-net}
