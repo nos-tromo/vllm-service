@@ -54,6 +54,29 @@ prerequisites apply to all of them. The `ner-only` and `rerank-only` shapes
 can coexist on a single host because they target different network aliases
 and host ports.
 
+## Deployment shapes
+
+Two independent compose projects, picked per host:
+
+- **Full stack** (`docker/compose.yaml`, CUDA-required) — chat, embed, rerank,
+  ner, router; optional audio + translate via `PROFILE=media`. The original
+  shape; reached as `http://vllm-router:4000/...` on `inference-net`.
+  GLiNER is routed via the router's `/gliner` pass-through.
+- **NER-only** (`docker/compose.ner-only.yaml`, CPU OK) — a single
+  `gliner-ner` container on `inference-net`, no router, no GPU requirement.
+  Intended for hosts that run Ollama (or another non-vLLM provider) for
+  chat/embeddings but still want NER out of the consuming app. Reached
+  directly as `http://gliner-ner:8000/gliner` on `inference-net`; there is
+  no Bearer auth (trust `inference-net` the way `data-net` is trusted for
+  Qdrant). Uses the CPU-only `Dockerfile.gliner.cpu` (non-CUDA PyTorch
+  base, multi-arch) and defaults `NER_MODEL` to `gliner_medium-v2.5`.
+
+The two shapes are **not profiles of one compose file** — they have
+different images, different networks, and different topologies. Pick one
+per host. Both reuse the same external `inference-net` network and
+`huggingface-cache` volume, so the one-time `make network` / `make volumes`
+prerequisites apply to both.
+
 ## Common commands
 
 The `Makefile` is the entry point — it points Compose at `docker/compose.yaml`,
