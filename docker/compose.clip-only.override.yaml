@@ -1,13 +1,12 @@
 ### Dev override for the clip-only stack — publishes the CLIP service on
 ### the host.
 ###
-### NOT auto-loaded: it lives in docker/ and the Makefile passes
-### explicit -f flags. `make up-clip-only` layers this on top of
+### NOT auto-loaded: it lives in docker/ and the Makefile passes explicit
+### -f flags. `make up-dev-clip-only` layers this on top of
 ### docker/compose.clip-only.yaml so the service is reachable at
-### localhost:${CLIP_HOST_PORT} for direct testing. The base
-### docker/compose.clip-only.yaml is the production shape — sibling
-### containers reach the service as `clip-embed:8000` on inference-net
-### regardless of this override.
+### localhost:${CLIP_HOST_PORT} for direct testing; `make up-clip-only`
+### runs the base alone (production shape). Sibling containers reach the
+### service as `clip-embed:8000` on inference-net regardless of this override.
 
 services:
   clip-embed:

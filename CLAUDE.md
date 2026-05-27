@@ -85,20 +85,23 @@ cp .env.example .env   # then edit model IDs / API key / GPU placement
 Bring the stack up:
 
 ```bash
-make build             # build images for the active service set
-make up                # core: router, chat, embed, rerank, ner
-make up PROFILE=media  # add translate + audio
+make build                 # build images for the active service set
+make up                    # core (production shape, no host ports)
+make up-dev                # core with host ports published (dev)
+make up PROFILE=media      # add translate + audio (production shape)
+make up-dev PROFILE=media  # add translate + audio with host ports published
 ```
 
-`make up` layers `docker/compose.override.yaml` so the router is published on
-the host for dev. The base `docker/compose.yaml` is the production shape and
-publishes no host ports.
+`make up` runs the base `docker/compose.yaml` alone (production shape — no host
+ports); `make up-dev` layers `docker/compose.override.yaml` so the router is
+published on the host for dev.
 
 Or, for the NER-only shape (no CUDA, no router — pairs with Ollama):
 
 ```bash
 make build-gliner-only    # builds vllm-service-gliner-cpu
-make up-gliner-only       # one gliner-ner container on inference-net
+make up-gliner-only       # one gliner-ner container on inference-net (no host port)
+make up-dev-gliner-only   # like 'up-gliner-only', but publishes the GLiNER port on the host
 make stop-gliner-only
 make bundle-gliner-only   # versioned .tar.gz of the gliner-cpu image
 ```
@@ -108,7 +111,8 @@ typically co-deployed with NER-only):
 
 ```bash
 make build-rerank-only    # builds vllm-service-rerank-cpu
-make up-rerank-only       # one rerank-cpu container on inference-net
+make up-rerank-only       # one rerank-cpu container on inference-net (no host port)
+make up-dev-rerank-only   # like 'up-rerank-only', but publishes the rerank port on the host
 make stop-rerank-only
 make bundle-rerank-only   # versioned .tar.gz of the rerank-cpu image
 ```
@@ -118,7 +122,8 @@ typically co-deployed with NER-only and Rerank-only):
 
 ```bash
 make build-clip-only      # builds vllm-service-clip-cpu
-make up-clip-only         # one clip-embed container on inference-net
+make up-clip-only         # one clip-embed container on inference-net (no host port)
+make up-dev-clip-only     # like 'up-clip-only', but publishes the CLIP port on the host
 make stop-clip-only
 make bundle-clip-only     # versioned .tar.gz of the clip-cpu image
 ```
@@ -153,7 +158,7 @@ Architecture / Rerank-only and Architecture / CLIP-only sections below.
 
 `router` (LiteLLM Proxy, port 4000 inside, published on
 `${ROUTER_HOST_PORT:-9000}` on the host by `docker/compose.override.yaml`
-when `make up` is used) is the **only** entry point. Clients always send to
+when `make up-dev` is used) is the **only** entry point. Clients always send to
 the router and select a backend by the `model` field in the request body —
 there is no path-based dispatch. `docker/litellm.config.yaml` maps each
 `model_name` (read from env vars at startup) to an upstream `api_base`

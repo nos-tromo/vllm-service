@@ -69,7 +69,7 @@ at `docker/compose.yaml`, since a bare `docker compose` from the repo root no
 longer finds the compose file.
 
 1. Copy `.env.example` to `.env` and set the model IDs, API key, and any
-   GPU-placement settings. `make up` publishes the router on host port
+   GPU-placement settings. `make up-dev` publishes the router on host port
    `9000`; if that port is already in use, set `ROUTER_HOST_PORT` in `.env`
    to another free port such as `9001`.
 2. Ensure the external `huggingface-cache` Docker volume exists.
@@ -83,18 +83,20 @@ longer finds the compose file.
 4. Build and start the stack. The service set is read from `PROFILE` in
    `.env`: leave it empty for the core stack, or set `PROFILE=media` to also
    start the `translate` and `audio` services. Override per-invocation as
-   `make up PROFILE=media`:
+   `make up-dev PROFILE=media`:
 
    ```bash
-   make build           # build images for the active service set
-   make up              # core stack (router, chat, embed, rerank, ner)
-   make up PROFILE=media  # core + media (translate, audio)
+   make build                 # build images for the active service set
+   make up-dev                # core stack (router, chat, embed, rerank, ner) with the router published on the host
+   make up-dev PROFILE=media  # core + media (translate, audio) with host ports
+   make up                    # same as up-dev but production shape (no host ports)
    ```
 
-   `make up` layers `docker/compose.override.yaml` so the router is published
-   on the host for local development. The base `docker/compose.yaml` is the
-   production shape and publishes no host ports — in-network consumers reach
-   the router as `vllm-router:4000` on `inference-net` regardless.
+   `make up-dev` layers `docker/compose.override.yaml` so the router is
+   published on the host for local development; `make up` runs the base
+   `docker/compose.yaml` alone (production shape, no host ports) —
+   in-network consumers reach the router as `vllm-router:4000` on
+   `inference-net` regardless.
 
 5. Point third-party app at the router.
 
