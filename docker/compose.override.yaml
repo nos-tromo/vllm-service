@@ -1,10 +1,10 @@
 ### Dev override — publishes the LiteLLM router on the host.
 ###
 ### NOT auto-loaded: it lives in docker/ and the Makefile passes explicit -f
-### flags. `make up` layers this on top of docker/compose.yaml so the router
-### is reachable at localhost:${ROUTER_HOST_PORT}. docker/compose.yaml alone
-### is the production shape — in-network consumers reach the router as
-### `vllm-router:4000` on inference-net regardless.
+### flags. `make up-dev` layers this on top of docker/compose.yaml so the
+### router is reachable at localhost:${ROUTER_HOST_PORT}; `make up` runs
+### docker/compose.yaml alone (production shape) — in-network consumers
+### reach the router as `vllm-router:4000` on inference-net regardless.
 
 services:
   router:
