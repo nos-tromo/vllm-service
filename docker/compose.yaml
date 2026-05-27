@@ -195,7 +195,7 @@ services:
         --host 0.0.0.0
         --port 8000
         --runner "$${RERANK_RUNNER:-pooling}"
-        --pooler-config.task "$${RERANK_POOLER_TASK:-score}"
+        --pooler-config.task "$${RERANK_POOLER_TASK:-classify}"
         --gpu-memory-utilization "$${RERANK_GPU_MEMORY_UTILIZATION:-0.15}"
     environment: *vllm-env
     volumes: *vllm-volumes
