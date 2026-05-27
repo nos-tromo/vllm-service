@@ -218,8 +218,11 @@ services:
     env_file: *env-file
     ipc: host
     depends_on:
-      rerank:
+      clip:
         condition: service_healthy
+      translate:
+        condition: service_healthy
+        required: false   # absent without --profile media; enforced when present
     entrypoint: ["/bin/sh", "-lc"]
     command:
       - >-
@@ -278,7 +281,7 @@ services:
     env_file: *env-file
     ipc: host
     depends_on:
-      ner:
+      rerank:
         condition: service_healthy
     entrypoint: ["/bin/sh", "-lc"]
     command:
@@ -316,7 +319,7 @@ services:
     env_file: *env-file
     ipc: host
     depends_on:
-      clip:
+      rerank:
         condition: service_healthy
     entrypoint: ["/bin/sh", "-lc"]
     command:
