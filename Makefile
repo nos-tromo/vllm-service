@@ -29,10 +29,10 @@
 .DEFAULT_GOAL := help
 
 .PHONY: help network volumes \
-        build bundle up up-dev stop \
-        build-gliner-only bundle-gliner-only up-gliner-only up-dev-gliner-only stop-gliner-only \
-        build-rerank-only bundle-rerank-only up-rerank-only up-dev-rerank-only stop-rerank-only \
-        build-clip-only bundle-clip-only up-clip-only up-dev-clip-only stop-clip-only
+        build bundle up up-dev stop down \
+        build-gliner-only bundle-gliner-only up-gliner-only up-dev-gliner-only stop-gliner-only down-gliner-only \
+        build-rerank-only bundle-rerank-only up-rerank-only up-dev-rerank-only stop-rerank-only down-rerank-only \
+        build-clip-only bundle-clip-only up-clip-only up-dev-clip-only stop-clip-only down-clip-only
 
 # Service-set profile for the full stack. Read from .env; empty = core stack.
 PROFILE ?= $(strip $(shell test -f .env && grep -E '^PROFILE=' .env | cut -d= -f2))
@@ -69,6 +69,7 @@ help:
 	@echo "  make up               run the active service set (production shape, no host ports)"
 	@echo "  make up-dev           like 'up', but publishes the router port on the host"
 	@echo "  make stop             stop the active service set"
+	@echo "  make down             stop + remove the active service set"
 	@echo
 	@echo "  Leave PROFILE empty in .env for the core stack; set PROFILE=media"
 	@echo "  to add audio + translate. Override: make up PROFILE=media"
@@ -79,6 +80,7 @@ help:
 	@echo "  make up-gliner-only       run the GLiNER service on inference-net (no host port)"
 	@echo "  make up-dev-gliner-only   like 'up-gliner-only', but publishes the port on the host"
 	@echo "  make stop-gliner-only     stop the GLiNER service"
+	@echo "  make down-gliner-only     stop + remove the GLiNER service"
 	@echo
 	@echo "Rerank-only stack (CPU; pairs with Ollama on non-CUDA hosts):"
 	@echo "  make build-rerank-only    build the rerank-cpu image"
@@ -86,6 +88,7 @@ help:
 	@echo "  make up-rerank-only       run the rerank service on inference-net (no host port)"
 	@echo "  make up-dev-rerank-only   like 'up-rerank-only', but publishes the port on the host"
 	@echo "  make stop-rerank-only     stop the rerank service"
+	@echo "  make down-rerank-only     stop + remove the rerank service"
 	@echo
 	@echo "CLIP-only stack (CPU; pairs with Ollama on non-CUDA hosts):"
 	@echo "  make build-clip-only      build the clip-cpu image"
@@ -93,6 +96,7 @@ help:
 	@echo "  make up-clip-only         run the CLIP service on inference-net (no host port)"
 	@echo "  make up-dev-clip-only     like 'up-clip-only', but publishes the port on the host"
 	@echo "  make stop-clip-only       stop the CLIP service"
+	@echo "  make down-clip-only       stop + remove the CLIP service"
 
 # --- Full stack ---------------------------------------------------------
 
@@ -125,6 +129,11 @@ up-dev:
 stop:
 	$(COMPOSE) $(PROFILE_FLAG) stop
 
+# Stop + remove the active service set. The huggingface-cache volume is
+# external, so model weights survive — the next 'up' won't re-download.
+down:
+	$(COMPOSE) $(PROFILE_FLAG) down
+
 # --- NER-only stack -----------------------------------------------------
 #
 # Uses the same external inference-net + huggingface-cache as the full
@@ -146,6 +155,10 @@ up-dev-gliner-only:
 
 stop-gliner-only:
 	$(COMPOSE_NER_ONLY) stop
+
+# Stop + remove the GLiNER service. External huggingface-cache survives.
+down-gliner-only:
+	$(COMPOSE_NER_ONLY) down
 
 # --- Rerank-only stack --------------------------------------------------
 #
@@ -169,6 +182,10 @@ up-dev-rerank-only:
 stop-rerank-only:
 	$(COMPOSE_RERANK_ONLY) stop
 
+# Stop + remove the rerank service. External huggingface-cache survives.
+down-rerank-only:
+	$(COMPOSE_RERANK_ONLY) down
+
 # --- CLIP-only stack ----------------------------------------------------
 #
 # Uses the same external inference-net + huggingface-cache as the full
@@ -190,3 +207,7 @@ up-dev-clip-only:
 
 stop-clip-only:
 	$(COMPOSE_CLIP_ONLY) stop
+
+# Stop + remove the CLIP service. External huggingface-cache survives.
+down-clip-only:
+	$(COMPOSE_CLIP_ONLY) down
