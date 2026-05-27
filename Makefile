@@ -29,10 +29,10 @@
 .DEFAULT_GOAL := help
 
 .PHONY: help network volumes \
-        build bundle up stop \
-        build-gliner-only bundle-gliner-only up-gliner-only stop-gliner-only \
-        build-rerank-only bundle-rerank-only up-rerank-only stop-rerank-only \
-        build-clip-only bundle-clip-only up-clip-only stop-clip-only
+        build bundle up up-dev stop \
+        build-gliner-only bundle-gliner-only up-gliner-only up-dev-gliner-only stop-gliner-only \
+        build-rerank-only bundle-rerank-only up-rerank-only up-dev-rerank-only stop-rerank-only \
+        build-clip-only bundle-clip-only up-clip-only up-dev-clip-only stop-clip-only
 
 # Service-set profile for the full stack. Read from .env; empty = core stack.
 PROFILE ?= $(strip $(shell test -f .env && grep -E '^PROFILE=' .env | cut -d= -f2))
@@ -47,10 +47,14 @@ VLLM_SERVICE_VERSION ?= $(shell \
       echo "$$(date +%Y-%m-%d)$${_s:+-$$_s}"; } )
 export VLLM_SERVICE_VERSION
 
-COMPOSE             := docker compose --env-file .env -f docker/compose.yaml -f docker/compose.override.yaml
-COMPOSE_NER_ONLY    := docker compose --env-file .env -f docker/compose.gliner-only.yaml -f docker/compose.gliner-only.override.yaml
-COMPOSE_RERANK_ONLY := docker compose --env-file .env -f docker/compose.rerank-only.yaml -f docker/compose.rerank-only.override.yaml
-COMPOSE_CLIP_ONLY   := docker compose --env-file .env -f docker/compose.clip-only.yaml -f docker/compose.clip-only.override.yaml
+COMPOSE                 := docker compose --env-file .env -f docker/compose.yaml
+COMPOSE_DEV             := docker compose --env-file .env -f docker/compose.yaml -f docker/compose.override.yaml
+COMPOSE_NER_ONLY        := docker compose --env-file .env -f docker/compose.gliner-only.yaml
+COMPOSE_NER_ONLY_DEV    := docker compose --env-file .env -f docker/compose.gliner-only.yaml -f docker/compose.gliner-only.override.yaml
+COMPOSE_RERANK_ONLY     := docker compose --env-file .env -f docker/compose.rerank-only.yaml
+COMPOSE_RERANK_ONLY_DEV := docker compose --env-file .env -f docker/compose.rerank-only.yaml -f docker/compose.rerank-only.override.yaml
+COMPOSE_CLIP_ONLY       := docker compose --env-file .env -f docker/compose.clip-only.yaml
+COMPOSE_CLIP_ONLY_DEV   := docker compose --env-file .env -f docker/compose.clip-only.yaml -f docker/compose.clip-only.override.yaml
 # Empty PROFILE -> no flag (core stack); PROFILE=media -> --profile media.
 PROFILE_FLAG := $(if $(PROFILE),--profile $(PROFILE),)
 
@@ -62,29 +66,33 @@ help:
 	@echo "  make volumes          create the huggingface-cache Docker volume"
 	@echo "  make build            build images for the active service set"
 	@echo "  make bundle           ship images as a versioned .tar.gz pair"
-	@echo "  make up               run the active service set (no rebuild)"
+	@echo "  make up               run the active service set (production shape, no host ports)"
+	@echo "  make up-dev           like 'up', but publishes the router port on the host"
 	@echo "  make stop             stop the active service set"
 	@echo
 	@echo "  Leave PROFILE empty in .env for the core stack; set PROFILE=media"
 	@echo "  to add audio + translate. Override: make up PROFILE=media"
 	@echo
 	@echo "NER-only stack (CPU; pairs with Ollama on non-CUDA hosts):"
-	@echo "  make build-gliner-only   build the gliner-cpu image"
-	@echo "  make bundle-gliner-only  ship the gliner-cpu image as a versioned .tar.gz"
-	@echo "  make up-gliner-only      run the GLiNER service on inference-net"
-	@echo "  make stop-gliner-only    stop the GLiNER service"
+	@echo "  make build-gliner-only    build the gliner-cpu image"
+	@echo "  make bundle-gliner-only   ship the gliner-cpu image as a versioned .tar.gz"
+	@echo "  make up-gliner-only       run the GLiNER service on inference-net (no host port)"
+	@echo "  make up-dev-gliner-only   like 'up-gliner-only', but publishes the port on the host"
+	@echo "  make stop-gliner-only     stop the GLiNER service"
 	@echo
 	@echo "Rerank-only stack (CPU; pairs with Ollama on non-CUDA hosts):"
-	@echo "  make build-rerank-only  build the rerank-cpu image"
-	@echo "  make bundle-rerank-only ship the rerank-cpu image as a versioned .tar.gz"
-	@echo "  make up-rerank-only     run the rerank service on inference-net"
-	@echo "  make stop-rerank-only   stop the rerank service"
+	@echo "  make build-rerank-only    build the rerank-cpu image"
+	@echo "  make bundle-rerank-only   ship the rerank-cpu image as a versioned .tar.gz"
+	@echo "  make up-rerank-only       run the rerank service on inference-net (no host port)"
+	@echo "  make up-dev-rerank-only   like 'up-rerank-only', but publishes the port on the host"
+	@echo "  make stop-rerank-only     stop the rerank service"
 	@echo
 	@echo "CLIP-only stack (CPU; pairs with Ollama on non-CUDA hosts):"
-	@echo "  make build-clip-only    build the clip-cpu image"
-	@echo "  make bundle-clip-only   ship the clip-cpu image as a versioned .tar.gz"
-	@echo "  make up-clip-only       run the CLIP service on inference-net"
-	@echo "  make stop-clip-only     stop the CLIP service"
+	@echo "  make build-clip-only      build the clip-cpu image"
+	@echo "  make bundle-clip-only     ship the clip-cpu image as a versioned .tar.gz"
+	@echo "  make up-clip-only         run the CLIP service on inference-net (no host port)"
+	@echo "  make up-dev-clip-only     like 'up-clip-only', but publishes the port on the host"
+	@echo "  make stop-clip-only       stop the CLIP service"
 
 # --- Full stack ---------------------------------------------------------
 
@@ -104,9 +112,14 @@ build:
 bundle:
 	./scripts/bundle_images.sh $(PROFILE)
 
-# Run the active service set without rebuilding images.
+# Run the active service set without rebuilding images (production shape, no host ports).
 up:
 	$(COMPOSE) $(PROFILE_FLAG) up --no-build
+
+# Like 'up' but layers compose.override.yaml on top to publish the
+# LiteLLM router port on the host.
+up-dev:
+	$(COMPOSE_DEV) $(PROFILE_FLAG) up --no-build
 
 # Stop the active service set.
 stop:
@@ -127,6 +140,10 @@ bundle-gliner-only:
 up-gliner-only:
 	$(COMPOSE_NER_ONLY) up --no-build
 
+# Like 'up-gliner-only' but publishes the GLiNER port on the host.
+up-dev-gliner-only:
+	$(COMPOSE_NER_ONLY_DEV) up --no-build
+
 stop-gliner-only:
 	$(COMPOSE_NER_ONLY) stop
 
@@ -145,6 +162,10 @@ bundle-rerank-only:
 up-rerank-only:
 	$(COMPOSE_RERANK_ONLY) up --no-build
 
+# Like 'up-rerank-only' but publishes the rerank port on the host.
+up-dev-rerank-only:
+	$(COMPOSE_RERANK_ONLY_DEV) up --no-build
+
 stop-rerank-only:
 	$(COMPOSE_RERANK_ONLY) stop
 
@@ -162,6 +183,10 @@ bundle-clip-only:
 
 up-clip-only:
 	$(COMPOSE_CLIP_ONLY) up --no-build
+
+# Like 'up-clip-only' but publishes the CLIP port on the host.
+up-dev-clip-only:
+	$(COMPOSE_CLIP_ONLY_DEV) up --no-build
 
 stop-clip-only:
 	$(COMPOSE_CLIP_ONLY) stop
