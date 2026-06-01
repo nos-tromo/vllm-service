@@ -120,6 +120,18 @@ services:
         if [ -n "$${CHAT_TEMPLATE_CONTENT_FORMAT:-}" ]; then
           set -- "$@" --chat-template-content-format "$${CHAT_TEMPLATE_CONTENT_FORMAT}";
         fi;
+        if [ "$${CHAT_ENABLE_AUTO_TOOL_CHOICE:-false}" = "true" ]; then
+          set -- "$@" --enable-auto-tool-choice;
+        fi;
+        if [ -n "$${CHAT_TOOL_CALL_PARSER:-}" ]; then
+          set -- "$@" --tool-call-parser "$${CHAT_TOOL_CALL_PARSER}";
+        fi;
+        if [ -n "$${CHAT_REASONING_PARSER:-}" ]; then
+          set -- "$@" --reasoning-parser "$${CHAT_REASONING_PARSER}";
+        fi;
+        if [ -n "$${CHAT_CHAT_TEMPLATE:-}" ]; then
+          set -- "$@" --chat-template "$${CHAT_CHAT_TEMPLATE}";
+        fi;
         if [ -n "$${CHAT_DEFAULT_CHAT_TEMPLATE_KWARGS:-}" ]; then
           set -- "$@" --default-chat-template-kwargs "$${CHAT_DEFAULT_CHAT_TEMPLATE_KWARGS}";
         fi;
