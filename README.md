@@ -72,6 +72,21 @@ longer finds the compose file.
    GPU-placement settings. `make up-dev` publishes the router on host port
    `9000`; if that port is already in use, set `ROUTER_HOST_PORT` in `.env`
    to another free port such as `9001`.
+
+   If `TEXT_MODEL` is a Gemma 4 instruct checkpoint and you want OpenAI-style
+   tool calling, also set these chat flags in `.env`:
+
+   ```bash
+   CHAT_ENABLE_AUTO_TOOL_CHOICE=true
+   CHAT_TOOL_CALL_PARSER=gemma4
+   CHAT_REASONING_PARSER=gemma4
+   CHAT_CHAT_TEMPLATE=examples/tool_chat_template_gemma4.jinja
+   ```
+
+   Without them, vLLM rejects `tool_choice="auto"` even though the model
+   itself supports tool use. `CHAT_REASONING_PARSER` is optional — enable it
+   only if you want the model's thinking traces, as it can interfere with
+   tool-call parsing.
 2. Ensure the external `huggingface-cache` Docker volume exists.
 3. Initialize the shared proxy network and persistent model cache:
 
