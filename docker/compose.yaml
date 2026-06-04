@@ -310,7 +310,7 @@ services:
       HF_HUB_OFFLINE: ${HF_HUB_OFFLINE:-1}
       TRANSFORMERS_OFFLINE: ${TRANSFORMERS_OFFLINE:-1}
       CLIP_MODEL: ${CLIP_MODEL:-openai/clip-vit-base-patch32}
-      CLIP_DEVICE: ${CLIP_DEVICE:-cuda}
+      CLIP_DEVICE: cuda
     volumes: *vllm-volumes
     healthcheck:
       test: ["CMD-SHELL", "curl -sf http://localhost:8000/health || exit 1"]
