@@ -52,7 +52,7 @@ CPU deployments:
 - **Rerank-only** (`docker/compose.rerank-only.yaml`) — a single
   `rerank-cpu` container exposing the same Jina-shape `/rerank` contract
   as the full stack. See "Rerank-only deployment" below.
-- **CLIP-only** (`docker/compose.clip-only.yaml`) — a single `clip-embed`
+- **CLIP-only** (`docker/compose.clip-only.yaml`) — a single `clip-only`
   container exposing the same `/clip/embed_{image,text}` contract as the
   full stack. See "CLIP-only deployment" below.
 
@@ -270,7 +270,7 @@ document on modern CPUs. Fine for typical top-K rerank workloads (K ≤
 
 `docker/compose.clip-only.yaml` is a standalone compose project for the
 same audience as NER-only / Rerank-only. It runs one container,
-`clip-embed`, built from `Dockerfile.clip.cpu` (uv-managed Python 3.11,
+`clip-only`, built from `Dockerfile.clip.cpu` (uv-managed Python 3.11,
 CPU torch, `transformers`, `Pillow`). No LiteLLM router, no GPU
 reservation. The container ships `docker/clip_server.py` — a small
 FastAPI app that loads the same `CLIPModel` + `AutoProcessor` pair
@@ -288,7 +288,7 @@ Bring it up:
 make network            # if not already created
 make volumes            # if not already created
 make build-clip-only    # builds vllm-service-clip-cpu
-make up-clip-only       # starts the clip-embed container
+make up-clip-only       # starts the clip-only container
 ```
 
 On first start the container downloads the CLIP weights to the shared
@@ -302,16 +302,16 @@ this shape:
 
 ```bash
 # text tower
-curl http://clip-embed:8000/clip/embed_text \
+curl http://clip-only:8000/clip/embed_text \
   -H "Content-Type: application/json" \
   -d '{"text": "a photo of a cat"}'
 
 # image tower (multipart)
-curl http://clip-embed:8000/clip/embed_image \
+curl http://clip-only:8000/clip/embed_image \
   -F "file=@/path/to/img.jpg"
 
 # dimension probe (for Qdrant collection compat checks)
-curl http://clip-embed:8000/clip/dimension
+curl http://clip-only:8000/clip/dimension
 ```
 
 Response shape for both embed endpoints:

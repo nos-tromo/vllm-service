@@ -5,11 +5,11 @@ name: vllm-service-clip-only
 # CPU-only Linux, AMD/ROCm boxes running Ollama for chat/embed).
 #
 # Topology:
-#   - one container, `clip-embed`, on the external `inference-net`
+#   - one container, `clip-only`, on the external `inference-net`
 #   - no LiteLLM router, no vLLM backends, no GPU reservation
 #   - the existing pass-through URLs `http://vllm-router:4000/clip/*` are
 #     unavailable in this shape; consumers point at
-#     `http://clip-embed:8000/clip/*`
+#     `http://clip-only:8000/clip/*`
 #
 # Auth: the container has no built-in Bearer-token gate. `inference-net`
 # is a private Docker network shared only between trusted compose
@@ -21,8 +21,8 @@ name: vllm-service-clip-only
 # CLIP set against `inference-net`.
 
 x-no-proxy-env: &no-proxy-env
-  NO_PROXY: "clip-embed,localhost,127.0.0.1,172.16.0.0/12,10.0.0.0/8${EXTRA_NO_PROXY:-}"
-  no_proxy: "clip-embed,localhost,127.0.0.1,172.16.0.0/12,10.0.0.0/8${EXTRA_NO_PROXY:-}"
+  NO_PROXY: "clip-only,localhost,127.0.0.1,172.16.0.0/12,10.0.0.0/8${EXTRA_NO_PROXY:-}"
+  no_proxy: "clip-only,localhost,127.0.0.1,172.16.0.0/12,10.0.0.0/8${EXTRA_NO_PROXY:-}"
 
 x-env-file: &env-file
   - path: ../.env
@@ -38,7 +38,7 @@ x-logging: &default-logging
     compress: "true"
 
 services:
-  clip-embed:
+  clip-only:
     image: vllm-service-clip-cpu:${VLLM_SERVICE_VERSION:-latest}
     build:
       context: ..
@@ -62,7 +62,7 @@ services:
     networks:
       inference-net:
         aliases:
-          - clip-embed
+          - clip-only
     restart: unless-stopped
 
 volumes:

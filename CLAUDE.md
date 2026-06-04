@@ -47,10 +47,10 @@ Four independent compose projects, picked per host:
   FastAPI server at `docker/rerank_server.py` that drives the cross-
   encoder directly (tokenize → forward → sigmoid).
 - **CLIP-only** (`docker/compose.clip-only.yaml`, CPU OK) — a single
-  `clip-embed` container on `inference-net`, no router, no GPU. Same
+  `clip-only` container on `inference-net`, no router, no GPU. Same
   audience as NER-only / Rerank-only; co-deployable so a non-CUDA host
   can offer `/gliner`, `/rerank`, and `/clip/embed_{image,text}` at
-  once. Reached as `http://clip-embed:8000/clip/*`. Speaks the same
+  once. Reached as `http://clip-only:8000/clip/*`. Speaks the same
   contract the full-stack `clip` service exposes (also a FastAPI app
   on the same Python file), so docint's image-ingestion path
   (`docint/utils/clip_client.py`) targets either backend by changing
@@ -122,7 +122,7 @@ typically co-deployed with NER-only and Rerank-only):
 
 ```bash
 make build-clip-only      # builds vllm-service-clip-cpu
-make up-clip-only         # one clip-embed container on inference-net (no host port)
+make up-clip-only         # one clip-only container on inference-net (no host port)
 make up-dev-clip-only     # like 'up-clip-only', but publishes the CLIP port on the host
 make stop-clip-only
 make bundle-clip-only     # versioned .tar.gz of the clip-cpu image

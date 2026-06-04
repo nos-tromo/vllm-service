@@ -6,9 +6,9 @@
 ### docker/compose.clip-only.yaml so the service is reachable at
 ### localhost:${CLIP_HOST_PORT} for direct testing; `make up-clip-only`
 ### runs the base alone (production shape). Sibling containers reach the
-### service as `clip-embed:8000` on inference-net regardless of this override.
+### service as `clip-only:8000` on inference-net regardless of this override.
 
 services:
-  clip-embed:
+  clip-only:
     ports:
       - "${CLIP_HOST_PORT:-8003}:8000"
