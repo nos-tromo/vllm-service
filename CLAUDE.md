@@ -35,10 +35,10 @@ Four independent compose projects, picked per host:
   Qdrant). Uses the CPU-only `Dockerfile.gliner.cpu` (non-CUDA PyTorch
   base, multi-arch) and defaults `NER_MODEL` to `gliner_medium-v2.5`.
 - **Rerank-only** (`docker/compose.rerank-only.yaml`, CPU OK) — a single
-  `rerank-cpu` container on `inference-net`, no router, no GPU. Same
+  `rerank-only` container on `inference-net`, no router, no GPU. Same
   audience as NER-only; pairs with it so an Ollama-on-CPU host can offer
   both `/gliner` and `/rerank` without the full CUDA stack. Reached as
-  `http://rerank-cpu:8000/rerank` on `inference-net`. Speaks the same
+  `http://rerank-only:8000/rerank` on `inference-net`. Speaks the same
   Jina-shape `{model, query, documents, top_n}` → `{results: [{index,
   relevance_score}]}` contract as the full-stack vLLM `rerank` service,
   so consumers (docint's `VLLMRerankPostprocessor`) target either
@@ -110,11 +110,11 @@ Or, for the Rerank-only shape (no CUDA, no router — pairs with Ollama,
 typically co-deployed with NER-only):
 
 ```bash
-make build-rerank-only    # builds vllm-service-rerank-cpu
-make up-rerank-only       # one rerank-cpu container on inference-net (no host port)
+make build-rerank-only    # builds vllm-service-rerank-only
+make up-rerank-only       # one rerank-only container on inference-net (no host port)
 make up-dev-rerank-only   # like 'up-rerank-only', but publishes the rerank port on the host
 make stop-rerank-only
-make bundle-rerank-only   # versioned .tar.gz of the rerank-cpu image
+make bundle-rerank-only   # versioned .tar.gz of the rerank-only image
 ```
 
 Or, for the CLIP-only shape (no CUDA, no router — pairs with Ollama,

@@ -83,8 +83,8 @@ help:
 	@echo "  make down-gliner-only     stop + remove the GLiNER service"
 	@echo
 	@echo "Rerank-only stack (CPU; pairs with Ollama on non-CUDA hosts):"
-	@echo "  make build-rerank-only    build the rerank-cpu image"
-	@echo "  make bundle-rerank-only   ship the rerank-cpu image as a versioned .tar.gz"
+	@echo "  make build-rerank-only    build the rerank-only image"
+	@echo "  make bundle-rerank-only   ship the rerank-only image as a versioned .tar.gz"
 	@echo "  make up-rerank-only       run the rerank service on inference-net (no host port)"
 	@echo "  make up-dev-rerank-only   like 'up-rerank-only', but publishes the port on the host"
 	@echo "  make stop-rerank-only     stop the rerank service"

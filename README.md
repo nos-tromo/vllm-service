@@ -50,7 +50,7 @@ CPU deployments:
 - **NER-only** (`docker/compose.gliner-only.yaml`) — a single `gliner-only`
   container exposing `/gliner`. See "NER-only deployment" below.
 - **Rerank-only** (`docker/compose.rerank-only.yaml`) — a single
-  `rerank-cpu` container exposing the same Jina-shape `/rerank` contract
+  `rerank-only` container exposing the same Jina-shape `/rerank` contract
   as the full stack. See "Rerank-only deployment" below.
 - **CLIP-only** (`docker/compose.clip-only.yaml`) — a single `clip-only`
   container exposing the same `/clip/embed_{image,text}` contract as the
@@ -192,7 +192,7 @@ per-keystroke use.
 `docker/compose.rerank-only.yaml` is a standalone compose project for the
 same audience as NER-only — hosts without an NVIDIA GPU that still want
 to offer rerank to the consuming app. It runs one container,
-`rerank-cpu`, built from `Dockerfile.rerank.cpu` (uv-managed Python 3.11,
+`rerank-only`, built from `Dockerfile.rerank.cpu` (uv-managed Python 3.11,
 CPU torch, `transformers`). No LiteLLM router, no GPU reservation. The
 container ships a tiny FastAPI server (`docker/rerank_server.py`) that
 drives a Hugging Face cross-encoder directly (tokenize → forward →
@@ -207,8 +207,8 @@ Bring it up:
 ```bash
 make network              # if not already created
 make volumes              # if not already created
-make build-rerank-only    # builds vllm-service-rerank-cpu
-make up-rerank-only       # starts the rerank-cpu container
+make build-rerank-only    # builds vllm-service-rerank-only
+make up-rerank-only       # starts the rerank-only container
 ```
 
 On first start the container downloads the reranker weights to the
@@ -222,7 +222,7 @@ Consumers on `inference-net` reach it directly — there's no router in
 this shape:
 
 ```bash
-curl http://rerank-cpu:8000/rerank \
+curl http://rerank-only:8000/rerank \
   -H "Content-Type: application/json" \
   -d '{
     "query": "what is RAG?",
@@ -321,7 +321,7 @@ Response shape for both embed endpoints:
 ```
 
 No `Authorization` header is required (same posture as `gliner-only` and
-`rerank-cpu`).
+`rerank-only`).
 
 Override defaults via `.env` — only `CLIP_*` knobs apply in this shape:
 
@@ -356,7 +356,7 @@ override with `make bundle PROFILE=media`):
 make bundle              # core only (chat, embed, rerank, gliner, clip, router)
 make bundle PROFILE=media  # core + media (translate, audio)
 make bundle-gliner-only     # NER-only shape (just vllm-service-gliner-cpu)
-make bundle-rerank-only  # Rerank-only shape (just vllm-service-rerank-cpu)
+make bundle-rerank-only  # Rerank-only shape (just vllm-service-rerank-only)
 make bundle-clip-only    # CLIP-only shape (just vllm-service-clip-cpu)
 ```
 
