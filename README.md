@@ -47,7 +47,7 @@ For hosts that cannot run the CUDA stack (Mac dev boxes, ROCm or CPU-only
 Linux running Ollama for chat/embed), this repo also ships three standalone
 CPU deployments:
 
-- **NER-only** (`docker/compose.gliner-only.yaml`) — a single `gliner-gliner`
+- **NER-only** (`docker/compose.gliner-only.yaml`) — a single `gliner-only`
   container exposing `/gliner`. See "NER-only deployment" below.
 - **Rerank-only** (`docker/compose.rerank-only.yaml`) — a single
   `rerank-cpu` container exposing the same Jina-shape `/rerank` contract
@@ -137,7 +137,7 @@ If the consuming app is outside that network, use a host or reverse-proxy URL:
 `docker/compose.gliner-only.yaml` is a standalone compose project for hosts
 that don't run the full vLLM stack — typically because they're on macOS,
 have no NVIDIA GPU, or rely on Ollama for chat/embeddings. It runs one
-container, `gliner-gliner`, built from `Dockerfile.gliner.cpu` (non-CUDA
+container, `gliner-only`, built from `Dockerfile.gliner.cpu` (non-CUDA
 PyTorch base, multi-arch). No LiteLLM router, no GPU reservation.
 
 Bring it up:
@@ -146,7 +146,7 @@ Bring it up:
 make network            # if not already created
 make volumes            # if not already created
 make build-gliner-only     # builds vllm-service-gliner-cpu
-make up-gliner-only        # starts the gliner-gliner container
+make up-gliner-only        # starts the gliner-only container
 ```
 
 On first start the container downloads the GLiNER weights to the shared
@@ -159,7 +159,7 @@ Consumers on `inference-net` reach it directly — there's no router in this
 shape:
 
 ```bash
-curl http://gliner-gliner:8000/gliner \
+curl http://gliner-only:8000/gliner \
   -H "Content-Type: application/json" \
   -d '{
     "text": "Alice works at Acme Corp in Berlin.",
@@ -249,7 +249,7 @@ Response:
 ```
 
 No `Authorization` header is required: the container has no built-in
-Bearer-token gate (same posture as `gliner-gliner`).
+Bearer-token gate (same posture as `gliner-only`).
 
 Override defaults via `.env` — only `RERANK_*` knobs apply in this shape:
 
@@ -320,7 +320,7 @@ Response shape for both embed endpoints:
 {"embedding": [0.012, -0.034, ...], "dimension": 512}
 ```
 
-No `Authorization` header is required (same posture as `gliner-gliner` and
+No `Authorization` header is required (same posture as `gliner-only` and
 `rerank-cpu`).
 
 Override defaults via `.env` — only `CLIP_*` knobs apply in this shape:
@@ -527,5 +527,5 @@ and `NER_DEVICE=cpu` in `.env`. See `.env.example` for the full list of
 
 > Hosts that can't run the CUDA stack at all should use the
 > [NER-only deployment](#gliner-only-deployment) instead — same `/gliner`
-> request/response shape, but reached at `http://gliner-gliner:8000/gliner`
+> request/response shape, but reached at `http://gliner-only:8000/gliner`
 > with no Bearer auth.

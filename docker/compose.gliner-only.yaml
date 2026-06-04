@@ -5,18 +5,18 @@ name: vllm-service-gliner-only
 # CPU-only Linux, AMD/ROCm boxes running Ollama for chat/embed).
 #
 # Topology:
-#   - one container, `gliner-gliner`, on the external `inference-net`
+#   - one container, `gliner-only`, on the external `inference-net`
 #   - no LiteLLM router, no vLLM backends, no GPU reservation
 #   - the existing pass-through URL `http://vllm-router:4000/gliner` is
-#     unavailable in this shape; consumers point at `http://gliner-gliner:8000/gliner`
+#     unavailable in this shape; consumers point at `http://gliner-only:8000/gliner`
 #
 # Auth: the container has no built-in Bearer-token gate (Ray Serve has no
 # auth by default). `inference-net` is a private Docker network shared only
 # between trusted compose projects, mirroring how `data-net` exposes Qdrant.
 
 x-no-proxy-env: &no-proxy-env
-  NO_PROXY: "gliner-gliner,localhost,127.0.0.1,172.16.0.0/12,10.0.0.0/8${EXTRA_NO_PROXY:-}"
-  no_proxy: "gliner-gliner,localhost,127.0.0.1,172.16.0.0/12,10.0.0.0/8${EXTRA_NO_PROXY:-}"
+  NO_PROXY: "gliner-only,localhost,127.0.0.1,172.16.0.0/12,10.0.0.0/8${EXTRA_NO_PROXY:-}"
+  no_proxy: "gliner-only,localhost,127.0.0.1,172.16.0.0/12,10.0.0.0/8${EXTRA_NO_PROXY:-}"
 
 x-env-file: &env-file
   - path: ../.env
@@ -32,7 +32,7 @@ x-logging: &default-logging
     compress: "true"
 
 services:
-  gliner-gliner:
+  gliner-only:
     image: vllm-service-gliner-cpu:${VLLM_SERVICE_VERSION:-latest}
     build:
       context: ..
@@ -84,7 +84,7 @@ services:
     networks:
       inference-net:
         aliases:
-          - gliner-gliner
+          - gliner-only
     restart: unless-stopped
 
 volumes:

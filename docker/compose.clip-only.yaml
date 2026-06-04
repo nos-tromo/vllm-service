@@ -14,7 +14,7 @@ name: vllm-service-clip-only
 # Auth: the container has no built-in Bearer-token gate. `inference-net`
 # is a private Docker network shared only between trusted compose
 # projects, mirroring how `data-net` exposes Qdrant and how the
-# `gliner-gliner` and `rerank-cpu` services expose their endpoints.
+# `gliner-only` and `rerank-cpu` services expose their endpoints.
 #
 # Pair with `compose.gliner-only.yaml` and `compose.rerank-only.yaml` on
 # the same host to give a non-CUDA dev box the full GLiNER + rerank +

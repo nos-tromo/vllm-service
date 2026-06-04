@@ -27,10 +27,10 @@ Four independent compose projects, picked per host:
   shape; reached as `http://vllm-router:4000/...` on `inference-net`.
   GLiNER is routed via the router's `/gliner` pass-through.
 - **NER-only** (`docker/compose.gliner-only.yaml`, CPU OK) — a single
-  `gliner-gliner` container on `inference-net`, no router, no GPU requirement.
+  `gliner-only` container on `inference-net`, no router, no GPU requirement.
   Intended for hosts that run Ollama (or another non-vLLM provider) for
   chat/embeddings but still want NER out of the consuming app. Reached
-  directly as `http://gliner-gliner:8000/gliner` on `inference-net`; there is
+  directly as `http://gliner-only:8000/gliner` on `inference-net`; there is
   no Bearer auth (trust `inference-net` the way `data-net` is trusted for
   Qdrant). Uses the CPU-only `Dockerfile.gliner.cpu` (non-CUDA PyTorch
   base, multi-arch) and defaults `NER_MODEL` to `gliner_medium-v2.5`.
@@ -100,7 +100,7 @@ Or, for the NER-only shape (no CUDA, no router — pairs with Ollama):
 
 ```bash
 make build-gliner-only    # builds vllm-service-gliner-cpu
-make up-gliner-only       # one gliner-gliner container on inference-net (no host port)
+make up-gliner-only       # one gliner-only container on inference-net (no host port)
 make up-dev-gliner-only   # like 'up-gliner-only', but publishes the GLiNER port on the host
 make stop-gliner-only
 make bundle-gliner-only   # versioned .tar.gz of the gliner-cpu image
