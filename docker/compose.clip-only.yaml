@@ -48,7 +48,7 @@ services:
     environment:
       <<: *no-proxy-env
       CLIP_MODEL: ${CLIP_MODEL:-openai/clip-vit-base-patch32}
-      CLIP_DEVICE: ${CLIP_DEVICE:-cpu}
+      CLIP_DEVICE: cpu
       HF_HUB_OFFLINE: ${HF_HUB_OFFLINE:-1}
       TRANSFORMERS_OFFLINE: ${TRANSFORMERS_OFFLINE:-1}
     volumes:
