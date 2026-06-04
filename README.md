@@ -31,7 +31,7 @@ Internally it runs:
 - `chat`
 - `embed`
 - `rerank`
-- `ner` (GLiNER, served via Ray Serve rather than vLLM)
+- `gliner` (GLiNER, served via Ray Serve rather than vLLM)
 - `clip` (CLIP image+text tower, served via FastAPI rather than vLLM)
 
 The following services are optional and only started with `--profile media`:
@@ -47,12 +47,12 @@ For hosts that cannot run the CUDA stack (Mac dev boxes, ROCm or CPU-only
 Linux running Ollama for chat/embed), this repo also ships three standalone
 CPU deployments:
 
-- **NER-only** (`docker/compose.gliner-only.yaml`) — a single `gliner-ner`
+- **NER-only** (`docker/compose.gliner-only.yaml`) — a single `gliner-only`
   container exposing `/gliner`. See "NER-only deployment" below.
 - **Rerank-only** (`docker/compose.rerank-only.yaml`) — a single
-  `rerank-cpu` container exposing the same Jina-shape `/rerank` contract
+  `rerank-only` container exposing the same Jina-shape `/rerank` contract
   as the full stack. See "Rerank-only deployment" below.
-- **CLIP-only** (`docker/compose.clip-only.yaml`) — a single `clip-embed`
+- **CLIP-only** (`docker/compose.clip-only.yaml`) — a single `clip-only`
   container exposing the same `/clip/embed_{image,text}` contract as the
   full stack. See "CLIP-only deployment" below.
 
@@ -102,7 +102,7 @@ longer finds the compose file.
 
    ```bash
    make build                 # build images for the active service set
-   make up-dev                # core stack (router, chat, embed, rerank, ner) with the router published on the host
+   make up-dev                # core stack (router, chat, embed, rerank, gliner) with the router published on the host
    make up-dev PROFILE=media  # core + media (translate, audio) with host ports
    make up                    # same as up-dev but production shape (no host ports)
    ```
@@ -137,7 +137,7 @@ If the consuming app is outside that network, use a host or reverse-proxy URL:
 `docker/compose.gliner-only.yaml` is a standalone compose project for hosts
 that don't run the full vLLM stack — typically because they're on macOS,
 have no NVIDIA GPU, or rely on Ollama for chat/embeddings. It runs one
-container, `gliner-ner`, built from `Dockerfile.gliner.cpu` (non-CUDA
+container, `gliner-only`, built from `Dockerfile.gliner.cpu` (non-CUDA
 PyTorch base, multi-arch). No LiteLLM router, no GPU reservation.
 
 Bring it up:
@@ -146,7 +146,7 @@ Bring it up:
 make network            # if not already created
 make volumes            # if not already created
 make build-gliner-only     # builds vllm-service-gliner-cpu
-make up-gliner-only        # starts the gliner-ner container
+make up-gliner-only        # starts the gliner-only container
 ```
 
 On first start the container downloads the GLiNER weights to the shared
@@ -159,7 +159,7 @@ Consumers on `inference-net` reach it directly — there's no router in this
 shape:
 
 ```bash
-curl http://gliner-ner:8000/gliner \
+curl http://gliner-only:8000/gliner \
   -H "Content-Type: application/json" \
   -d '{
     "text": "Alice works at Acme Corp in Berlin.",
@@ -192,7 +192,7 @@ per-keystroke use.
 `docker/compose.rerank-only.yaml` is a standalone compose project for the
 same audience as NER-only — hosts without an NVIDIA GPU that still want
 to offer rerank to the consuming app. It runs one container,
-`rerank-cpu`, built from `Dockerfile.rerank.cpu` (uv-managed Python 3.11,
+`rerank-only`, built from `Dockerfile.rerank.cpu` (uv-managed Python 3.11,
 CPU torch, `transformers`). No LiteLLM router, no GPU reservation. The
 container ships a tiny FastAPI server (`docker/rerank_server.py`) that
 drives a Hugging Face cross-encoder directly (tokenize → forward →
@@ -207,8 +207,8 @@ Bring it up:
 ```bash
 make network              # if not already created
 make volumes              # if not already created
-make build-rerank-only    # builds vllm-service-rerank-cpu
-make up-rerank-only       # starts the rerank-cpu container
+make build-rerank-only    # builds vllm-service-rerank-only
+make up-rerank-only       # starts the rerank-only container
 ```
 
 On first start the container downloads the reranker weights to the
@@ -222,7 +222,7 @@ Consumers on `inference-net` reach it directly — there's no router in
 this shape:
 
 ```bash
-curl http://rerank-cpu:8000/rerank \
+curl http://rerank-only:8000/rerank \
   -H "Content-Type: application/json" \
   -d '{
     "query": "what is RAG?",
@@ -249,7 +249,7 @@ Response:
 ```
 
 No `Authorization` header is required: the container has no built-in
-Bearer-token gate (same posture as `gliner-ner`).
+Bearer-token gate (same posture as `gliner-only`).
 
 Override defaults via `.env` — only `RERANK_*` knobs apply in this shape:
 
@@ -270,7 +270,7 @@ document on modern CPUs. Fine for typical top-K rerank workloads (K ≤
 
 `docker/compose.clip-only.yaml` is a standalone compose project for the
 same audience as NER-only / Rerank-only. It runs one container,
-`clip-embed`, built from `Dockerfile.clip.cpu` (uv-managed Python 3.11,
+`clip-only`, built from `Dockerfile.clip.cpu` (uv-managed Python 3.11,
 CPU torch, `transformers`, `Pillow`). No LiteLLM router, no GPU
 reservation. The container ships `docker/clip_server.py` — a small
 FastAPI app that loads the same `CLIPModel` + `AutoProcessor` pair
@@ -288,7 +288,7 @@ Bring it up:
 make network            # if not already created
 make volumes            # if not already created
 make build-clip-only    # builds vllm-service-clip-cpu
-make up-clip-only       # starts the clip-embed container
+make up-clip-only       # starts the clip-only container
 ```
 
 On first start the container downloads the CLIP weights to the shared
@@ -302,16 +302,16 @@ this shape:
 
 ```bash
 # text tower
-curl http://clip-embed:8000/clip/embed_text \
+curl http://clip-only:8000/clip/embed_text \
   -H "Content-Type: application/json" \
   -d '{"text": "a photo of a cat"}'
 
 # image tower (multipart)
-curl http://clip-embed:8000/clip/embed_image \
+curl http://clip-only:8000/clip/embed_image \
   -F "file=@/path/to/img.jpg"
 
 # dimension probe (for Qdrant collection compat checks)
-curl http://clip-embed:8000/clip/dimension
+curl http://clip-only:8000/clip/dimension
 ```
 
 Response shape for both embed endpoints:
@@ -320,8 +320,8 @@ Response shape for both embed endpoints:
 {"embedding": [0.012, -0.034, ...], "dimension": 512}
 ```
 
-No `Authorization` header is required (same posture as `gliner-ner` and
-`rerank-cpu`).
+No `Authorization` header is required (same posture as `gliner-only` and
+`rerank-only`).
 
 Override defaults via `.env` — only `CLIP_*` knobs apply in this shape:
 
@@ -353,10 +353,10 @@ On a build host with internet (`make bundle` follows `PROFILE` from `.env`;
 override with `make bundle PROFILE=media`):
 
 ```bash
-make bundle              # core only (chat, embed, rerank, ner, clip, router)
+make bundle              # core only (chat, embed, rerank, gliner, clip, router)
 make bundle PROFILE=media  # core + media (translate, audio)
 make bundle-gliner-only     # NER-only shape (just vllm-service-gliner-cpu)
-make bundle-rerank-only  # Rerank-only shape (just vllm-service-rerank-cpu)
+make bundle-rerank-only  # Rerank-only shape (just vllm-service-rerank-only)
 make bundle-clip-only    # CLIP-only shape (just vllm-service-clip-cpu)
 ```
 
@@ -367,7 +367,7 @@ writes two gzipped tarballs in the cwd:
 
 | File | Contents |
 |---|---|
-| `vllm-service-built-<profile>-<version>.tar.gz` | Locally-built `vllm-service-{chat,embed,rerank,ner,...}` images. |
+| `vllm-service-built-<profile>-<version>.tar.gz` | Locally-built `vllm-service-{chat,embed,rerank,gliner,...}` images. |
 | `vllm-service-pulled-<profile>-<version>.tar.gz` | Externally-hosted images (LiteLLM router); re-tagged so the `name:tag@digest` references in `docker/compose.yaml` resolve after `docker load`. |
 
 The compose file references the version through
@@ -407,7 +407,7 @@ between `load` and `up`.
 - `inference-net` is an external shared Docker network used for cross-project
   service discovery and reverse-proxy access.
 - Only the `router` service joins `inference-net`; `chat`, `embed`,
-  `rerank`, `ner`, `audio`, and `translate` stay on the private network.
+  `rerank`, `gliner`, `audio`, and `translate` stay on the private network.
 - The `router` service keeps its `vllm-router` alias on `inference-net` so
   existing consumers do not need to change their `OPENAI_API_BASE`.
 
@@ -425,7 +425,7 @@ returns the currently active IDs.
 
 `NER_MODEL` is the exception: GLiNER's server has no OpenAI-shaped endpoint,
 so it is not in `model_list` and does not appear in `/v1/models`. Switching
-it still works by updating `NER_MODEL` in `.env` and restarting `ner`.
+it still works by updating `NER_MODEL` in `.env` and restarting `gliner`.
 
 ## Calling the audio service
 
@@ -488,7 +488,7 @@ make up PROFILE=media
 
 ## Calling the NER service
 
-The `ner` service runs [GLiNER](https://github.com/urchade/GLiNER), a
+The `gliner` service runs [GLiNER](https://github.com/urchade/GLiNER), a
 zero-shot Named Entity Recognition model, behind Ray Serve. Unlike the
 other backends it is **not** vLLM and does **not** expose OpenAI-compatible
 routes — its request/response shape is GLiNER-native, and it is reached
@@ -527,5 +527,5 @@ and `NER_DEVICE=cpu` in `.env`. See `.env.example` for the full list of
 
 > Hosts that can't run the CUDA stack at all should use the
 > [NER-only deployment](#gliner-only-deployment) instead — same `/gliner`
-> request/response shape, but reached at `http://gliner-ner:8000/gliner`
+> request/response shape, but reached at `http://gliner-only:8000/gliner`
 > with no Bearer auth.

@@ -5,20 +5,20 @@ name: vllm-service-rerank-only
 # CPU-only Linux, AMD/ROCm boxes running Ollama for chat/embed).
 #
 # Topology:
-#   - one container, `rerank-cpu`, on the external `inference-net`
+#   - one container, `rerank-only`, on the external `inference-net`
 #   - no LiteLLM router, no vLLM backends, no GPU reservation
 #   - the existing pass-through URL `http://vllm-router:4000/rerank` is
 #     unavailable in this shape; consumers point at
-#     `http://rerank-cpu:8000/rerank`
+#     `http://rerank-only:8000/rerank`
 #
 # Auth: the container has no built-in Bearer-token gate. `inference-net`
 # is a private Docker network shared only between trusted compose
 # projects, mirroring how `data-net` exposes Qdrant and how the
-# `gliner-ner` service exposes /gliner.
+# `gliner-only` service exposes /gliner.
 
 x-no-proxy-env: &no-proxy-env
-  NO_PROXY: "rerank-cpu,localhost,127.0.0.1,172.16.0.0/12,10.0.0.0/8${EXTRA_NO_PROXY:-}"
-  no_proxy: "rerank-cpu,localhost,127.0.0.1,172.16.0.0/12,10.0.0.0/8${EXTRA_NO_PROXY:-}"
+  NO_PROXY: "rerank-only,localhost,127.0.0.1,172.16.0.0/12,10.0.0.0/8${EXTRA_NO_PROXY:-}"
+  no_proxy: "rerank-only,localhost,127.0.0.1,172.16.0.0/12,10.0.0.0/8${EXTRA_NO_PROXY:-}"
 
 x-env-file: &env-file
   - path: ../.env
@@ -34,8 +34,8 @@ x-logging: &default-logging
     compress: "true"
 
 services:
-  rerank-cpu:
-    image: vllm-service-rerank-cpu:${VLLM_SERVICE_VERSION:-latest}
+  rerank-only:
+    image: vllm-service-rerank-only:${VLLM_SERVICE_VERSION:-latest}
     build:
       context: ..
       dockerfile: docker/Dockerfile.rerank.cpu
@@ -58,7 +58,7 @@ services:
     networks:
       inference-net:
         aliases:
-          - rerank-cpu
+          - rerank-only
     restart: unless-stopped
 
 volumes:

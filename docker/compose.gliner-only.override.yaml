@@ -5,9 +5,9 @@
 ### docker/compose.gliner-only.yaml so the service is reachable at
 ### localhost:${NER_HOST_PORT} for direct testing; `make up-gliner-only`
 ### runs the base alone (production shape). Sibling containers reach the
-### service as `gliner-ner:8000` on inference-net regardless of this override.
+### service as `gliner-only:8000` on inference-net regardless of this override.
 
 services:
-  gliner-ner:
+  gliner-only:
     ports:
       - "${NER_HOST_PORT:-8001}:8000"

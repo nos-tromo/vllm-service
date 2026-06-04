@@ -6,9 +6,9 @@
 ### docker/compose.rerank-only.yaml so the service is reachable at
 ### localhost:${RERANK_HOST_PORT} for direct testing; `make up-rerank-only`
 ### runs the base alone (production shape). Sibling containers reach the
-### service as `rerank-cpu:8000` on inference-net regardless of this override.
+### service as `rerank-only:8000` on inference-net regardless of this override.
 
 services:
-  rerank-cpu:
+  rerank-only:
     ports:
       - "${RERANK_HOST_PORT:-8002}:8000"

@@ -23,22 +23,22 @@ off-the-shelf CPU server that speaks the Jina-shape `/rerank` or
 Four independent compose projects, picked per host:
 
 - **Full stack** (`docker/compose.yaml`, CUDA-required) — chat, embed, rerank,
-  ner, router; optional audio + translate via `PROFILE=media`. The original
+  gliner, router; optional audio + translate via `PROFILE=media`. The original
   shape; reached as `http://vllm-router:4000/...` on `inference-net`.
   GLiNER is routed via the router's `/gliner` pass-through.
 - **NER-only** (`docker/compose.gliner-only.yaml`, CPU OK) — a single
-  `gliner-ner` container on `inference-net`, no router, no GPU requirement.
+  `gliner-only` container on `inference-net`, no router, no GPU requirement.
   Intended for hosts that run Ollama (or another non-vLLM provider) for
   chat/embeddings but still want NER out of the consuming app. Reached
-  directly as `http://gliner-ner:8000/gliner` on `inference-net`; there is
+  directly as `http://gliner-only:8000/gliner` on `inference-net`; there is
   no Bearer auth (trust `inference-net` the way `data-net` is trusted for
   Qdrant). Uses the CPU-only `Dockerfile.gliner.cpu` (non-CUDA PyTorch
   base, multi-arch) and defaults `NER_MODEL` to `gliner_medium-v2.5`.
 - **Rerank-only** (`docker/compose.rerank-only.yaml`, CPU OK) — a single
-  `rerank-cpu` container on `inference-net`, no router, no GPU. Same
+  `rerank-only` container on `inference-net`, no router, no GPU. Same
   audience as NER-only; pairs with it so an Ollama-on-CPU host can offer
   both `/gliner` and `/rerank` without the full CUDA stack. Reached as
-  `http://rerank-cpu:8000/rerank` on `inference-net`. Speaks the same
+  `http://rerank-only:8000/rerank` on `inference-net`. Speaks the same
   Jina-shape `{model, query, documents, top_n}` → `{results: [{index,
   relevance_score}]}` contract as the full-stack vLLM `rerank` service,
   so consumers (docint's `VLLMRerankPostprocessor`) target either
@@ -47,10 +47,10 @@ Four independent compose projects, picked per host:
   FastAPI server at `docker/rerank_server.py` that drives the cross-
   encoder directly (tokenize → forward → sigmoid).
 - **CLIP-only** (`docker/compose.clip-only.yaml`, CPU OK) — a single
-  `clip-embed` container on `inference-net`, no router, no GPU. Same
+  `clip-only` container on `inference-net`, no router, no GPU. Same
   audience as NER-only / Rerank-only; co-deployable so a non-CUDA host
   can offer `/gliner`, `/rerank`, and `/clip/embed_{image,text}` at
-  once. Reached as `http://clip-embed:8000/clip/*`. Speaks the same
+  once. Reached as `http://clip-only:8000/clip/*`. Speaks the same
   contract the full-stack `clip` service exposes (also a FastAPI app
   on the same Python file), so docint's image-ingestion path
   (`docint/utils/clip_client.py`) targets either backend by changing
@@ -100,7 +100,7 @@ Or, for the NER-only shape (no CUDA, no router — pairs with Ollama):
 
 ```bash
 make build-gliner-only    # builds vllm-service-gliner-cpu
-make up-gliner-only       # one gliner-ner container on inference-net (no host port)
+make up-gliner-only       # one gliner-only container on inference-net (no host port)
 make up-dev-gliner-only   # like 'up-gliner-only', but publishes the GLiNER port on the host
 make stop-gliner-only
 make bundle-gliner-only   # versioned .tar.gz of the gliner-cpu image
@@ -110,11 +110,11 @@ Or, for the Rerank-only shape (no CUDA, no router — pairs with Ollama,
 typically co-deployed with NER-only):
 
 ```bash
-make build-rerank-only    # builds vllm-service-rerank-cpu
-make up-rerank-only       # one rerank-cpu container on inference-net (no host port)
+make build-rerank-only    # builds vllm-service-rerank-only
+make up-rerank-only       # one rerank-only container on inference-net (no host port)
 make up-dev-rerank-only   # like 'up-rerank-only', but publishes the rerank port on the host
 make stop-rerank-only
-make bundle-rerank-only   # versioned .tar.gz of the rerank-cpu image
+make bundle-rerank-only   # versioned .tar.gz of the rerank-only image
 ```
 
 Or, for the CLIP-only shape (no CUDA, no router — pairs with Ollama,
@@ -122,7 +122,7 @@ typically co-deployed with NER-only and Rerank-only):
 
 ```bash
 make build-clip-only      # builds vllm-service-clip-cpu
-make up-clip-only         # one clip-embed container on inference-net (no host port)
+make up-clip-only         # one clip-only container on inference-net (no host port)
 make up-dev-clip-only     # like 'up-clip-only', but publishes the CLIP port on the host
 make stop-clip-only
 make bundle-clip-only     # versioned .tar.gz of the clip-cpu image
@@ -169,7 +169,7 @@ LiteLLM natively exposes `/v1/chat/completions`, `/v1/completions`,
 `/v1/models`. vLLM-specific paths (`/v1/rerank`, `/pooling`, `/tokenize`) and
 GLiNER's `/gliner` are forwarded by `pass_through_endpoints` in
 `docker/litellm.config.yaml`. `/gliner` is the only pass-through whose upstream
-is *not* a vLLM container — it goes to the `ner` service (Ray Serve).
+is *not* a vLLM container — it goes to the `gliner` service (Ray Serve).
 
 ### Backends
 
@@ -182,7 +182,7 @@ different model and per-service env-driven flags:
 - `translate` *(profile: media)* — TranslateGemma fork (`TRANSLATE_MODEL`)
 - `audio` *(profile: media)* — Whisper (`WHISPER_MODEL`)
 
-`ner` is the one exception — it uses **`docker/Dockerfile.gliner.cuda`** (pytorch
+`gliner` is the one exception — it uses **`docker/Dockerfile.gliner.cuda`** (pytorch
 base + `gliner[serve]`) and runs Ray Serve, not vLLM. GLiNER's span-matching head
 isn't a stock HF classification head and the DeBERTa-v2/v3 disentangled
 attention used by the v2.5 checkpoints isn't natively supported by vLLM,
@@ -190,7 +190,7 @@ so vLLM-native serving is not viable. The endpoint is `POST /gliner` with
 body `{text, labels, threshold}` and is reached via the router's
 `/gliner` pass-through (not `/v1/...`).
 
-- `ner` — GLiNER zero-shot NER via Ray Serve (`NER_MODEL`, default
+- `gliner` — GLiNER zero-shot NER via Ray Serve (`NER_MODEL`, default
   `gliner-community/gliner_large-v2.5` on CUDA; set `NER_DEVICE=cpu` with
   the `gliner_medium-v2.5` variant for CPU-only hosts)
 
@@ -223,10 +223,10 @@ ergonomics aren't worth it.
 ### Service startup ordering
 
 `depends_on … condition: service_healthy` chains the backends serially:
-`chat → embed → rerank → ner → audio → translate → router`. This is intentional —
+`chat → embed → rerank → gliner → audio → translate → router`. This is intentional —
 backends compete for GPU memory at startup, so they are brought up one at a time.
 Healthchecks hit `http://localhost:8000/health` (vLLM backends),
-`http://localhost:8000/-/healthz` (the `ner` Ray Serve container), and
+`http://localhost:8000/-/healthz` (the `gliner` Ray Serve container), and
 `/health/liveliness` (router). Allow ~120s `start_period` before treating a
 backend as unhealthy.
 
@@ -235,10 +235,10 @@ backend as unhealthy.
 All tuning is done via `.env` (see `.env.example`). Per-service env vars follow
 the pattern `<SERVICE>_<KNOB>` (e.g. `CHAT_GPU_MEMORY_UTILIZATION`,
 `TRANSLATE_MAX_MODEL_LEN`, `EMBED_HF_OVERRIDES`, `NER_ENABLE_FLASHDEBERTA`). The
-`chat`, `translate`, and `ner` entrypoints use a shell builder pattern (`set --
+`chat`, `translate`, and `gliner` entrypoints use a shell builder pattern (`set --
 <cmd> …` then conditional `set -- "$@" --flag`) so optional flags are only
 passed when the corresponding env var is set — when adding a new optional flag,
-follow that same pattern rather than hard-coding it in `command:`. The `ner`
+follow that same pattern rather than hard-coding it in `command:`. The `gliner`
 shell builder invokes `python -m gliner.serve` instead of `vllm serve`, but the
 structure is identical.
 
@@ -260,7 +260,7 @@ in their request `model` field; `/v1/models` returns the active set.
 `NER_MODEL` is the exception: GLiNER's server has no OpenAI-shaped routes, so
 it is not declared in `model_list` and does not appear in `/v1/models`.
 Clients hit `/gliner` directly with a GLiNER-native body and never use the
-`model` field. Switching `NER_MODEL` and restarting `ner` still works.
+`model` field. Switching `NER_MODEL` and restarting `gliner` still works.
 
 ### Rerank-only shape (CPU)
 
