@@ -1,8 +1,8 @@
 name: vllm-service
 
 x-no-proxy-env: &no-proxy-env
-  NO_PROXY: "router,chat,embed,rerank,ner,clip,audio,translate,localhost,127.0.0.1,172.16.0.0/12,10.0.0.0/8${EXTRA_NO_PROXY:-}"
-  no_proxy: "router,chat,embed,rerank,ner,clip,audio,translate,localhost,127.0.0.1,172.16.0.0/12,10.0.0.0/8${EXTRA_NO_PROXY:-}"
+  NO_PROXY: "router,chat,embed,rerank,gliner,clip,audio,translate,localhost,127.0.0.1,172.16.0.0/12,10.0.0.0/8${EXTRA_NO_PROXY:-}"
+  no_proxy: "router,chat,embed,rerank,gliner,clip,audio,translate,localhost,127.0.0.1,172.16.0.0/12,10.0.0.0/8${EXTRA_NO_PROXY:-}"
 
 x-env-file: &env-file
   - path: ../.env
@@ -59,7 +59,7 @@ services:
         condition: service_healthy
       rerank:
         condition: service_healthy
-      ner:
+      gliner:
         condition: service_healthy
       clip:
         condition: service_healthy
@@ -216,14 +216,14 @@ services:
     networks:
       - vllm-net
 
-  ner:
+  gliner:
     # GLiNER zero-shot NER served via Ray Serve. Unlike the other backends,
     # this is NOT a vLLM container — GLiNER's span-matching head isn't a
     # stock HF classification head and the DeBERTa-v2/v3 attention used by
     # the v2.5 checkpoints is not natively supported by vLLM, so we use
     # the upstream Ray-Serve-based server instead. Endpoint shape:
     #   POST /gliner {"text", "labels", "threshold"} -> {"entities": [...]}
-    image: vllm-service-ner:${VLLM_SERVICE_VERSION:-latest}
+    image: vllm-service-gliner:${VLLM_SERVICE_VERSION:-latest}
     build:
       context: ..
       dockerfile: docker/Dockerfile.gliner.cuda

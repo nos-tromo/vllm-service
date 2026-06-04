@@ -2,7 +2,7 @@
 #
 # Two deployment shapes:
 #
-# 1. Full stack (CUDA host) — chat, embed, rerank, ner, router; optional
+# 1. Full stack (CUDA host) — chat, embed, rerank, gliner, router; optional
 #    audio + translate via PROFILE=media. Lives in docker/compose.yaml.
 #    Targets: build, up, stop, bundle.
 #

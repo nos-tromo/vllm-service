@@ -14,7 +14,7 @@ name: vllm-service-rerank-only
 # Auth: the container has no built-in Bearer-token gate. `inference-net`
 # is a private Docker network shared only between trusted compose
 # projects, mirroring how `data-net` exposes Qdrant and how the
-# `gliner-ner` service exposes /gliner.
+# `gliner-gliner` service exposes /gliner.
 
 x-no-proxy-env: &no-proxy-env
   NO_PROXY: "rerank-cpu,localhost,127.0.0.1,172.16.0.0/12,10.0.0.0/8${EXTRA_NO_PROXY:-}"
