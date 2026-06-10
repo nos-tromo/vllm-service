@@ -1,12 +1,12 @@
 # LiteLLM Proxy configuration for the vLLM service stack.
 #
-# This config fronts the vLLM backends (chat, translate, embed, rerank,
-# audio) and exposes a single OpenAI-compatible endpoint at :4000.
+# This config fronts the vLLM backends (chat, embed, rerank, audio) and
+# exposes a single OpenAI-compatible endpoint at :4000.
 #
 # Model names are read from environment variables via the os.environ/
-# syntax. Set TEXT_MODEL, TRANSLATE_MODEL, EMBED_MODEL, and
-# WHISPER_MODEL in .env; both docker-compose and LiteLLM will pick them
-# up automatically with no further changes required here.
+# syntax. Set TEXT_MODEL, EMBED_MODEL, and WHISPER_MODEL in .env; both
+# docker-compose and LiteLLM will pick them up automatically with no
+# further changes required here.
 # Note: the LLM fallback alias in docker-compose is not visible to
 # LiteLLM — always set TEXT_MODEL explicitly in .env.
 
@@ -45,15 +45,6 @@ model_list:
       custom_llm_provider: openai
       api_base: http://audio:8000/v1
       api_key: os.environ/OPENAI_API_KEY
-
-  # Translation
-  - model_name: os.environ/TRANSLATE_MODEL
-    litellm_params:
-      model: os.environ/TRANSLATE_MODEL
-      custom_llm_provider: openai
-      api_base: http://translate:8000/v1
-      api_key: os.environ/OPENAI_API_KEY
-
 
 general_settings:
   # The master key gates access to the proxy. Clients must present it as

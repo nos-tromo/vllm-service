@@ -1,8 +1,8 @@
 name: vllm-service
 
 x-no-proxy-env: &no-proxy-env
-  NO_PROXY: "router,chat,embed,rerank,gliner,clip,audio,translate,localhost,127.0.0.1,172.16.0.0/12,10.0.0.0/8${EXTRA_NO_PROXY:-}"
-  no_proxy: "router,chat,embed,rerank,gliner,clip,audio,translate,localhost,127.0.0.1,172.16.0.0/12,10.0.0.0/8${EXTRA_NO_PROXY:-}"
+  NO_PROXY: "router,chat,embed,rerank,gliner,clip,audio,localhost,127.0.0.1,172.16.0.0/12,10.0.0.0/8${EXTRA_NO_PROXY:-}"
+  no_proxy: "router,chat,embed,rerank,gliner,clip,audio,localhost,127.0.0.1,172.16.0.0/12,10.0.0.0/8${EXTRA_NO_PROXY:-}"
 
 x-env-file: &env-file
   - path: ../.env
@@ -65,13 +65,8 @@ services:
         condition: service_healthy
       audio:
         condition: service_healthy
-        required: false
-      translate:
-        condition: service_healthy
-        required: false
     environment:
       <<: *no-proxy-env
-      TRANSLATE_MODEL: ${TRANSLATE_MODEL:-Infomaniak-AI/vllm-translategemma-4b-it}
       WHISPER_MODEL: ${WHISPER_MODEL:-openai/whisper-large-v3}
     volumes:
       - ./litellm.config.yaml:/app/config.yaml:ro
@@ -232,11 +227,8 @@ services:
     env_file: *env-file
     ipc: host
     depends_on:
-      clip:
+      audio:
         condition: service_healthy
-      translate:
-        condition: service_healthy
-        required: false   # absent without --profile media; enforced when present
     entrypoint: ["/bin/sh", "-lc"]
     command:
       - >-
@@ -328,12 +320,11 @@ services:
       context: ..
       dockerfile: docker/Dockerfile.vllm
     logging: *default-logging
-    profiles: [media]
     gpus: all
     env_file: *env-file
     ipc: host
     depends_on:
-      rerank:
+      clip:
         condition: service_healthy
     entrypoint: ["/bin/sh", "-lc"]
     command:
@@ -347,43 +338,6 @@ services:
     environment:
       <<: *vllm-env
       VLLM_MAX_AUDIO_CLIP_FILESIZE_MB: ${VLLM_MAX_AUDIO_CLIP_FILESIZE_MB:-200}
-    volumes: *vllm-volumes
-    healthcheck: *vllm-healthcheck
-    deploy: *cuda-deploy
-    networks:
-      - vllm-net
-
-  translate:
-    image: vllm-service-translate:${VLLM_SERVICE_VERSION:-latest}
-    build:
-      context: ..
-      dockerfile: docker/Dockerfile.vllm
-    logging: *default-logging
-    profiles: [media]
-    gpus: all
-    env_file: *env-file
-    ipc: host
-    depends_on:
-      audio:
-        condition: service_healthy
-    entrypoint: ["/bin/sh", "-lc"]
-    command:
-      - >-
-        export CUDA_VISIBLE_DEVICES="$${TRANSLATE_CUDA_VISIBLE_DEVICES:-0}";
-        set -- vllm serve "$${TRANSLATE_MODEL:-Infomaniak-AI/vllm-translategemma-4b-it}"
-        --tensor-parallel-size "$${TRANSLATE_TENSOR_PARALLEL_SIZE:-1}"
-        --api-key "$${OPENAI_API_KEY:-sk-no-key-required}"
-        --host 0.0.0.0
-        --port 8000
-        --gpu-memory-utilization "$${TRANSLATE_GPU_MEMORY_UTILIZATION:-0.15}"
-        --max-model-len "$${TRANSLATE_MAX_MODEL_LEN:-2048}"
-        --max-num-seqs "$${TRANSLATE_MAX_NUM_SEQS:-8}"
-        --max-num-batched-tokens "$${TRANSLATE_MAX_NUM_BATCHED_TOKENS:-4096}";
-        if [ "$${TRANSLATE_ENABLE_PREFIX_CACHING:-true}" = "true" ]; then
-          set -- "$@" --enable-prefix-caching;
-        fi;
-        exec "$@"
-    environment: *vllm-env
     volumes: *vllm-volumes
     healthcheck: *vllm-healthcheck
     deploy: *cuda-deploy
