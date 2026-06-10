@@ -33,11 +33,7 @@ Internally it runs:
 - `rerank`
 - `gliner` (GLiNER, served via Ray Serve rather than vLLM)
 - `clip` (CLIP image+text tower, served via FastAPI rather than vLLM)
-
-The following services are optional and only started with `--profile media`:
-
-- `audio`
-- `translate`
+- `audio` (Whisper ASR, served via vLLM)
 
 Model-to-backend routing is declared in `docker/litellm.config.yaml`. Clients
 select a backend purely by the `model` field they send; there is no path-based
@@ -95,15 +91,11 @@ longer finds the compose file.
    make volume    # create the huggingface-cache Docker volume
    ```
 
-4. Build and start the stack. The service set is read from `PROFILE` in
-   `.env`: leave it empty for the core stack, or set `PROFILE=media` to also
-   start the `translate` and `audio` services. Override per-invocation as
-   `make up-dev PROFILE=media`:
+4. Build and start the stack:
 
    ```bash
-   make build                 # build images for the active service set
-   make up-dev                # core stack (router, chat, embed, rerank, gliner) with the router published on the host
-   make up-dev PROFILE=media  # core + media (translate, audio) with host ports
+   make build                 # build images for the full stack
+   make up-dev                # full stack with the router published on the host (router, chat, embed, rerank, clip, gliner, audio)
    make up                    # same as up-dev but production shape (no host ports)
    ```
 
@@ -349,12 +341,10 @@ can ship alongside the `docker/` directory (which holds `compose.yaml` and
 
 ### Producing the bundle
 
-On a build host with internet (`make bundle` follows `PROFILE` from `.env`;
-override with `make bundle PROFILE=media`):
+On a build host with internet:
 
 ```bash
-make bundle              # core only (chat, embed, rerank, gliner, clip, router)
-make bundle PROFILE=media  # core + media (translate, audio)
+make bundle              # full stack (chat, embed, rerank, gliner, clip, audio, router)
 make bundle-gliner-only     # NER-only shape (just vllm-service-gliner-cpu)
 make bundle-rerank-only  # Rerank-only shape (just vllm-service-rerank-only)
 make bundle-clip-only    # CLIP-only shape (just vllm-service-clip-cpu)
@@ -407,7 +397,7 @@ between `load` and `up`.
 - `inference-net` is an external shared Docker network used for cross-project
   service discovery and reverse-proxy access.
 - Only the `router` service joins `inference-net`; `chat`, `embed`,
-  `rerank`, `gliner`, `audio`, and `translate` stay on the private network.
+  `rerank`, `gliner`, `clip`, and `audio` stay on the private network.
 - The `router` service keeps its `vllm-router` alias on `inference-net` so
   existing consumers do not need to change their `OPENAI_API_BASE`.
 
@@ -415,7 +405,7 @@ between `load` and `up`.
 
 `docker/litellm.config.yaml` is model-agnostic: all model names are read at
 startup from the environment variables `TEXT_MODEL`, `EMBED_MODEL`,
-`RERANK_MODEL`, `TRANSLATE_MODEL`, and `WHISPER_MODEL`. To switch a model,
+`RERANK_MODEL`, and `WHISPER_MODEL`. To switch a model,
 update the relevant variable in `.env` and restart the stack. No changes to
 `docker/litellm.config.yaml` are required.
 
@@ -441,50 +431,6 @@ curl http://vllm-router:9000/v1/audio/transcriptions \
 
 The maximum accepted file size defaults to 200 MB and can be raised with
 `VLLM_MAX_AUDIO_CLIP_FILESIZE_MB` in `.env`.
-
-The audio service is only started when the `media` profile is active —
-set `PROFILE=media` in `.env` or override per-invocation:
-
-```bash
-make up PROFILE=media
-```
-
-## Calling the translate service
-
-The translate service runs
-[`Infomaniak-AI/vllm-translategemma-4b-it`](https://huggingface.co/Infomaniak-AI/vllm-translategemma-4b-it),
-a vLLM-compatible repackaging of Google's TranslateGemma 4B. Unlike a general
-chat model, it expects the source language, target language, and text to be
-encoded in the message content using a delimiter format:
-
-```python
-<<<source>>>{iso_src}<<<target>>>{iso_tgt}<<<text>>>{text_to_translate}
-```
-
-Language codes are ISO 639-1 (`en`, `de`, `fr`, ...) with optional regional
-variants (`en_US`, `zh_CN`). 55 languages are supported. Example request:
-
-```bash
-curl http://vllm-router:9000/v1/chat/completions \
-  -H "Authorization: Bearer $OPENAI_API_KEY" \
-  -H "Content-Type: application/json" \
-  -d '{
-    "model": "'"$TRANSLATE_MODEL"'",
-    "messages": [
-      {"role": "user", "content": "<<<source>>>en<<<target>>>de<<<text>>>Hello world"}
-    ]
-  }'
-```
-
-The model is trained for a ~2K context window, so keep `TRANSLATE_MAX_MODEL_LEN`
-at 2048 unless you have a specific reason to raise it.
-
-The translate service is only started when the `media` profile is active —
-set `PROFILE=media` in `.env` or override per-invocation:
-
-```bash
-make up PROFILE=media
-```
 
 ## Calling the NER service
 

@@ -23,9 +23,9 @@ off-the-shelf CPU server that speaks the Jina-shape `/rerank` or
 Four independent compose projects, picked per host:
 
 - **Full stack** (`docker/compose.yaml`, CUDA-required) — chat, embed, rerank,
-  gliner, router; optional audio + translate via `PROFILE=media`. The original
-  shape; reached as `http://vllm-router:4000/...` on `inference-net`.
-  GLiNER is routed via the router's `/gliner` pass-through.
+  clip, gliner, audio, router. The original shape; reached as
+  `http://vllm-router:4000/...` on `inference-net`. GLiNER is routed via the
+  router's `/gliner` pass-through.
 - **NER-only** (`docker/compose.gliner-only.yaml`, CPU OK) — a single
   `gliner-only` container on `inference-net`, no router, no GPU requirement.
   Intended for hosts that run Ollama (or another non-vLLM provider) for
@@ -70,9 +70,8 @@ different network aliases and host ports.
 
 The `Makefile` is the entry point — it points Compose at `docker/compose.yaml`,
 since a bare `docker compose` from the repo root no longer finds the compose
-file. The service set is read from `PROFILE` in `.env`: empty = core stack;
-`PROFILE=media` adds translate + audio. Override per-invocation as
-`make up PROFILE=media`.
+file. It builds and runs the full stack (chat, embed, rerank, clip, gliner,
+audio, router) — there are no optional profiles.
 
 Prerequisites (one-time per host):
 
@@ -85,11 +84,9 @@ cp .env.example .env   # then edit model IDs / API key / GPU placement
 Bring the stack up:
 
 ```bash
-make build                 # build images for the active service set
-make up                    # core (production shape, no host ports)
-make up-dev                # core with host ports published (dev)
-make up PROFILE=media      # add translate + audio (production shape)
-make up-dev PROFILE=media  # add translate + audio with host ports published
+make build                 # build images for the full stack
+make up                    # production shape (no host ports)
+make up-dev                # with host ports published (dev)
 ```
 
 `make up` runs the base `docker/compose.yaml` alone (production shape — no host
@@ -128,8 +125,7 @@ make stop-clip-only
 make bundle-clip-only     # versioned .tar.gz of the clip-cpu image
 ```
 
-Other useful operations use the raw compose form, pointed at the compose file
-(append `--profile media` when the media service set is active):
+Other useful operations use the raw compose form, pointed at the compose file:
 
 ```bash
 docker compose --env-file .env -f docker/compose.yaml logs -f router    # follow LiteLLM proxy logs
@@ -142,9 +138,8 @@ make stop                                                               # stop t
 Build and bundle commands:
 
 ```bash
-make build               # build images for the active service set
-make bundle              # build + ship the active service set as versioned .tar.gz pair
-make bundle PROFILE=media  # build + ship core + media as versioned .tar.gz pair
+make build               # build images for the full stack
+make bundle              # build + ship the full stack as a versioned .tar.gz pair
 ```
 
 There is no test suite or linter. The Python files
@@ -179,8 +174,7 @@ different model and per-service env-driven flags:
 - `chat` — general LLM (`TEXT_MODEL`)
 - `embed` — embeddings, `--runner pooling --convert embed` (`EMBED_MODEL`)
 - `rerank` — reranker, `--runner pooling` (`RERANK_MODEL`)
-- `translate` *(profile: media)* — TranslateGemma fork (`TRANSLATE_MODEL`)
-- `audio` *(profile: media)* — Whisper (`WHISPER_MODEL`)
+- `audio` — Whisper (`WHISPER_MODEL`)
 
 `gliner` is the one exception — it uses **`docker/Dockerfile.gliner.cuda`** (pytorch
 base + `gliner[serve]`) and runs Ray Serve, not vLLM. GLiNER's span-matching head
@@ -210,8 +204,8 @@ not reachable from outside the compose project. Only `router` joins the external
 The vLLM base image (`vllm/vllm-openai:v0.20.1`, pinned by digest) ships with
 plain vLLM and its full CUDA runtime preinstalled in the system Python prefix.
 The Dockerfile adds vLLM's `[audio]` extras (`av`, `scipy`, `soundfile`,
-`mistral_common[audio]`) so the `audio` (Whisper) and `translate` services
-have what they need, plus `orjson` — vLLM picks it up opportunistically for
+`mistral_common[audio]`) so the `audio` (Whisper) service has what it needs,
+plus `orjson` — vLLM picks it up opportunistically for
 faster OpenAI-endpoint JSON serialization (falls back to stdlib `json` if
 absent, so it's a perf bump rather than a hard requirement).
 
@@ -223,8 +217,14 @@ ergonomics aren't worth it.
 ### Service startup ordering
 
 `depends_on … condition: service_healthy` chains the backends serially:
-`chat → embed → rerank → gliner → audio → translate → router`. This is intentional —
-backends compete for GPU memory at startup, so they are brought up one at a time.
+`chat → embed → rerank → clip → audio → gliner → router`. This is intentional —
+backends compete for GPU memory at startup, so they are brought up one at a
+time. `gliner` is deliberately **last**: it runs on Ray Serve with
+`--target-memory-fraction` (a share of whatever GPU memory is still free when it
+starts, not a fixed reservation like the vLLM backends'
+`--gpu-memory-utilization`), so every fixed-allocation backend — `audio`
+included — must be healthy before it comes up, or it would claim the remaining
+memory and starve them.
 Healthchecks hit `http://localhost:8000/health` (vLLM backends),
 `http://localhost:8000/-/healthz` (the `gliner` Ray Serve container), and
 `/health/liveliness` (router). Allow ~120s `start_period` before treating a
@@ -234,8 +234,8 @@ backend as unhealthy.
 
 All tuning is done via `.env` (see `.env.example`). Per-service env vars follow
 the pattern `<SERVICE>_<KNOB>` (e.g. `CHAT_GPU_MEMORY_UTILIZATION`,
-`TRANSLATE_MAX_MODEL_LEN`, `EMBED_HF_OVERRIDES`, `NER_ENABLE_FLASHDEBERTA`). The
-`chat`, `translate`, and `gliner` entrypoints use a shell builder pattern (`set --
+`EMBED_HF_OVERRIDES`, `NER_ENABLE_FLASHDEBERTA`). The `chat` and `gliner`
+entrypoints use a shell builder pattern (`set --
 <cmd> …` then conditional `set -- "$@" --flag`) so optional flags are only
 passed when the corresponding env var is set — when adding a new optional flag,
 follow that same pattern rather than hard-coding it in `command:`. The `gliner`
@@ -345,16 +345,3 @@ curl -fsS -X POST http://localhost:${CLIP_HOST_PORT:-8002}/clip/embed_image \
 # dimension probe
 curl -fsS http://localhost:${CLIP_HOST_PORT:-8002}/clip/dimension
 ```
-
-### TranslateGemma quirk
-
-`translate` runs `Infomaniak-AI/vllm-translategemma-4b-it` (a vLLM-compatible
-repackaging — the stock `google/translategemma-*` cannot be served by a vanilla
-OpenAI client). Clients must encode source/target/text inline:
-
-```
-<<<source>>>{iso_src}<<<target>>>{iso_tgt}<<<text>>>{text}
-```
-
-Trained for ~2K context — keep `TRANSLATE_MAX_MODEL_LEN=2048` unless you have a
-specific reason to raise it.
