@@ -10,14 +10,9 @@ set -euo pipefail
 # invoking make.
 PROFILE_ARG="${1:-}"
 COMPOSE_FILE="docker/compose.yaml"
-COMPOSE_PROFILE_FLAGS=()
 case "$PROFILE_ARG" in
   "")
     PROFILE_LABEL="core"
-    ;;
-  "media")
-    PROFILE_LABEL="media"
-    COMPOSE_PROFILE_FLAGS=(--profile "$PROFILE_ARG")
     ;;
   "gliner-only")
     # Separate compose project — different topology (single CPU container
@@ -40,7 +35,7 @@ case "$PROFILE_ARG" in
     COMPOSE_FILE="docker/compose.clip-only.yaml"
     ;;
   *)
-    echo "Usage: $0 [media|gliner-only|rerank-only|clip-only]" >&2
+    echo "Usage: $0 [gliner-only|rerank-only|clip-only]" >&2
     exit 2
     ;;
 esac
@@ -60,8 +55,8 @@ echo "VLLM_SERVICE_VERSION=$VLLM_SERVICE_VERSION"
 # git or the original build date. Copy this file alongside docker-compose.yml.
 echo "$VLLM_SERVICE_VERSION" > .vllm-service-version
 
-docker compose --env-file .env -f "$COMPOSE_FILE" ${COMPOSE_PROFILE_FLAGS[@]+"${COMPOSE_PROFILE_FLAGS[@]}"} build
-docker compose --env-file .env -f "$COMPOSE_FILE" ${COMPOSE_PROFILE_FLAGS[@]+"${COMPOSE_PROFILE_FLAGS[@]}"} pull --ignore-buildable
+docker compose --env-file .env -f "$COMPOSE_FILE" build
+docker compose --env-file .env -f "$COMPOSE_FILE" pull --ignore-buildable
 
 # Partition compose's image list into built (no slash) and pulled (registry refs).
 # Docker Desktop sometimes drops the name:tag binding when you pull
@@ -85,7 +80,7 @@ while IFS= read -r img; do
   else
     built+=("$img")
   fi
-done < <(docker compose --env-file .env -f "$COMPOSE_FILE" ${COMPOSE_PROFILE_FLAGS[@]+"${COMPOSE_PROFILE_FLAGS[@]}"} config --images)
+done < <(docker compose --env-file .env -f "$COMPOSE_FILE" config --images)
 
 echo "Built images:  ${built[*]:-<none>}"
 echo "Pulled images: ${pulled[*]:-<none>}"

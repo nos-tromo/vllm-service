@@ -2,8 +2,8 @@
 #
 # Two deployment shapes:
 #
-# 1. Full stack (CUDA host) — chat, embed, rerank, gliner, router; optional
-#    audio + translate via PROFILE=media. Lives in docker/compose.yaml.
+# 1. Full stack (CUDA host) — chat, embed, rerank, clip, gliner, audio,
+#    router. Lives in docker/compose.yaml.
 #    Targets: build, up, stop, bundle.
 #
 # 2. NER-only (Mac, CPU-only, ROCm host running Ollama for chat/embed) —
@@ -34,9 +34,6 @@
         build-rerank-only bundle-rerank-only up-rerank-only up-dev-rerank-only stop-rerank-only down-rerank-only \
         build-clip-only bundle-clip-only up-clip-only up-dev-clip-only stop-clip-only down-clip-only
 
-# Service-set profile for the full stack. Read from .env; empty = core stack.
-PROFILE ?= $(strip $(shell test -f .env && grep -E '^PROFILE=' .env | cut -d= -f2))
-
 # Versioned image tag.
 # On production: read from .vllm-service-version written by bundle_images.sh.
 # On dev: compute YYYY-MM-DD[-<short-sha>] on the fly.
@@ -55,13 +52,11 @@ COMPOSE_RERANK_ONLY     := docker compose --env-file .env -f docker/compose.rera
 COMPOSE_RERANK_ONLY_DEV := docker compose --env-file .env -f docker/compose.rerank-only.yaml -f docker/compose.rerank-only.override.yaml
 COMPOSE_CLIP_ONLY       := docker compose --env-file .env -f docker/compose.clip-only.yaml
 COMPOSE_CLIP_ONLY_DEV   := docker compose --env-file .env -f docker/compose.clip-only.yaml -f docker/compose.clip-only.override.yaml
-# Empty PROFILE -> no flag (core stack); PROFILE=media -> --profile media.
-PROFILE_FLAG := $(if $(PROFILE),--profile $(PROFILE),)
 
 help:
 	@echo "vllm-service — build-host helpers."
 	@echo
-	@echo "Full stack (CUDA, active service set: $(if $(PROFILE),$(PROFILE),core)):"
+	@echo "Full stack (CUDA):"
 	@echo "  make network          create the external inference-net"
 	@echo "  make volumes          create the huggingface-cache Docker volume"
 	@echo "  make build            build images for the active service set"
@@ -70,9 +65,6 @@ help:
 	@echo "  make up-dev           like 'up', but publishes the router port on the host"
 	@echo "  make stop             stop the active service set"
 	@echo "  make down             stop + remove the active service set"
-	@echo
-	@echo "  Leave PROFILE empty in .env for the core stack; set PROFILE=media"
-	@echo "  to add audio + translate. Override: make up PROFILE=media"
 	@echo
 	@echo "NER-only stack (CPU; pairs with Ollama on non-CUDA hosts):"
 	@echo "  make build-gliner-only    build the gliner-cpu image"
@@ -110,29 +102,29 @@ volumes:
 
 # Build images for the active service set.
 build:
-	DOCKER_BUILDKIT=1 $(COMPOSE) $(PROFILE_FLAG) build
+	DOCKER_BUILDKIT=1 $(COMPOSE) build
 
 # Build images and ship as a versioned .tar.gz pair (built + pulled).
 bundle:
-	./scripts/bundle_images.sh $(PROFILE)
+	./scripts/bundle_images.sh
 
 # Run the active service set without rebuilding images (production shape, no host ports).
 up:
-	$(COMPOSE) $(PROFILE_FLAG) up --no-build
+	$(COMPOSE) up --no-build
 
 # Like 'up' but layers compose.override.yaml on top to publish the
 # LiteLLM router port on the host.
 up-dev:
-	$(COMPOSE_DEV) $(PROFILE_FLAG) up --no-build
+	$(COMPOSE_DEV) up --no-build
 
 # Stop the active service set.
 stop:
-	$(COMPOSE) $(PROFILE_FLAG) stop
+	$(COMPOSE) stop
 
 # Stop + remove the active service set. The huggingface-cache volume is
 # external, so model weights survive — the next 'up' won't re-download.
 down:
-	$(COMPOSE) $(PROFILE_FLAG) down
+	$(COMPOSE) down
 
 # --- NER-only stack -----------------------------------------------------
 #
