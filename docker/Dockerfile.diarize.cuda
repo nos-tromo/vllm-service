@@ -1,0 +1,40 @@
+ARG PYTORCH_IMAGE=docker.io/pytorch/pytorch:2.11.0-cuda12.8-cudnn9-runtime@sha256:eee11b3b3872a8c838e35ef48f08b2d5def2080902c7f666831310ca1a0ef2be
+
+FROM ${PYTORCH_IMAGE}
+
+# curl for the docker-compose /health probe; ffmpeg decodes arbitrary
+# uploaded containers to 16 kHz mono PCM before the pyannote pipeline runs.
+RUN apt-get update \
+    && apt-get install -y --no-install-recommends curl ffmpeg \
+    && rm -rf /var/lib/apt/lists/*
+
+# pyannote.audio rides on the cu128 torch/torchaudio baked into the pytorch
+# base image (its torch/torchaudio floors are satisfied in place).
+# --break-system-packages required on PyTorch 2.11+ (Debian PEP 668).
+# pyannote.audio<4 keeps the use_auth_token kwarg and the torch-native
+# wespeaker path proven with the speaker-diarization-3.1 pipeline (4.x
+# renamed the kwarg and moved decoding to torchcodec).
+# huggingface_hub<1.0 because pyannote 3.x calls
+# hf_hub_download(use_auth_token=...), an alias huggingface_hub 1.0
+# removed, and pyannote's own floor (>=0.13) is unbounded.
+RUN pip install --no-cache-dir --break-system-packages \
+    'fastapi>=0.115.0' \
+    'uvicorn[standard]>=0.32.0' \
+    'python-multipart>=0.0.9' \
+    'pydantic>=2.0' \
+    'pyannote.audio>=3.3.2,<4' \
+    'huggingface_hub>=0.13.0,<1.0'
+
+# Build-time import smoke test: torchaudio 2.9+ (shipped by the pinned
+# pytorch base) removed several symbols pyannote 3.x references at import
+# time; diarize_compat.py restores inert stubs before pyannote is imported.
+# Exercise the full import chain (lightning, speechbrain, ...) plus Audio
+# construction here so a base-image bump fails the build, not the container.
+COPY docker/diarize_compat.py /app/diarize_compat.py
+RUN PYTHONPATH=/app python -c "import diarize_compat; from pyannote.audio import Pipeline; import pyannote.audio.pipelines; from pyannote.audio.core.io import Audio; Audio(sample_rate=16000, mono='downmix')"
+
+COPY docker/diarize_server.py /app/diarize_server.py
+
+EXPOSE 8000
+
+CMD ["uvicorn", "--app-dir", "/app", "diarize_server:app", "--host", "0.0.0.0", "--port", "8000"]
