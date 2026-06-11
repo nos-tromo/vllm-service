@@ -1,0 +1,51 @@
+ARG UV_IMAGE=ghcr.io/astral-sh/uv:python3.11-bookworm-slim@sha256:4f5d923c9dcea037f57bda425dd209f3ec643da2f0b74227f68d09dab0b3bb36
+
+FROM ${UV_IMAGE}
+
+# curl for the docker-compose /health probe; ffmpeg decodes arbitrary
+# uploaded containers to 16 kHz mono PCM before the pyannote pipeline runs;
+# build-essential covers any transitive dep that builds from source.
+RUN apt-get update \
+    && apt-get install -y --no-install-recommends \
+        curl \
+        ffmpeg \
+        build-essential \
+    && rm -rf /var/lib/apt/lists/*
+
+# CPU-only PyTorch from the dedicated index — same approach as
+# Dockerfile.gliner.cpu / Dockerfile.clip.cpu, but torchaudio is added too:
+# pyannote.audio imports it. We never decode through it (audio arrives as a
+# pre-decoded waveform dict and diarize_server.py stubs the one removed
+# probing API), so only importability matters.
+RUN uv pip install --system --no-cache --compile-bytecode \
+    --index-url https://download.pytorch.org/whl/cpu \
+    torch torchaudio
+
+# pyannote.audio<4 keeps the use_auth_token kwarg and the torch-native
+# wespeaker path proven with the speaker-diarization-3.1 pipeline (4.x
+# renamed the kwarg and moved decoding to torchcodec).
+# huggingface_hub<1.0 because pyannote 3.x calls
+# hf_hub_download(use_auth_token=...), an alias huggingface_hub 1.0 removed,
+# and pyannote's own floor (>=0.13) is unbounded.
+RUN uv pip install --system --no-cache --compile-bytecode \
+    'fastapi>=0.115.0' \
+    'uvicorn[standard]>=0.32.0' \
+    'python-multipart>=0.0.9' \
+    'pydantic>=2.0' \
+    'pyannote.audio>=3.3.2,<4' \
+    'huggingface_hub>=0.13.0,<1.0'
+
+# Build-time import smoke test (mirrors Dockerfile.diarize.cuda): exercise
+# the full pyannote import chain (lightning, speechbrain, ...) plus Audio
+# construction with the torchaudio compat shims applied, so dependency
+# drift fails the build, not the running container.
+COPY docker/diarize_compat.py /app/diarize_compat.py
+RUN PYTHONPATH=/app python -c "import diarize_compat; from pyannote.audio import Pipeline; import pyannote.audio.pipelines; from pyannote.audio.core.io import Audio; Audio(sample_rate=16000, mono='downmix')"
+
+COPY docker/diarize_server.py /app/diarize_server.py
+
+ENV TOKENIZERS_PARALLELISM=true
+
+EXPOSE 8000
+
+CMD ["uvicorn", "--app-dir", "/app", "diarize_server:app", "--host", "0.0.0.0", "--port", "8000"]

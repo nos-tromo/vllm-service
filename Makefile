@@ -2,8 +2,8 @@
 #
 # Two deployment shapes:
 #
-# 1. Full stack (CUDA host) — chat, embed, rerank, clip, gliner, audio,
-#    router. Lives in docker/compose.yaml.
+# 1. Full stack (CUDA host) — chat, embed, rerank, clip, audio, diarize,
+#    gliner, router. Lives in docker/compose.yaml.
 #    Targets: build, up, stop, bundle.
 #
 # 2. NER-only (Mac, CPU-only, ROCm host running Ollama for chat/embed) —
@@ -25,6 +25,14 @@
 #    /gliner, /rerank, and /clip/embed_{image,text} together.
 #    Targets: build-clip-only, up-clip-only, stop-clip-only,
 #             bundle-clip-only.
+#
+# 5. Diarize-only (same hosts as NER-only / Rerank-only / CLIP-only) — a
+#    single FastAPI/pyannote speaker-diarization container on inference-net,
+#    no router, no GPU requirement. Lives in docker/compose.diarize-only.yaml.
+#    Pairs with the other three so a CPU host can offer /gliner, /rerank,
+#    /clip/embed_{image,text}, and /diarize together.
+#    Targets: build-diarize-only, up-diarize-only, stop-diarize-only,
+#             bundle-diarize-only.
 
 .DEFAULT_GOAL := help
 
@@ -32,7 +40,8 @@
         build bundle up up-dev stop down \
         build-gliner-only bundle-gliner-only up-gliner-only up-dev-gliner-only stop-gliner-only down-gliner-only \
         build-rerank-only bundle-rerank-only up-rerank-only up-dev-rerank-only stop-rerank-only down-rerank-only \
-        build-clip-only bundle-clip-only up-clip-only up-dev-clip-only stop-clip-only down-clip-only
+        build-clip-only bundle-clip-only up-clip-only up-dev-clip-only stop-clip-only down-clip-only \
+        build-diarize-only bundle-diarize-only up-diarize-only up-dev-diarize-only stop-diarize-only down-diarize-only
 
 # Versioned image tag.
 # On production: read from .vllm-service-version written by bundle_images.sh.
@@ -52,6 +61,8 @@ COMPOSE_RERANK_ONLY     := docker compose --env-file .env -f docker/compose.rera
 COMPOSE_RERANK_ONLY_DEV := docker compose --env-file .env -f docker/compose.rerank-only.yaml -f docker/compose.rerank-only.override.yaml
 COMPOSE_CLIP_ONLY       := docker compose --env-file .env -f docker/compose.clip-only.yaml
 COMPOSE_CLIP_ONLY_DEV   := docker compose --env-file .env -f docker/compose.clip-only.yaml -f docker/compose.clip-only.override.yaml
+COMPOSE_DIARIZE_ONLY    := docker compose --env-file .env -f docker/compose.diarize-only.yaml
+COMPOSE_DIARIZE_ONLY_DEV := docker compose --env-file .env -f docker/compose.diarize-only.yaml -f docker/compose.diarize-only.override.yaml
 
 help:
 	@echo "vllm-service — build-host helpers."
@@ -89,6 +100,14 @@ help:
 	@echo "  make up-dev-clip-only     like 'up-clip-only', but publishes the port on the host"
 	@echo "  make stop-clip-only       stop the CLIP service"
 	@echo "  make down-clip-only       stop + remove the CLIP service"
+	@echo
+	@echo "Diarize-only stack (CPU; pairs with Ollama on non-CUDA hosts):"
+	@echo "  make build-diarize-only   build the diarize-cpu image"
+	@echo "  make bundle-diarize-only  ship the diarize-cpu image as a versioned .tar.gz"
+	@echo "  make up-diarize-only      run the diarization service on inference-net (no host port)"
+	@echo "  make up-dev-diarize-only  like 'up-diarize-only', but publishes the port on the host"
+	@echo "  make stop-diarize-only    stop the diarization service"
+	@echo "  make down-diarize-only    stop + remove the diarization service"
 
 # --- Full stack ---------------------------------------------------------
 
@@ -203,3 +222,30 @@ stop-clip-only:
 # Stop + remove the CLIP service. External huggingface-cache survives.
 down-clip-only:
 	$(COMPOSE_CLIP_ONLY) down
+
+# --- Diarize-only stack -------------------------------------------------
+#
+# Uses the same external inference-net + huggingface-cache as the full
+# stack, so `make network` and `make volumes` remain the one-time
+# prerequisites. The pyannote weights are gated on Hugging Face — see the
+# README "Diarize-only deployment" for the one-time pre-download.
+
+build-diarize-only:
+	DOCKER_BUILDKIT=1 $(COMPOSE_DIARIZE_ONLY) build
+
+bundle-diarize-only:
+	./scripts/bundle_images.sh diarize-only
+
+up-diarize-only:
+	$(COMPOSE_DIARIZE_ONLY) up --no-build
+
+# Like 'up-diarize-only' but publishes the diarization port on the host.
+up-dev-diarize-only:
+	$(COMPOSE_DIARIZE_ONLY_DEV) up --no-build
+
+stop-diarize-only:
+	$(COMPOSE_DIARIZE_ONLY) stop
+
+# Stop + remove the diarization service. External huggingface-cache survives.
+down-diarize-only:
+	$(COMPOSE_DIARIZE_ONLY) down
