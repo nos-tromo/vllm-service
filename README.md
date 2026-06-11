@@ -24,6 +24,7 @@ relevant backend:
 - `/tokenize`
 - `/gliner` (zero-shot NER; non-OpenAI shape)
 - `/clip/embed_image`, `/clip/embed_text`, `/clip/dimension` (CLIP image+text tower)
+- `/diarize` (speaker diarization; non-OpenAI shape)
 
 Internally it runs:
 
@@ -34,13 +35,14 @@ Internally it runs:
 - `gliner` (GLiNER, served via Ray Serve rather than vLLM)
 - `clip` (CLIP image+text tower, served via FastAPI rather than vLLM)
 - `audio` (Whisper ASR, served via vLLM)
+- `diarize` (pyannote speaker diarization, served via FastAPI rather than vLLM)
 
 Model-to-backend routing is declared in `docker/litellm.config.yaml`. Clients
 select a backend purely by the `model` field they send; there is no path-based
 dispatch.
 
 For hosts that cannot run the CUDA stack (Mac dev boxes, ROCm or CPU-only
-Linux running Ollama for chat/embed), this repo also ships three standalone
+Linux running Ollama for chat/embed), this repo also ships four standalone
 CPU deployments:
 
 - **NER-only** (`docker/compose.gliner-only.yaml`) — a single `gliner-only`
@@ -51,10 +53,13 @@ CPU deployments:
 - **CLIP-only** (`docker/compose.clip-only.yaml`) — a single `clip-only`
   container exposing the same `/clip/embed_{image,text}` contract as the
   full stack. See "CLIP-only deployment" below.
+- **Diarize-only** (`docker/compose.diarize-only.yaml`) — a single
+  `diarize-only` container exposing the same multipart `/diarize` contract
+  as the full stack. See "Diarize-only deployment" below.
 
-The three can be co-deployed on the same host so the consuming app has
-all of `/gliner`, `/rerank`, and `/clip/*` available without the full
-CUDA stack.
+The four can be co-deployed on the same host so the consuming app has
+all of `/gliner`, `/rerank`, `/clip/*`, and `/diarize` available without
+the full CUDA stack.
 
 ## Usage
 
@@ -95,7 +100,7 @@ longer finds the compose file.
 
    ```bash
    make build                 # build images for the full stack
-   make up-dev                # full stack with the router published on the host (router, chat, embed, rerank, clip, gliner, audio)
+   make up-dev                # full stack with the router published on the host (router, chat, embed, rerank, clip, audio, diarize, gliner)
    make up                    # same as up-dev but production shape (no host ports)
    ```
 
@@ -332,6 +337,84 @@ search, not CLIP inference.
 > to give a non-CUDA dev box `/gliner`, `/rerank`, and `/clip/*`
 > against `inference-net`.
 
+## Diarize-only deployment
+
+`docker/compose.diarize-only.yaml` is a standalone compose project for the
+same audience as NER-only / Rerank-only / CLIP-only. It runs one container,
+`diarize-only`, built from `Dockerfile.diarize.cpu` (uv-managed Python 3.11,
+CPU torch + torchaudio, `pyannote.audio`, `ffmpeg`). No LiteLLM router, no
+GPU reservation. The container ships `docker/diarize_server.py` — the same
+FastAPI app the full-stack `diarize` service runs — so it exposes the
+**same multipart `/diarize` contract**, and consumers (Nextext) target
+either backend by changing only the base URL. Default `DIARIZE_MODEL` is
+`pyannote/speaker-diarization-3.1`.
+
+Bring it up:
+
+```bash
+make network              # if not already created
+make volumes              # if not already created
+make build-diarize-only   # builds vllm-service-diarize-cpu
+make up-diarize-only      # starts the diarize-only container
+```
+
+The pyannote weights are **gated** on the Hugging Face Hub, so unlike the
+other CPU shapes the cache cannot be populated anonymously. One-time setup:
+
+1. Accept the access conditions for both
+   [`pyannote/speaker-diarization-3.1`](https://huggingface.co/pyannote/speaker-diarization-3.1)
+   and [`pyannote/segmentation-3.0`](https://huggingface.co/pyannote/segmentation-3.0)
+   with your Hugging Face account.
+2. In `.env`, set `HF_TOKEN=hf_...`, `HF_HUB_OFFLINE=0`, and
+   `TRANSFORMERS_OFFLINE=0`, then start the container once so it downloads
+   the weights (~30 MB segmentation + ~26 MB embedding) into the shared
+   `huggingface-cache` volume.
+3. Revert `HF_HUB_OFFLINE=1` / `TRANSFORMERS_OFFLINE=1`. Subsequent starts
+   serve from the cache with no network access.
+
+Consumers on `inference-net` reach it directly — there's no router in
+this shape:
+
+```bash
+curl http://diarize-only:8000/diarize \
+  -F "file=@recording.mp3" \
+  -F "max_speakers=4"
+```
+
+Response:
+
+```json
+{
+  "segments": [
+    {"start": 0.51, "end": 4.32, "speaker": "SPEAKER_00"},
+    {"start": 4.80, "end": 9.11, "speaker": "SPEAKER_01"}
+  ],
+  "speakers": ["SPEAKER_00", "SPEAKER_01"]
+}
+```
+
+No `Authorization` header is required (same posture as `gliner-only`,
+`rerank-only`, and `clip-only`). `num_speakers` (exact count) is mutually
+exclusive with the `min_speakers`/`max_speakers` bounds; sending both
+returns 400.
+
+Override defaults via `.env` — only `DIARIZE_*` knobs apply in this shape:
+
+```bash
+DIARIZE_MODEL=pyannote/speaker-diarization-3.1   # default
+DIARIZE_DEVICE=cpu                               # default in diarize-only
+# DIARIZE_HOST_PORT=8004                          # host publish port for dev
+```
+
+CPU diarization is the slowest of the standalone shapes — expect roughly
+real-time-to-several-times-real-time per audio minute, dominated by the
+segmentation and embedding passes. Fine for batch transcription pipelines
+(Nextext's workload); not suitable for interactive use.
+
+> Pair with the NER-only, Rerank-only, and CLIP-only deployments on the
+> same host to give a non-CUDA dev box `/gliner`, `/rerank`, `/clip/*`,
+> and `/diarize` against `inference-net`.
+
 ## Offline image bundles
 
 For airgapped hosts, customer deployments, or any environment without
@@ -344,10 +427,11 @@ can ship alongside the `docker/` directory (which holds `compose.yaml` and
 On a build host with internet:
 
 ```bash
-make bundle              # full stack (chat, embed, rerank, gliner, clip, audio, router)
+make bundle              # full stack (chat, embed, rerank, gliner, clip, audio, diarize, router)
 make bundle-gliner-only     # NER-only shape (just vllm-service-gliner-cpu)
 make bundle-rerank-only  # Rerank-only shape (just vllm-service-rerank-only)
 make bundle-clip-only    # CLIP-only shape (just vllm-service-clip-cpu)
+make bundle-diarize-only # Diarize-only shape (just vllm-service-diarize-cpu)
 ```
 
 This computes `VLLM_SERVICE_VERSION` as `YYYY-MM-DD-<short-sha>` (override by
@@ -397,7 +481,8 @@ between `load` and `up`.
 - `inference-net` is an external shared Docker network used for cross-project
   service discovery and reverse-proxy access.
 - Only the `router` service joins `inference-net`; `chat`, `embed`,
-  `rerank`, `gliner`, `clip`, and `audio` stay on the private network.
+  `rerank`, `gliner`, `clip`, `audio`, and `diarize` stay on the private
+  network.
 - The `router` service keeps its `vllm-router` alias on `inference-net` so
   existing consumers do not need to change their `OPENAI_API_BASE`.
 
@@ -413,9 +498,11 @@ Clients must use the exact model ID set in `.env` as the `model` field in
 their requests (e.g. `"model": "BAAI/bge-m3"`). The `/v1/models` endpoint
 returns the currently active IDs.
 
-`NER_MODEL` is the exception: GLiNER's server has no OpenAI-shaped endpoint,
-so it is not in `model_list` and does not appear in `/v1/models`. Switching
-it still works by updating `NER_MODEL` in `.env` and restarting `gliner`.
+`NER_MODEL`, `CLIP_MODEL`, and `DIARIZE_MODEL` are the exceptions: their
+servers have no OpenAI-shaped endpoints, so they are not in `model_list` and
+do not appear in `/v1/models`. Switching them still works by updating the
+variable in `.env` and restarting the matching service (`gliner`, `clip`,
+`diarize`).
 
 ## Calling the audio service
 
@@ -431,6 +518,52 @@ curl http://vllm-router:9000/v1/audio/transcriptions \
 
 The maximum accepted file size defaults to 200 MB and can be raised with
 `VLLM_MAX_AUDIO_CLIP_FILESIZE_MB` in `.env`.
+
+## Calling the diarization service
+
+The `diarize` service runs the
+[pyannote/speaker-diarization-3.1](https://huggingface.co/pyannote/speaker-diarization-3.1)
+pipeline behind FastAPI. Like `gliner` and `clip` it is **not** vLLM and
+does **not** expose OpenAI-compatible routes — it is reached through the
+router's `/diarize` pass-through. The uploaded file may be any container
+ffmpeg can decode (wav, mp3, m4a, mp4, ...); it is resampled to 16 kHz
+mono server-side.
+
+```bash
+curl http://vllm-router:9000/diarize \
+  -H "Authorization: Bearer $OPENAI_API_KEY" \
+  -F "file=@recording.mp3" \
+  -F "max_speakers=4"
+```
+
+Response:
+
+```json
+{
+  "segments": [
+    {"start": 0.51, "end": 4.32, "speaker": "SPEAKER_00"},
+    {"start": 4.80, "end": 9.11, "speaker": "SPEAKER_01"}
+  ],
+  "speakers": ["SPEAKER_00", "SPEAKER_01"]
+}
+```
+
+`num_speakers` (exact count) is mutually exclusive with the
+`min_speakers`/`max_speakers` bounds; sending both returns 400. Times are
+absolute seconds — consumers (Nextext) assign speakers to their ASR
+segments by maximum overlap client-side.
+
+The pipeline weights are gated on the Hugging Face Hub: accept the
+conditions for both `pyannote/speaker-diarization-3.1` and
+`pyannote/segmentation-3.0`, then run once with `HF_HUB_OFFLINE=0`,
+`TRANSFORMERS_OFFLINE=0`, and `HF_TOKEN` set in `.env` to populate the
+shared `huggingface-cache` volume. The default offline mode serves from
+the cache afterwards.
+
+> Hosts that can't run the CUDA stack at all should use the
+> [Diarize-only deployment](#diarize-only-deployment) instead — same
+> `/diarize` request/response shape, but reached at
+> `http://diarize-only:8000/diarize` with no Bearer auth.
 
 ## Calling the NER service
 
