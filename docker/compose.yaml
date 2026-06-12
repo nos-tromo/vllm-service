@@ -283,7 +283,7 @@ services:
     deploy: *cuda-deploy
     networks:
       - vllm-net
-  
+
   gliner:
     # GLiNER zero-shot NER served via Ray Serve. Unlike the other backends,
     # this is NOT a vLLM container — GLiNER's span-matching head isn't a
@@ -291,8 +291,8 @@ services:
     # the v2.5 checkpoints is not natively supported by vLLM, so we use
     # the upstream Ray-Serve-based server instead. Endpoint shape:
     #   POST /gliner {"text", "labels", "threshold"} -> {"entities": [...]}
-    # GLiNER must be started after the vLLM-native services because it does 
-    # not allocate a fixed GPU memory fraction at startup and can OOM if it 
+    # GLiNER must be started after the vLLM-native services because it does
+    # not allocate a fixed GPU memory fraction at startup and can OOM if it
     # starts before the others.
 
     image: vllm-service-gliner:${VLLM_SERVICE_VERSION:-latest}
