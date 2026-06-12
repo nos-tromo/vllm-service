@@ -1,8 +1,8 @@
 name: vllm-service
 
 x-no-proxy-env: &no-proxy-env
-  NO_PROXY: "router,chat,embed,rerank,gliner,clip,audio,translate,localhost,127.0.0.1,172.16.0.0/12,10.0.0.0/8${EXTRA_NO_PROXY:-}"
-  no_proxy: "router,chat,embed,rerank,gliner,clip,audio,translate,localhost,127.0.0.1,172.16.0.0/12,10.0.0.0/8${EXTRA_NO_PROXY:-}"
+  NO_PROXY: "router,chat,embed,rerank,gliner,clip,audio,localhost,127.0.0.1,172.16.0.0/12,10.0.0.0/8${EXTRA_NO_PROXY:-}"
+  no_proxy: "router,chat,embed,rerank,gliner,clip,audio,localhost,127.0.0.1,172.16.0.0/12,10.0.0.0/8${EXTRA_NO_PROXY:-}"
 
 x-env-file: &env-file
   - path: ../.env
@@ -65,13 +65,8 @@ services:
         condition: service_healthy
       audio:
         condition: service_healthy
-        required: false
-      translate:
-        condition: service_healthy
-        required: false
     environment:
       <<: *no-proxy-env
-      TRANSLATE_MODEL: ${TRANSLATE_MODEL:-Infomaniak-AI/vllm-translategemma-4b-it}
       WHISPER_MODEL: ${WHISPER_MODEL:-openai/whisper-large-v3}
     volumes:
       - ./litellm.config.yaml:/app/config.yaml:ro
@@ -216,69 +211,6 @@ services:
     networks:
       - vllm-net
 
-  gliner:
-    # GLiNER zero-shot NER served via Ray Serve. Unlike the other backends,
-    # this is NOT a vLLM container — GLiNER's span-matching head isn't a
-    # stock HF classification head and the DeBERTa-v2/v3 attention used by
-    # the v2.5 checkpoints is not natively supported by vLLM, so we use
-    # the upstream Ray-Serve-based server instead. Endpoint shape:
-    #   POST /gliner {"text", "labels", "threshold"} -> {"entities": [...]}
-    image: vllm-service-gliner:${VLLM_SERVICE_VERSION:-latest}
-    build:
-      context: ..
-      dockerfile: docker/Dockerfile.gliner.cuda
-    logging: *default-logging
-    gpus: all
-    env_file: *env-file
-    ipc: host
-    depends_on:
-      clip:
-        condition: service_healthy
-      translate:
-        condition: service_healthy
-        required: false   # absent without --profile media; enforced when present
-    entrypoint: ["/bin/sh", "-lc"]
-    command:
-      - >-
-        export CUDA_VISIBLE_DEVICES="$${NER_CUDA_VISIBLE_DEVICES:-0}";
-        set -- python -m gliner.serve
-        --model "$${NER_MODEL:-gliner-community/gliner_large-v2.5}"
-        --device "$${NER_DEVICE:-cuda}"
-        --dtype "$${NER_DTYPE:-bfloat16}"
-        --port 8000
-        --max-batch-size "$${NER_MAX_BATCH_SIZE:-32}"
-        --batch-wait-timeout-ms "$${NER_BATCH_WAIT_TIMEOUT_MS:-10}"
-        --target-memory-fraction "$${NER_TARGET_MEMORY_FRACTION:-0.8}"
-        --num-replicas "$${NER_NUM_REPLICAS:-1}";
-        if [ -n "$${NER_QUANTIZATION:-}" ]; then
-          set -- "$@" --quantization "$${NER_QUANTIZATION}";
-        fi;
-        if [ "$${NER_ENABLE_FLASHDEBERTA:-false}" = "true" ]; then
-          set -- "$@" --enable-flashdeberta;
-        fi;
-        if [ "$${NER_ENABLE_SEQUENCE_PACKING:-false}" = "true" ]; then
-          set -- "$@" --enable-sequence-packing;
-        fi;
-        if [ "$${NER_DISABLE_COMPILE:-false}" = "true" ]; then
-          set -- "$@" --no-compile;
-        fi;
-        exec "$@"
-    environment:
-      <<: *no-proxy-env
-      NVIDIA_VISIBLE_DEVICES: all
-      HF_HUB_OFFLINE: ${HF_HUB_OFFLINE:-1}
-      TRANSFORMERS_OFFLINE: ${TRANSFORMERS_OFFLINE:-1}
-    volumes: *vllm-volumes
-    healthcheck:
-      test: ["CMD-SHELL", "curl -sf http://localhost:8000/-/healthz || exit 1"]
-      interval: 10s
-      timeout: 5s
-      retries: 60
-      start_period: 120s
-    deploy: *cuda-deploy
-    networks:
-      - vllm-net
-
   clip:
     # CLIP image+text embedding tower. Same image/text encoder docint
     # used to load in-process (openai/clip-vit-base-patch32 by default).
@@ -328,12 +260,11 @@ services:
       context: ..
       dockerfile: docker/Dockerfile.vllm
     logging: *default-logging
-    profiles: [media]
     gpus: all
     env_file: *env-file
     ipc: host
     depends_on:
-      rerank:
+      clip:
         condition: service_healthy
     entrypoint: ["/bin/sh", "-lc"]
     command:
@@ -353,13 +284,22 @@ services:
     networks:
       - vllm-net
 
-  translate:
-    image: vllm-service-translate:${VLLM_SERVICE_VERSION:-latest}
+  gliner:
+    # GLiNER zero-shot NER served via Ray Serve. Unlike the other backends,
+    # this is NOT a vLLM container — GLiNER's span-matching head isn't a
+    # stock HF classification head and the DeBERTa-v2/v3 attention used by
+    # the v2.5 checkpoints is not natively supported by vLLM, so we use
+    # the upstream Ray-Serve-based server instead. Endpoint shape:
+    #   POST /gliner {"text", "labels", "threshold"} -> {"entities": [...]}
+    # GLiNER must be started after the vLLM-native services because it does
+    # not allocate a fixed GPU memory fraction at startup and can OOM if it
+    # starts before the others.
+
+    image: vllm-service-gliner:${VLLM_SERVICE_VERSION:-latest}
     build:
       context: ..
-      dockerfile: docker/Dockerfile.vllm
+      dockerfile: docker/Dockerfile.gliner.cuda
     logging: *default-logging
-    profiles: [media]
     gpus: all
     env_file: *env-file
     ipc: host
@@ -369,23 +309,41 @@ services:
     entrypoint: ["/bin/sh", "-lc"]
     command:
       - >-
-        export CUDA_VISIBLE_DEVICES="$${TRANSLATE_CUDA_VISIBLE_DEVICES:-0}";
-        set -- vllm serve "$${TRANSLATE_MODEL:-Infomaniak-AI/vllm-translategemma-4b-it}"
-        --tensor-parallel-size "$${TRANSLATE_TENSOR_PARALLEL_SIZE:-1}"
-        --api-key "$${OPENAI_API_KEY:-sk-no-key-required}"
-        --host 0.0.0.0
+        export CUDA_VISIBLE_DEVICES="$${NER_CUDA_VISIBLE_DEVICES:-0}";
+        set -- python -m gliner.serve
+        --model "$${NER_MODEL:-gliner-community/gliner_large-v2.5}"
+        --device "$${NER_DEVICE:-cuda}"
+        --dtype "$${NER_DTYPE:-bfloat16}"
         --port 8000
-        --gpu-memory-utilization "$${TRANSLATE_GPU_MEMORY_UTILIZATION:-0.15}"
-        --max-model-len "$${TRANSLATE_MAX_MODEL_LEN:-2048}"
-        --max-num-seqs "$${TRANSLATE_MAX_NUM_SEQS:-8}"
-        --max-num-batched-tokens "$${TRANSLATE_MAX_NUM_BATCHED_TOKENS:-4096}";
-        if [ "$${TRANSLATE_ENABLE_PREFIX_CACHING:-true}" = "true" ]; then
-          set -- "$@" --enable-prefix-caching;
+        --max-batch-size "$${NER_MAX_BATCH_SIZE:-32}"
+        --batch-wait-timeout-ms "$${NER_BATCH_WAIT_TIMEOUT_MS:-10}"
+        --target-memory-fraction "$${NER_TARGET_MEMORY_FRACTION:-0.8}"
+        --num-replicas "$${NER_NUM_REPLICAS:-1}";
+        if [ -n "$${NER_QUANTIZATION:-}" ]; then
+          set -- "$@" --quantization "$${NER_QUANTIZATION}";
+        fi;
+        if [ "$${NER_ENABLE_FLASHDEBERTA:-false}" = "true" ]; then
+          set -- "$@" --enable-flashdeberta;
+        fi;
+        if [ "$${NER_ENABLE_SEQUENCE_PACKING:-false}" = "true" ]; then
+          set -- "$@" --enable-sequence-packing;
+        fi;
+        if [ "$${NER_DISABLE_COMPILE:-false}" = "true" ]; then
+          set -- "$@" --no-compile;
         fi;
         exec "$@"
-    environment: *vllm-env
+    environment:
+      <<: *no-proxy-env
+      NVIDIA_VISIBLE_DEVICES: all
+      HF_HUB_OFFLINE: ${HF_HUB_OFFLINE:-1}
+      TRANSFORMERS_OFFLINE: ${TRANSFORMERS_OFFLINE:-1}
     volumes: *vllm-volumes
-    healthcheck: *vllm-healthcheck
+    healthcheck:
+      test: ["CMD-SHELL", "curl -sf http://localhost:8000/-/healthz || exit 1"]
+      interval: 10s
+      timeout: 5s
+      retries: 60
+      start_period: 120s
     deploy: *cuda-deploy
     networks:
       - vllm-net
