@@ -34,8 +34,15 @@ case "$PROFILE_ARG" in
     PROFILE_LABEL="clip-only"
     COMPOSE_FILE="docker/compose.clip-only.yaml"
     ;;
+  "diarize-only")
+    # Separate compose project — single FastAPI/pyannote speaker-diarization
+    # container on inference-net, no router, no GPU. Same topology shape as
+    # gliner-only/rerank-only/clip-only.
+    PROFILE_LABEL="diarize-only"
+    COMPOSE_FILE="docker/compose.diarize-only.yaml"
+    ;;
   *)
-    echo "Usage: $0 [gliner-only|rerank-only|clip-only]" >&2
+    echo "Usage: $0 [gliner-only|rerank-only|clip-only|diarize-only]" >&2
     exit 2
     ;;
 esac

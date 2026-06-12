@@ -1,8 +1,8 @@
 name: vllm-service
 
 x-no-proxy-env: &no-proxy-env
-  NO_PROXY: "router,chat,embed,rerank,gliner,clip,audio,localhost,127.0.0.1,172.16.0.0/12,10.0.0.0/8${EXTRA_NO_PROXY:-}"
-  no_proxy: "router,chat,embed,rerank,gliner,clip,audio,localhost,127.0.0.1,172.16.0.0/12,10.0.0.0/8${EXTRA_NO_PROXY:-}"
+  NO_PROXY: "router,chat,embed,rerank,gliner,clip,audio,diarize,localhost,127.0.0.1,172.16.0.0/12,10.0.0.0/8${EXTRA_NO_PROXY:-}"
+  no_proxy: "router,chat,embed,rerank,gliner,clip,audio,diarize,localhost,127.0.0.1,172.16.0.0/12,10.0.0.0/8${EXTRA_NO_PROXY:-}"
 
 x-env-file: &env-file
   - path: ../.env
@@ -59,11 +59,13 @@ services:
         condition: service_healthy
       rerank:
         condition: service_healthy
-      gliner:
-        condition: service_healthy
       clip:
         condition: service_healthy
       audio:
+        condition: service_healthy
+      diarize:
+        condition: service_healthy
+      gliner:
         condition: service_healthy
     environment:
       <<: *no-proxy-env
@@ -284,6 +286,60 @@ services:
     networks:
       - vllm-net
 
+  diarize:
+    # Speaker diarization (pyannote/speaker-diarization-3.1). Like clip,
+    # NOT a vLLM container — pyannote's PyanNet segmentation + WeSpeaker
+    # embedding + agglomerative clustering are not vLLM-supported
+    # architectures, so a FastAPI wrapper (docker/diarize_server.py)
+    # serves the pipeline instead. Endpoint shape:
+    #   POST /diarize multipart file=<audio> [+ num/min/max_speakers]
+    #     -> {"segments": [{"start", "end", "speaker"}], "speakers": [...]}
+    # Sits between audio and gliner in the startup chain: the pipeline
+    # allocates a small ad-hoc GPU footprint (no fixed reservation), and
+    # every such allocator must be up before Ray Serve's
+    # --target-memory-fraction claims the leftover GPU memory.
+    image: vllm-service-diarize:${VLLM_SERVICE_VERSION:-latest}
+    build:
+      context: ..
+      dockerfile: docker/Dockerfile.diarize.cuda
+    logging: *default-logging
+    gpus: all
+    env_file: *env-file
+    ipc: host
+    depends_on:
+      audio:
+        condition: service_healthy
+    entrypoint: ["/bin/sh", "-lc"]
+    command:
+      - >-
+        export CUDA_VISIBLE_DEVICES="$${DIARIZE_CUDA_VISIBLE_DEVICES:-0}";
+        exec uvicorn --app-dir /app diarize_server:app
+        --host 0.0.0.0
+        --port 8000
+    environment:
+      <<: *no-proxy-env
+      NVIDIA_VISIBLE_DEVICES: all
+      HF_HUB_OFFLINE: ${HF_HUB_OFFLINE:-1}
+      TRANSFORMERS_OFFLINE: ${TRANSFORMERS_OFFLINE:-1}
+      # pyannote defaults its hub downloads to ~/.cache/torch/pyannote
+      # (PYANNOTE_CACHE) — outside the mounted HF cache. Point it into the
+      # shared volume so the gated weights persist and offline mode finds
+      # them; it writes the hub-standard models--org--name layout, so the
+      # two caches coexist cleanly.
+      PYANNOTE_CACHE: /root/.cache/huggingface/hub
+      DIARIZE_MODEL: ${DIARIZE_MODEL:-pyannote/speaker-diarization-3.1}
+      DIARIZE_DEVICE: ${DIARIZE_DEVICE:-cuda}
+    volumes: *vllm-volumes
+    healthcheck:
+      test: ["CMD-SHELL", "curl -sf http://localhost:8000/health || exit 1"]
+      interval: 10s
+      timeout: 5s
+      retries: 60
+      start_period: 120s
+    deploy: *cuda-deploy
+    networks:
+      - vllm-net
+
   gliner:
     # GLiNER zero-shot NER served via Ray Serve. Unlike the other backends,
     # this is NOT a vLLM container — GLiNER's span-matching head isn't a
@@ -294,7 +350,6 @@ services:
     # GLiNER must be started after the vLLM-native services because it does
     # not allocate a fixed GPU memory fraction at startup and can OOM if it
     # starts before the others.
-
     image: vllm-service-gliner:${VLLM_SERVICE_VERSION:-latest}
     build:
       context: ..
@@ -304,7 +359,7 @@ services:
     env_file: *env-file
     ipc: host
     depends_on:
-      audio:
+      diarize:
         condition: service_healthy
     entrypoint: ["/bin/sh", "-lc"]
     command:

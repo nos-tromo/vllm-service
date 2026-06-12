@@ -1,0 +1,91 @@
+name: vllm-service-diarize-only
+
+# Standalone CPU speaker-diarization stack. Not a profile of compose.yaml —
+# a separate compose project for hosts that cannot run the full CUDA stack
+# (macOS, CPU-only Linux, AMD/ROCm boxes running Ollama for chat/embed).
+#
+# Topology:
+#   - one container, `diarize-only`, on the external `inference-net`
+#   - no LiteLLM router, no vLLM backends, no GPU reservation
+#   - the router pass-through `http://vllm-router:4000/diarize` is
+#     unavailable in this shape; consumers point at
+#     `http://diarize-only:8000/diarize`
+#
+# Auth: the container has no built-in Bearer-token gate. `inference-net`
+# is a private Docker network shared only between trusted compose
+# projects, mirroring how `data-net` exposes Qdrant and how the
+# `gliner-only`, `rerank-only`, and `clip-only` services expose theirs.
+#
+# Gated weights: pyannote/speaker-diarization-3.1 and
+# pyannote/segmentation-3.0 are gated on the Hugging Face Hub. On a fresh
+# host, accept both repos' conditions and pre-populate the shared
+# huggingface-cache volume once with HF_HUB_OFFLINE=0,
+# TRANSFORMERS_OFFLINE=0, and HF_TOKEN set (see README "Diarize-only
+# deployment").
+#
+# Pair with `compose.gliner-only.yaml`, `compose.rerank-only.yaml`, and
+# `compose.clip-only.yaml` on the same host to give a non-CUDA dev box the
+# full GLiNER + rerank + CLIP + diarization set against `inference-net`.
+
+x-no-proxy-env: &no-proxy-env
+  NO_PROXY: "diarize-only,localhost,127.0.0.1,172.16.0.0/12,10.0.0.0/8${EXTRA_NO_PROXY:-}"
+  no_proxy: "diarize-only,localhost,127.0.0.1,172.16.0.0/12,10.0.0.0/8${EXTRA_NO_PROXY:-}"
+
+x-env-file: &env-file
+  - path: ../.env
+    required: false
+
+# Shared logging — the local driver rotates and compresses
+# per-container; tail with `docker compose logs -f <svc>`.
+x-logging: &default-logging
+  driver: "local"
+  options:
+    max-size: "50m"
+    max-file: "5"
+    compress: "true"
+
+services:
+  diarize-only:
+    image: vllm-service-diarize-cpu:${VLLM_SERVICE_VERSION:-latest}
+    build:
+      context: ..
+      dockerfile: docker/Dockerfile.diarize.cpu
+    logging: *default-logging
+    env_file: *env-file
+    environment:
+      <<: *no-proxy-env
+      DIARIZE_MODEL: ${DIARIZE_MODEL:-pyannote/speaker-diarization-3.1}
+      # Hardcoded cpu (not interpolated): this shape has no GPU reservation,
+      # so it must run on CPU even if a shared .env sets DIARIZE_DEVICE=cuda
+      # for the full stack. Mirrors clip-only's CLIP_DEVICE: cpu.
+      DIARIZE_DEVICE: cpu
+      HF_HUB_OFFLINE: ${HF_HUB_OFFLINE:-1}
+      TRANSFORMERS_OFFLINE: ${TRANSFORMERS_OFFLINE:-1}
+      # pyannote defaults its hub downloads to ~/.cache/torch/pyannote
+      # (PYANNOTE_CACHE) — outside the mounted HF cache. Point it into the
+      # shared volume so the gated weights persist and offline mode finds
+      # them; it writes the hub-standard models--org--name layout, so the
+      # two caches coexist cleanly.
+      PYANNOTE_CACHE: /root/.cache/huggingface/hub
+    volumes:
+      - huggingface-cache:/root/.cache/huggingface/hub
+    healthcheck:
+      test: ["CMD-SHELL", "curl -sf http://localhost:8000/health || exit 1"]
+      interval: 10s
+      timeout: 5s
+      retries: 60
+      start_period: 180s
+    networks:
+      inference-net:
+        aliases:
+          - diarize-only
+    restart: unless-stopped
+
+volumes:
+  huggingface-cache:
+    external: true
+
+networks:
+  inference-net:
+    external: true
+    name: ${INFERENCE_NETWORK:-inference-net}

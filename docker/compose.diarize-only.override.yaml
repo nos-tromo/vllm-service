@@ -1,0 +1,14 @@
+### Dev override for the diarize-only stack — publishes the diarization
+### service on the host.
+###
+### NOT auto-loaded: it lives in docker/ and the Makefile passes explicit
+### -f flags. `make up-dev-diarize-only` layers this on top of
+### docker/compose.diarize-only.yaml so the service is reachable at
+### localhost:${DIARIZE_HOST_PORT} for direct testing; `make up-diarize-only`
+### runs the base alone (production shape). Sibling containers reach the
+### service as `diarize-only:8000` on inference-net regardless of this override.
+
+services:
+  diarize-only:
+    ports:
+      - "${DIARIZE_HOST_PORT:-8004}:8000"

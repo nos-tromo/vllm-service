@@ -8,24 +8,35 @@ A pure infrastructure repo: a Docker Compose stack that fronts several vLLM
 backends with a single LiteLLM Proxy router. The Docker assets live under
 `docker/` (`docker/compose.yaml`, `docker/compose.override.yaml`,
 `docker/compose.gliner-only.yaml`, `docker/compose.rerank-only.yaml`,
-`docker/compose.clip-only.yaml`, `docker/Dockerfile.vllm`,
+`docker/compose.clip-only.yaml`, `docker/compose.diarize-only.yaml`,
+`docker/Dockerfile.vllm`,
 `docker/Dockerfile.gliner.cuda`, `docker/Dockerfile.gliner.cpu`,
 `docker/Dockerfile.rerank.cpu`, `docker/Dockerfile.clip.cuda`,
-`docker/Dockerfile.clip.cpu`, `docker/litellm.config.yaml`) plus `.env`
+`docker/Dockerfile.clip.cpu`, `docker/Dockerfile.diarize.cuda`,
+`docker/Dockerfile.diarize.cpu`, `docker/litellm.config.yaml`) plus `.env`
 and `.dockerignore` at the repo root. The only Python sources are
-`docker/rerank_server.py` and `docker/clip_server.py` — small FastAPI
-wrappers around Hugging Face models that ship because there is no
-off-the-shelf CPU server that speaks the Jina-shape `/rerank` or
-`/clip` contracts the full stack exposes.
+`docker/rerank_server.py`, `docker/clip_server.py`,
+`docker/diarize_server.py`, and its `docker/diarize_compat.py` helper —
+small FastAPI wrappers around Hugging Face models that ship because there
+is no off-the-shelf server that speaks the Jina-shape `/rerank`, `/clip`,
+or `/diarize` contracts the full stack exposes. (`diarize_compat.py`
+holds the two pyannote-3.x-vs-base-image compat shims, applied before
+pyannote is imported: it restores the handful of `torchaudio` symbols
+pyannote.audio 3.x imports that torchaudio 2.9+ removed — the server
+decodes audio via ffmpeg and never uses torchaudio's file I/O — and it
+allowlists the trusted checkpoint globals (`TRUSTED_CHECKPOINT_GLOBALS`)
+so PyTorch 2.6+'s `weights_only=True` `torch.load` can load the gated
+weights. Both diarize Dockerfiles' build smoke tests round-trip those
+globals so a base-image bump that breaks either shim fails the build.)
 
 ## Deployment shapes
 
-Four independent compose projects, picked per host:
+Five independent compose projects, picked per host:
 
 - **Full stack** (`docker/compose.yaml`, CUDA-required) — chat, embed, rerank,
-  clip, gliner, audio, router. The original shape; reached as
+  clip, audio, diarize, gliner, router. The original shape; reached as
   `http://vllm-router:4000/...` on `inference-net`. GLiNER is routed via the
-  router's `/gliner` pass-through.
+  router's `/gliner` pass-through, diarization via `/diarize`.
 - **NER-only** (`docker/compose.gliner-only.yaml`, CPU OK) — a single
   `gliner-only` container on `inference-net`, no router, no GPU requirement.
   Intended for hosts that run Ollama (or another non-vLLM provider) for
@@ -57,21 +68,34 @@ Four independent compose projects, picked per host:
   the base URL alone. Uses `Dockerfile.clip.cpu` (uv-managed
   Python 3.11, CPU torch, transformers, Pillow) and ships
   `docker/clip_server.py`.
+- **Diarize-only** (`docker/compose.diarize-only.yaml`, CPU OK) — a single
+  `diarize-only` container on `inference-net`, no router, no GPU. Same
+  audience as NER-only / Rerank-only / CLIP-only; co-deployable so a
+  non-CUDA host can offer `/gliner`, `/rerank`, `/clip/*`, and `/diarize`
+  at once. Reached as `http://diarize-only:8000/diarize`. Runs the same
+  `docker/diarize_server.py` the full-stack `diarize` service does, so it
+  speaks the identical multipart `/diarize` contract; consumers (Nextext)
+  target either backend by changing the base URL alone. Uses
+  `Dockerfile.diarize.cpu` (uv-managed Python 3.11, CPU torch +
+  torchaudio, `pyannote.audio`, `ffmpeg`). The pyannote weights are gated
+  on the HF Hub (see "Diarization backend" below for the one-time
+  pre-download), so unlike the other CPU shapes its cache cannot be
+  populated anonymously.
 
 The shapes are **not profiles of one compose file** — they have different
-images, different topologies, and (gliner-only, rerank-only, clip-only) no
-router. Pick one per host. They reuse the same external `inference-net`
-network and `huggingface-cache` volume, so the one-time
+images, different topologies, and (gliner-only, rerank-only, clip-only,
+diarize-only) no router. Pick one per host. They reuse the same external
+`inference-net` network and `huggingface-cache` volume, so the one-time
 `make network` / `make volumes` prerequisites apply to all of them. The
-three CPU-only shapes can coexist on a single host because they target
+four CPU-only shapes can coexist on a single host because they target
 different network aliases and host ports.
 
 ## Common commands
 
 The `Makefile` is the entry point — it points Compose at `docker/compose.yaml`,
 since a bare `docker compose` from the repo root no longer finds the compose
-file. It builds and runs the full stack (chat, embed, rerank, clip, gliner,
-audio, router) — there are no optional profiles.
+file. It builds and runs the full stack (chat, embed, rerank, clip, audio,
+diarize, gliner, router) — there are no optional profiles.
 
 Prerequisites (one-time per host):
 
@@ -125,6 +149,17 @@ make stop-clip-only
 make bundle-clip-only     # versioned .tar.gz of the clip-cpu image
 ```
 
+Or, for the Diarize-only shape (no CUDA, no router — pairs with Ollama,
+typically co-deployed with NER-only, Rerank-only, and CLIP-only):
+
+```bash
+make build-diarize-only   # builds vllm-service-diarize-cpu
+make up-diarize-only      # one diarize-only container on inference-net (no host port)
+make up-dev-diarize-only  # like 'up-diarize-only', but publishes the diarize port on the host
+make stop-diarize-only
+make bundle-diarize-only  # versioned .tar.gz of the diarize-cpu image
+```
+
 Other useful operations use the raw compose form, pointed at the compose file:
 
 ```bash
@@ -143,9 +178,11 @@ make bundle              # build + ship the full stack as a versioned .tar.gz pa
 ```
 
 There is no test suite or linter. The Python files
-(`docker/rerank_server.py`, `docker/clip_server.py`) are small enough to
-verify by curl against the running standalone containers — see the
-Architecture / Rerank-only and Architecture / CLIP-only sections below.
+(`docker/rerank_server.py`, `docker/clip_server.py`,
+`docker/diarize_server.py`) are small enough to verify by curl —
+rerank and clip against their running standalone containers, diarize
+through the full-stack router — see the Architecture / Rerank-only,
+CLIP-only, and Diarization sections below.
 
 ## Architecture
 
@@ -161,10 +198,12 @@ there is no path-based dispatch. `docker/litellm.config.yaml` maps each
 
 LiteLLM natively exposes `/v1/chat/completions`, `/v1/completions`,
 `/v1/embeddings`, `/v1/audio/transcriptions`, `/v1/audio/translations`, and
-`/v1/models`. vLLM-specific paths (`/v1/rerank`, `/pooling`, `/tokenize`) and
-GLiNER's `/gliner` are forwarded by `pass_through_endpoints` in
-`docker/litellm.config.yaml`. `/gliner` is the only pass-through whose upstream
-is *not* a vLLM container — it goes to the `gliner` service (Ray Serve).
+`/v1/models`. vLLM-specific paths (`/v1/rerank`, `/pooling`, `/tokenize`),
+GLiNER's `/gliner`, CLIP's `/clip/*`, and diarization's `/diarize` are
+forwarded by `pass_through_endpoints` in `docker/litellm.config.yaml`.
+`/gliner`, `/clip/*`, and `/diarize` are the pass-throughs whose upstreams
+are *not* vLLM containers — they go to the `gliner` (Ray Serve), `clip`
+(FastAPI), and `diarize` (FastAPI) services.
 
 ### Backends
 
@@ -176,17 +215,28 @@ different model and per-service env-driven flags:
 - `rerank` — reranker, `--runner pooling` (`RERANK_MODEL`)
 - `audio` — Whisper (`WHISPER_MODEL`)
 
-`gliner` is the one exception — it uses **`docker/Dockerfile.gliner.cuda`** (pytorch
-base + `gliner[serve]`) and runs Ray Serve, not vLLM. GLiNER's span-matching head
-isn't a stock HF classification head and the DeBERTa-v2/v3 disentangled
-attention used by the v2.5 checkpoints isn't natively supported by vLLM,
-so vLLM-native serving is not viable. The endpoint is `POST /gliner` with
-body `{text, labels, threshold}` and is reached via the router's
-`/gliner` pass-through (not `/v1/...`).
+Three backends are exceptions that do not run vLLM:
 
 - `gliner` — GLiNER zero-shot NER via Ray Serve (`NER_MODEL`, default
   `gliner-community/gliner_large-v2.5` on CUDA; set `NER_DEVICE=cpu` with
-  the `gliner_medium-v2.5` variant for CPU-only hosts)
+  the `gliner_medium-v2.5` variant for CPU-only hosts). Uses
+  **`docker/Dockerfile.gliner.cuda`** (pytorch base + `gliner[serve]`).
+  GLiNER's span-matching head isn't a stock HF classification head and the
+  DeBERTa-v2/v3 disentangled attention used by the v2.5 checkpoints isn't
+  natively supported by vLLM, so vLLM-native serving is not viable. The
+  endpoint is `POST /gliner` with body `{text, labels, threshold}`, reached
+  via the router's `/gliner` pass-through (not `/v1/...`).
+- `clip` — CLIP image+text embedding via FastAPI (`CLIP_MODEL`). Uses
+  **`docker/Dockerfile.clip.cuda`** and runs `docker/clip_server.py`;
+  reached via the router's `/clip/*` pass-throughs.
+- `diarize` — speaker diarization via FastAPI (`DIARIZE_MODEL`, default
+  `pyannote/speaker-diarization-3.1`). Uses
+  **`docker/Dockerfile.diarize.cuda`** and runs `docker/diarize_server.py`.
+  pyannote is a multi-model pipeline (PyanNet segmentation + WeSpeaker
+  embedding + agglomerative clustering), none of which are vLLM-supported
+  architectures, so vLLM-native serving is not viable. The endpoint is
+  `POST /diarize` (multipart audio + optional speaker-count form fields),
+  reached via the router's `/diarize` pass-through.
 
 Each buildable service in `docker/compose.yaml` carries
 `image: vllm-service-<svc>:${VLLM_SERVICE_VERSION:-latest}`. A raw `docker
@@ -217,18 +267,18 @@ ergonomics aren't worth it.
 ### Service startup ordering
 
 `depends_on … condition: service_healthy` chains the backends serially:
-`chat → embed → rerank → clip → audio → gliner → router`. This is intentional —
-backends compete for GPU memory at startup, so they are brought up one at a
-time. `gliner` is deliberately **last**: it runs on Ray Serve with
+`chat → embed → rerank → clip → audio → diarize → gliner → router`. This is
+intentional — backends compete for GPU memory at startup, so they are brought
+up one at a time. `gliner` is deliberately **last**: it runs on Ray Serve with
 `--target-memory-fraction` (a share of whatever GPU memory is still free when it
 starts, not a fixed reservation like the vLLM backends'
-`--gpu-memory-utilization`), so every fixed-allocation backend — `audio`
-included — must be healthy before it comes up, or it would claim the remaining
-memory and starve them.
-Healthchecks hit `http://localhost:8000/health` (vLLM backends),
-`http://localhost:8000/-/healthz` (the `gliner` Ray Serve container), and
-`/health/liveliness` (router). Allow ~120s `start_period` before treating a
-backend as unhealthy.
+`--gpu-memory-utilization`), so every other allocator — `audio` and the small
+ad-hoc `diarize` footprint included — must be healthy before it comes up, or
+it would claim the remaining memory and starve them.
+Healthchecks hit `http://localhost:8000/health` (vLLM backends, `clip`, and
+`diarize`), `http://localhost:8000/-/healthz` (the `gliner` Ray Serve
+container), and `/health/liveliness` (router). Allow ~120s `start_period`
+before treating a backend as unhealthy.
 
 ### Configuration surface
 
@@ -257,10 +307,12 @@ edits to `docker/litellm.config.yaml` are needed** — model names are resolved
 via `os.environ/<VAR>` at startup. Clients must send the exact model ID string
 in their request `model` field; `/v1/models` returns the active set.
 
-`NER_MODEL` is the exception: GLiNER's server has no OpenAI-shaped routes, so
-it is not declared in `model_list` and does not appear in `/v1/models`.
-Clients hit `/gliner` directly with a GLiNER-native body and never use the
-`model` field. Switching `NER_MODEL` and restarting `gliner` still works.
+`NER_MODEL`, `CLIP_MODEL`, and `DIARIZE_MODEL` are the exceptions: their
+servers have no OpenAI-shaped routes, so they are not declared in
+`model_list` and do not appear in `/v1/models`. Clients hit `/gliner`,
+`/clip/*`, and `/diarize` directly with service-native bodies and never use
+the `model` field. Switching one of these vars and restarting the matching
+service still works.
 
 ### Rerank-only shape (CPU)
 
@@ -344,4 +396,62 @@ curl -fsS -X POST http://localhost:${CLIP_HOST_PORT:-8002}/clip/embed_image \
 
 # dimension probe
 curl -fsS http://localhost:${CLIP_HOST_PORT:-8002}/clip/dimension
+```
+
+### Diarization backend (full stack)
+
+The `diarize` service runs `docker/diarize_server.py` — a small FastAPI
+app around the `pyannote/speaker-diarization-3.1` pipeline. Uploaded
+bytes are decoded to 16 kHz mono float32 by piping through `ffmpeg`
+(any container ffmpeg can decode), then handed to the pipeline as a
+pre-decoded waveform dict; torchaudio file decoding is never used (the
+server stubs the backend-probing API torchaudio 2.9+ removed before
+importing pyannote). The Dockerfile pins `pyannote.audio>=3.3.2,<4`
+(4.x renamed the auth kwarg and moved decoding to torchcodec) and
+`huggingface_hub<1.0` (1.0 removed the `use_auth_token` alias pyannote
+3.x passes). Endpoints:
+
+```
+POST /diarize               # multipart `file=<bytes>` + optional integer
+                            # form fields num_speakers OR min_speakers/
+                            # max_speakers (combining both -> 400)
+  -> {"segments": [{"start": <float sec>, "end": <float sec>,
+      "speaker": "SPEAKER_00"}, ...], "speakers": [...]}
+
+GET  /health
+  -> {"status": "ok", "model": "...", "device": "..."}
+```
+
+Model identity is fixed at container startup via `DIARIZE_MODEL`
+(default `pyannote/speaker-diarization-3.1`). The checkpoints are gated
+on the Hugging Face Hub: accept the conditions for both
+`pyannote/speaker-diarization-3.1` and `pyannote/segmentation-3.0`,
+then run once with `HF_HUB_OFFLINE=0`, `TRANSFORMERS_OFFLINE=0`, and
+`HF_TOKEN` set so the weights land in the shared `huggingface-cache`
+volume — the compose env points `PYANNOTE_CACHE` there, since pyannote
+would otherwise download to `~/.cache/torch/pyannote`, outside the
+volume. Consumers (Nextext) do speaker-to-ASR-segment alignment
+client-side by maximum overlap, so the service returns raw turns only.
+
+A `diarize-only` standalone CPU shape (`docker/compose.diarize-only.yaml`,
+`make up-diarize-only`) runs the same `docker/diarize_server.py` without the
+router — built from `Dockerfile.diarize.cpu` (uv-managed Python 3.11, CPU
+torch + torchaudio, `pyannote.audio`, `ffmpeg`), reached directly at
+`http://diarize-only:8000/diarize` with no Bearer auth, same posture as the
+other `-only` shapes. In the full stack, requests go through the router,
+which gates with the master key. Smoke-test (full stack):
+
+```bash
+curl -fsS -X POST http://localhost:${ROUTER_HOST_PORT:-9000}/diarize \
+  -H "Authorization: Bearer $OPENAI_API_KEY" \
+  -F 'file=@/path/to/recording.mp3' \
+  -F 'max_speakers=4'
+```
+
+Smoke-test (diarize-only, no auth):
+
+```bash
+curl -fsS -X POST http://localhost:${DIARIZE_HOST_PORT:-8004}/diarize \
+  -F 'file=@/path/to/recording.mp3' \
+  -F 'max_speakers=4'
 ```

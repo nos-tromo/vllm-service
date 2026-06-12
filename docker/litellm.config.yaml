@@ -94,6 +94,16 @@ general_settings:
         content-type: "application/json"
     - path: "/clip/dimension"
       target: "http://clip:8000/clip/dimension"
+    # Speaker diarization (pyannote). Not OpenAI-compatible — clients POST
+    # multipart `file=<audio bytes>` plus optional num_speakers /
+    # min_speakers / max_speakers form fields and receive
+    # {"segments": [{"start", "end", "speaker"}], "speakers": [...]}.
+    # Like /clip/embed_image, the headers block is omitted so LiteLLM
+    # forwards the original Content-Type (multipart boundary) intact.
+    # The diarize backend is not in model_list and does not appear in
+    # /v1/models — it has no OpenAI-shaped endpoint to route by model name.
+    - path: "/diarize"
+      target: "http://diarize:8000/diarize"
 
 litellm_settings:
   # Silently drop OpenAI-only params that the upstream vLLM backend does
