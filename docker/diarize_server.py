@@ -46,9 +46,10 @@ import torch
 from fastapi import FastAPI, File, Form, HTTPException, UploadFile
 from pydantic import BaseModel
 
-# Restore the torchaudio symbols pyannote.audio 3.x touches at import time
-# but torchaudio 2.9+ removed. Must run before the pyannote import below;
-# see docker/diarize_compat.py for the rationale.
+# Apply the pyannote 3.x compatibility shims before importing pyannote: restore
+# the torchaudio symbols torchaudio 2.9+ removed, and allowlist the trusted
+# checkpoint globals so torch>=2.6's weights_only loader accepts the weights.
+# See docker/diarize_compat.py for both rationales.
 import diarize_compat  # noqa: F401,E402
 from pyannote.audio import Pipeline  # noqa: E402
 

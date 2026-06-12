@@ -25,13 +25,16 @@ RUN pip install --no-cache-dir --break-system-packages \
     'pyannote.audio>=3.3.2,<4' \
     'huggingface_hub>=0.13.0,<1.0'
 
-# Build-time import smoke test: torchaudio 2.9+ (shipped by the pinned
-# pytorch base) removed several symbols pyannote 3.x references at import
-# time; diarize_compat.py restores inert stubs before pyannote is imported.
-# Exercise the full import chain (lightning, speechbrain, ...) plus Audio
-# construction here so a base-image bump fails the build, not the container.
+# Build-time smoke test — fail the build (not the running container) on a
+# base-image bump that breaks either compatibility shim in diarize_compat.py:
+#   * torchaudio: 2.9+ removed symbols pyannote 3.x imports — exercise the full
+#     import chain (lightning, speechbrain, ...) plus Audio construction.
+#   * torch.load weights_only: round-trip the exact trusted checkpoint globals
+#     through the weights_only=True loader. Needs no gated weights, yet still
+#     catches a renamed symbol or a broken allowlist here — instead of only on
+#     the first real Pipeline.from_pretrained in production.
 COPY docker/diarize_compat.py /app/diarize_compat.py
-RUN PYTHONPATH=/app python -c "import diarize_compat; from pyannote.audio import Pipeline; import pyannote.audio.pipelines; from pyannote.audio.core.io import Audio; Audio(sample_rate=16000, mono='downmix')"
+RUN PYTHONPATH=/app python -c "import tempfile, os, torch, diarize_compat; from pyannote.audio import Pipeline; import pyannote.audio.pipelines; from pyannote.audio.core.io import Audio; Audio(sample_rate=16000, mono='downmix'); p = tempfile.NamedTemporaryFile(suffix='.ckpt', delete=False).name; torch.save({'g': list(diarize_compat.TRUSTED_CHECKPOINT_GLOBALS), 'w': torch.zeros(1)}, p); torch.load(p, weights_only=True); os.unlink(p); print('diarize build smoke: OK')"
 
 COPY docker/diarize_server.py /app/diarize_server.py
 

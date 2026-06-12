@@ -20,9 +20,14 @@ and `.dockerignore` at the repo root. The only Python sources are
 small FastAPI wrappers around Hugging Face models that ship because there
 is no off-the-shelf server that speaks the Jina-shape `/rerank`, `/clip`,
 or `/diarize` contracts the full stack exposes. (`diarize_compat.py`
-restores the handful of `torchaudio` symbols pyannote.audio 3.x imports
-that torchaudio 2.9+ removed; the server decodes audio via ffmpeg and
-never uses torchaudio's file I/O.)
+holds the two pyannote-3.x-vs-base-image compat shims, applied before
+pyannote is imported: it restores the handful of `torchaudio` symbols
+pyannote.audio 3.x imports that torchaudio 2.9+ removed — the server
+decodes audio via ffmpeg and never uses torchaudio's file I/O — and it
+allowlists the trusted checkpoint globals (`TRUSTED_CHECKPOINT_GLOBALS`)
+so PyTorch 2.6+'s `weights_only=True` `torch.load` can load the gated
+weights. Both diarize Dockerfiles' build smoke tests round-trip those
+globals so a base-image bump that breaks either shim fails the build.)
 
 ## Deployment shapes
 
