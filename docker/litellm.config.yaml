@@ -38,11 +38,19 @@ model_list:
       api_base: http://rerank:8000
       api_key: os.environ/OPENAI_API_KEY
 
-  # Audio transcription / translation
+  # Audio transcription / translation — must use hosted_vllm, not openai.
+  # WHISPER_MODEL is openai/whisper-large-v3, and the openai provider treats
+  # the leading "openai/" as its own route prefix and strips it, forwarding a
+  # bare "whisper-large-v3" upstream — which the vLLM backend (serving the
+  # model under its full HF id "openai/whisper-large-v3") rejects with 404.
+  # hosted_vllm is openai-compatible for /v1/audio/transcriptions (same
+  # handler) but forwards the model id verbatim. Unlike the /rerank route
+  # above, api_base keeps its /v1 suffix: the openai-compatible transcription
+  # handler appends /audio/transcriptions.
   - model_name: os.environ/WHISPER_MODEL
     litellm_params:
       model: os.environ/WHISPER_MODEL
-      custom_llm_provider: openai
+      custom_llm_provider: hosted_vllm
       api_base: http://audio:8000/v1
       api_key: os.environ/OPENAI_API_KEY
 
