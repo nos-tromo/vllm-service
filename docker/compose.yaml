@@ -339,7 +339,7 @@ services:
     deploy: *cuda-deploy
     networks:
       - vllm-net
-      
+
   gliner:
     # GLiNER zero-shot NER served via Ray Serve. Unlike the other backends,
     # this is NOT a vLLM container — GLiNER's span-matching head isn't a
