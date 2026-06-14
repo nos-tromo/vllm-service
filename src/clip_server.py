@@ -91,7 +91,8 @@ def _embed_image_bytes(image_bytes: bytes) -> list[float]:
     with torch.no_grad():
         features = model.get_image_features(**inputs)
         features = features / features.norm(dim=-1, keepdim=True)
-    return features[0].detach().cpu().tolist()
+    embedding: list[float] = features[0].detach().cpu().tolist()
+    return embedding
 
 
 def _embed_text(text: str) -> list[float]:
@@ -108,7 +109,8 @@ def _embed_text(text: str) -> list[float]:
     with torch.no_grad():
         features = model.get_text_features(**inputs)
         features = features / features.norm(dim=-1, keepdim=True)
-    return features[0].detach().cpu().tolist()
+    embedding: list[float] = features[0].detach().cpu().tolist()
+    return embedding
 
 
 @app.post("/clip/embed_image", response_model=EmbedResponse)

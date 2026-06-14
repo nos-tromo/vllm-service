@@ -1,0 +1,40 @@
+ARG UV_IMAGE=ghcr.io/astral-sh/uv:python3.11-bookworm-slim@sha256:4f5d923c9dcea037f57bda425dd209f3ec643da2f0b74227f68d09dab0b3bb36
+
+FROM ${UV_IMAGE}
+
+# curl for the docker-compose /health probe; ffmpeg decodes arbitrary uploaded
+# containers to 16 kHz mono PCM (openai-whisper shells out to it too);
+# build-essential covers any transitive dep that builds from source.
+RUN apt-get update \
+    && apt-get install -y --no-install-recommends \
+        curl \
+        ffmpeg \
+        build-essential \
+    && rm -rf /var/lib/apt/lists/*
+
+# CPU-only PyTorch from the dedicated index FIRST — same approach as
+# Dockerfile.diarize.cpu / Dockerfile.clip.cpu. Installing torch before
+# openai-whisper means whisper's unpinned `torch` dependency resolves against
+# the CPU wheel already present instead of pulling the default CUDA build.
+RUN uv pip install --system --no-cache --compile-bytecode \
+    --index-url https://download.pytorch.org/whl/cpu \
+    torch
+
+# openai-whisper is the reference decoder Nextext runs in-process; serving it
+# here gives the asr-only shape byte-identical transcripts to the local path.
+# It pulls numba / tiktoken / numpy transitively (pinned compatibly by its own
+# metadata), so we don't constrain numpy here.
+RUN uv pip install --system --no-cache --compile-bytecode \
+    'fastapi>=0.115.0' \
+    'uvicorn[standard]>=0.32.0' \
+    'python-multipart>=0.0.9' \
+    'pydantic>=2.0' \
+    'openai-whisper>=20240930'
+
+COPY src/asr_server.py /app/asr_server.py
+
+ENV TOKENIZERS_PARALLELISM=true
+
+EXPOSE 8000
+
+CMD ["uvicorn", "--app-dir", "/app", "asr_server:app", "--host", "0.0.0.0", "--port", "8000"]

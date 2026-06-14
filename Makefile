@@ -2,7 +2,7 @@
 #
 # Two deployment shapes:
 #
-# 1. Full stack (CUDA host) — chat, embed, rerank, clip, audio, diarize,
+# 1. Full stack (CUDA host) — chat, embed, rerank, clip, asr, diarize, vad,
 #    gliner, router. Lives in docker/compose.yaml.
 #    Targets: build, up, stop, bundle.
 #
@@ -33,15 +33,30 @@
 #    /clip/embed_{image,text}, and /diarize together.
 #    Targets: build-diarize-only, up-diarize-only, stop-diarize-only,
 #             bundle-diarize-only.
+#
+# 6. ASR-only (same hosts as NER-only / Rerank-only / CLIP-only /
+#    Diarize-only) — a single FastAPI/openai-whisper container on
+#    inference-net, no router, no GPU requirement. Lives in
+#    docker/compose.asr-only.yaml. The CPU counterpart to the full-stack vLLM
+#    `asr` service; speaks the same OpenAI /v1/audio/transcriptions contract.
+#    Targets: build-asr-only, up-asr-only, stop-asr-only, bundle-asr-only.
+#
+# 7. VAD-only (same hosts as the other -only shapes) — a single
+#    FastAPI/Silero voice-activity-detection container on inference-net, no
+#    router, no GPU requirement. Lives in docker/compose.vad-only.yaml.
+#    Same multipart /vad contract as the full-stack `vad` service.
+#    Targets: build-vad-only, up-vad-only, stop-vad-only, bundle-vad-only.
 
 .DEFAULT_GOAL := help
 
-.PHONY: help network volumes \
+.PHONY: help pre-commit network volumes \
         build bundle up up-dev stop down \
         build-gliner-only bundle-gliner-only up-gliner-only up-dev-gliner-only stop-gliner-only down-gliner-only \
         build-rerank-only bundle-rerank-only up-rerank-only up-dev-rerank-only stop-rerank-only down-rerank-only \
         build-clip-only bundle-clip-only up-clip-only up-dev-clip-only stop-clip-only down-clip-only \
-        build-diarize-only bundle-diarize-only up-diarize-only up-dev-diarize-only stop-diarize-only down-diarize-only
+        build-diarize-only bundle-diarize-only up-diarize-only up-dev-diarize-only stop-diarize-only down-diarize-only \
+        build-asr-only bundle-asr-only up-asr-only up-dev-asr-only stop-asr-only down-asr-only \
+        build-vad-only bundle-vad-only up-vad-only up-dev-vad-only stop-vad-only down-vad-only
 
 # Versioned image tag.
 # On production: read from .vllm-service-version written by bundle_images.sh.
@@ -63,9 +78,16 @@ COMPOSE_CLIP_ONLY       := docker compose --env-file .env -f docker/compose.clip
 COMPOSE_CLIP_ONLY_DEV   := docker compose --env-file .env -f docker/compose.clip-only.yaml -f docker/compose.clip-only.override.yaml
 COMPOSE_DIARIZE_ONLY    := docker compose --env-file .env -f docker/compose.diarize-only.yaml
 COMPOSE_DIARIZE_ONLY_DEV := docker compose --env-file .env -f docker/compose.diarize-only.yaml -f docker/compose.diarize-only.override.yaml
+COMPOSE_ASR_ONLY        := docker compose --env-file .env -f docker/compose.asr-only.yaml
+COMPOSE_ASR_ONLY_DEV    := docker compose --env-file .env -f docker/compose.asr-only.yaml -f docker/compose.asr-only.override.yaml
+COMPOSE_VAD_ONLY        := docker compose --env-file .env -f docker/compose.vad-only.yaml
+COMPOSE_VAD_ONLY_DEV    := docker compose --env-file .env -f docker/compose.vad-only.yaml -f docker/compose.vad-only.override.yaml
 
 help:
 	@echo "vllm-service — build-host helpers."
+	@echo
+	@echo "Development:"
+	@echo "  make pre-commit       run ruff check + ruff format + mypy over src/ (no Docker)"
 	@echo
 	@echo "Full stack (CUDA):"
 	@echo "  make network          create the external inference-net"
@@ -108,6 +130,30 @@ help:
 	@echo "  make up-dev-diarize-only  like 'up-diarize-only', but publishes the port on the host"
 	@echo "  make stop-diarize-only    stop the diarization service"
 	@echo "  make down-diarize-only    stop + remove the diarization service"
+	@echo
+	@echo "ASR-only stack (CPU; pairs with Ollama on non-CUDA hosts):"
+	@echo "  make build-asr-only       build the asr-cpu image"
+	@echo "  make bundle-asr-only      ship the asr-cpu image as a versioned .tar.gz"
+	@echo "  make up-asr-only          run the ASR service on inference-net (no host port)"
+	@echo "  make up-dev-asr-only      like 'up-asr-only', but publishes the port on the host"
+	@echo "  make stop-asr-only        stop the ASR service"
+	@echo "  make down-asr-only        stop + remove the ASR service"
+	@echo
+	@echo "VAD-only stack (CPU; pairs with Ollama on non-CUDA hosts):"
+	@echo "  make build-vad-only       build the vad-cpu image"
+	@echo "  make bundle-vad-only      ship the vad-cpu image as a versioned .tar.gz"
+	@echo "  make up-vad-only          run the VAD service on inference-net (no host port)"
+	@echo "  make up-dev-vad-only      like 'up-vad-only', but publishes the port on the host"
+	@echo "  make stop-vad-only        stop the VAD service"
+	@echo "  make down-vad-only        stop + remove the VAD service"
+
+# --- Development --------------------------------------------------------
+
+# Run the org-wide lint regime (ruff check + ruff format + mypy over src/).
+# `uv run` syncs the venv from uv.lock first, so this works from a clean
+# checkout with no separate `uv sync` step. Mirrors the CI python-lint job.
+pre-commit:
+	uv run pre-commit run --all-files
 
 # --- Full stack ---------------------------------------------------------
 
@@ -249,3 +295,57 @@ stop-diarize-only:
 # Stop + remove the diarization service. External huggingface-cache survives.
 down-diarize-only:
 	$(COMPOSE_DIARIZE_ONLY) down
+
+# --- ASR-only stack -----------------------------------------------------
+#
+# Uses the same external inference-net + huggingface-cache as the full
+# stack, so `make network` and `make volumes` remain the one-time
+# prerequisites. CPU openai-whisper — the Whisper weights are public, so the
+# cache populates anonymously on first start (or pre-seed it offline).
+
+build-asr-only:
+	DOCKER_BUILDKIT=1 $(COMPOSE_ASR_ONLY) build
+
+bundle-asr-only:
+	./scripts/bundle_images.sh asr-only
+
+up-asr-only:
+	$(COMPOSE_ASR_ONLY) up --no-build
+
+# Like 'up-asr-only' but publishes the ASR port on the host.
+up-dev-asr-only:
+	$(COMPOSE_ASR_ONLY_DEV) up --no-build
+
+stop-asr-only:
+	$(COMPOSE_ASR_ONLY) stop
+
+# Stop + remove the ASR service. External huggingface-cache survives.
+down-asr-only:
+	$(COMPOSE_ASR_ONLY) down
+
+# --- VAD-only stack -----------------------------------------------------
+#
+# Uses the same external inference-net + huggingface-cache as the full
+# stack, so `make network` and `make volumes` remain the one-time
+# prerequisites. The silero-vad package bundles its weights, so this shape
+# needs no model download at all.
+
+build-vad-only:
+	DOCKER_BUILDKIT=1 $(COMPOSE_VAD_ONLY) build
+
+bundle-vad-only:
+	./scripts/bundle_images.sh vad-only
+
+up-vad-only:
+	$(COMPOSE_VAD_ONLY) up --no-build
+
+# Like 'up-vad-only' but publishes the VAD port on the host.
+up-dev-vad-only:
+	$(COMPOSE_VAD_ONLY_DEV) up --no-build
+
+stop-vad-only:
+	$(COMPOSE_VAD_ONLY) stop
+
+# Stop + remove the VAD service. External huggingface-cache survives.
+down-vad-only:
+	$(COMPOSE_VAD_ONLY) down

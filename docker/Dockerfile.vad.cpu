@@ -1,0 +1,40 @@
+ARG UV_IMAGE=ghcr.io/astral-sh/uv:python3.11-bookworm-slim@sha256:4f5d923c9dcea037f57bda425dd209f3ec643da2f0b74227f68d09dab0b3bb36
+
+FROM ${UV_IMAGE}
+
+# curl for the docker-compose /health probe; ffmpeg decodes arbitrary uploaded
+# containers to 16 kHz mono PCM before Silero runs; build-essential covers any
+# transitive dep that builds from source.
+RUN apt-get update \
+    && apt-get install -y --no-install-recommends \
+        curl \
+        ffmpeg \
+        build-essential \
+    && rm -rf /var/lib/apt/lists/*
+
+# CPU-only torch + torchaudio from the dedicated index — same approach as
+# Dockerfile.diarize.cpu. Silero gains nothing from CUDA, so this single CPU
+# image serves BOTH the full-stack `vad` service and the standalone `vad-only`
+# shape (no `.cuda` variant). torchaudio is included because the silero-vad
+# utility modules import it, even though we decode via ffmpeg.
+RUN uv pip install --system --no-cache --compile-bytecode \
+    --index-url https://download.pytorch.org/whl/cpu \
+    torch torchaudio
+
+# silero-vad bundles its model weights in the wheel — nothing is fetched at
+# runtime, so this shape is airgap-clean out of the box.
+RUN uv pip install --system --no-cache --compile-bytecode \
+    'fastapi>=0.115.0' \
+    'uvicorn[standard]>=0.32.0' \
+    'python-multipart>=0.0.9' \
+    'pydantic>=2.0' \
+    'numpy' \
+    'silero-vad>=5.1'
+
+COPY src/vad_server.py /app/vad_server.py
+
+ENV TOKENIZERS_PARALLELISM=true
+
+EXPOSE 8000
+
+CMD ["uvicorn", "--app-dir", "/app", "vad_server:app", "--host", "0.0.0.0", "--port", "8000"]
