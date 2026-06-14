@@ -1,0 +1,84 @@
+name: vllm-service-asr-only
+
+# Standalone CPU ASR (Whisper) stack. Not a profile of compose.yaml — a
+# separate compose project for hosts that cannot run the full CUDA stack
+# (macOS, CPU-only Linux, AMD/ROCm boxes running Ollama for chat/embed).
+#
+# Topology:
+#   - one container, `asr-only`, on the external `inference-net`
+#   - no LiteLLM router, no vLLM backends, no GPU reservation
+#   - the router route `http://vllm-router:4000/v1/audio/transcriptions` is
+#     unavailable in this shape; consumers point at
+#     `http://asr-only:8000/v1/audio/transcriptions`
+#
+# Auth: the container has no built-in Bearer-token gate. `inference-net` is a
+# private Docker network shared only between trusted compose projects, mirroring
+# how the other `-only` shapes expose theirs.
+#
+# Unlike the full-stack `asr` service (Whisper on vLLM, CUDA-only), this shape
+# runs the reference openai-whisper decoder via `docker/asr_server.py`, so it
+# speaks the same OpenAI `/v1/audio/transcriptions` contract on CPU. Whisper
+# weights are public (no gated download): on first start the container fetches
+# them from openai-whisper's CDN into the shared huggingface-cache volume; on an
+# offline host, pre-populate that cache once on a networked machine.
+#
+# Pair with `compose.gliner-only.yaml`, `compose.rerank-only.yaml`,
+# `compose.clip-only.yaml`, and `compose.vad-only.yaml` on the same host to give
+# a non-CUDA box the full set against `inference-net`.
+
+x-no-proxy-env: &no-proxy-env
+  NO_PROXY: "asr-only,localhost,127.0.0.1,172.16.0.0/12,10.0.0.0/8${EXTRA_NO_PROXY:-}"
+  no_proxy: "asr-only,localhost,127.0.0.1,172.16.0.0/12,10.0.0.0/8${EXTRA_NO_PROXY:-}"
+
+x-env-file: &env-file
+  - path: ../.env
+    required: false
+
+# Shared logging — the local driver rotates and compresses
+# per-container; tail with `docker compose logs -f <svc>`.
+x-logging: &default-logging
+  driver: "local"
+  options:
+    max-size: "50m"
+    max-file: "5"
+    compress: "true"
+
+services:
+  asr-only:
+    image: vllm-service-asr-cpu:${VLLM_SERVICE_VERSION:-latest}
+    build:
+      context: ..
+      dockerfile: docker/Dockerfile.asr.cpu
+    logging: *default-logging
+    env_file: *env-file
+    environment:
+      <<: *no-proxy-env
+      WHISPER_MODEL: ${WHISPER_MODEL:-openai/whisper-large-v3}
+      # Hardcoded cpu (not interpolated): this shape has no GPU reservation, so
+      # it must run on CPU even if a shared .env sets the full-stack ASR_* GPU
+      # knobs. Mirrors clip-only's CLIP_DEVICE / diarize-only's DIARIZE_DEVICE.
+      ASR_DEVICE: cpu
+      HF_HUB_OFFLINE: ${HF_HUB_OFFLINE:-1}
+      TRANSFORMERS_OFFLINE: ${TRANSFORMERS_OFFLINE:-1}
+    volumes:
+      - huggingface-cache:/root/.cache/huggingface/hub
+    healthcheck:
+      test: ["CMD-SHELL", "curl -sf http://localhost:8000/health || exit 1"]
+      interval: 10s
+      timeout: 5s
+      retries: 60
+      start_period: 180s
+    networks:
+      inference-net:
+        aliases:
+          - asr-only
+    restart: unless-stopped
+
+volumes:
+  huggingface-cache:
+    external: true
+
+networks:
+  inference-net:
+    external: true
+    name: ${INFERENCE_NETWORK:-inference-net}

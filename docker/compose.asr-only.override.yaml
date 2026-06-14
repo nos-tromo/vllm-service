@@ -1,0 +1,13 @@
+### Dev override for the asr-only stack — publishes the ASR service on the host.
+###
+### NOT auto-loaded: it lives in docker/ and the Makefile passes explicit
+### -f flags. `make up-dev-asr-only` layers this on top of
+### docker/compose.asr-only.yaml so the service is reachable at
+### localhost:${ASR_HOST_PORT} for direct testing; `make up-asr-only`
+### runs the base alone (production shape). Sibling containers reach the
+### service as `asr-only:8000` on inference-net regardless of this override.
+
+services:
+  asr-only:
+    ports:
+      - "${ASR_HOST_PORT:-8005}:8000"
