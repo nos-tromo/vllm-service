@@ -539,8 +539,7 @@ than running vLLM.
 
 `WHISPER_MODEL` (default `openai/whisper-large-v3`) is mapped to the
 openai-whisper checkpoint name by stripping the `openai/whisper-` prefix
-(→ `large-v3`); set `ASR_WHISPER_NAME` to override outright. `ASR_DEVICE`
-defaults to `cpu`. Weights are public and download from openai-whisper's CDN
+(→ `large-v3`). `ASR_DEVICE` defaults to `cpu`. Weights are public and download from openai-whisper's CDN
 into a subdirectory of the shared `huggingface-cache` volume (not the HF Hub,
 so no token). `verbose_json` responses carry per-segment `no_speech_prob` and
 the detected `language` — the fields Nextext filters on. The request `model`

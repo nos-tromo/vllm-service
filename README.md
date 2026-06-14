@@ -493,7 +493,6 @@ this shape:
 WHISPER_MODEL=openai/whisper-large-v3   # default
 ASR_DEVICE=cpu                          # default in asr-only
 # ASR_HOST_PORT=8005                     # host publish port for dev
-# ASR_WHISPER_NAME=large-v3              # override the openai-whisper checkpoint name
 ```
 
 CPU openai-whisper is the slowest of the standalone shapes for large models —

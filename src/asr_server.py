@@ -70,21 +70,16 @@ def _whisper_name(model_id: str) -> str:
     """Map a Hugging Face Whisper id to an openai-whisper checkpoint name.
 
     openai-whisper's ``load_model`` takes short names (``large-v3``,
-    ``base``, ...) or a local path, not Hugging Face ids. Strip the
-    ``<org>/`` prefix and a leading ``whisper-`` so the full-stack
-    ``WHISPER_MODEL=openai/whisper-large-v3`` resolves to ``large-v3``. An
-    ``ASR_WHISPER_NAME`` override wins outright (custom checkpoints or
-    on-disk paths).
+    ``base``, ...), not Hugging Face ids. Strip the ``<org>/`` prefix and a
+    leading ``whisper-`` so the full-stack
+    ``WHISPER_MODEL=openai/whisper-large-v3`` resolves to ``large-v3``.
 
     Args:
         model_id: The configured ``WHISPER_MODEL`` value.
 
     Returns:
-        The openai-whisper checkpoint name (or path) to load.
+        The openai-whisper checkpoint name to load.
     """
-    override = os.environ.get("ASR_WHISPER_NAME", "").strip()
-    if override:
-        return override
     return model_id.rsplit("/", 1)[-1].removeprefix("whisper-")
 
 
