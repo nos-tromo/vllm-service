@@ -49,9 +49,12 @@ from pydantic import BaseModel
 # Apply the pyannote 3.x compatibility shims before importing pyannote: restore
 # the torchaudio symbols torchaudio 2.9+ removed, and allowlist the trusted
 # checkpoint globals so torch>=2.6's weights_only loader accepts the weights.
-# See docker/diarize_compat.py for both rationales.
-import diarize_compat  # noqa: F401,E402
-from pyannote.audio import Pipeline  # noqa: E402
+# See src/diarize_compat.py for both rationales. The shim-before-pyannote order
+# is fenced with isort: off/on so ruff cannot hoist the pyannote import above it.
+# isort: off
+import diarize_compat  # noqa: F401
+from pyannote.audio import Pipeline
+# isort: on
 
 MODEL_ID = os.environ.get("DIARIZE_MODEL", "pyannote/speaker-diarization-3.1")
 DEVICE = os.environ.get("DIARIZE_DEVICE", "cuda")
@@ -143,7 +146,7 @@ def _decode_audio(data: bytes) -> np.ndarray:
 
 @app.post("/diarize", response_model=DiarizeResponse)
 def diarize(
-    file: UploadFile = File(...),
+    file: UploadFile = File(...),  # noqa: B008 — FastAPI dependency marker
     num_speakers: int | None = Form(default=None),
     min_speakers: int | None = Form(default=None),
     max_speakers: int | None = Form(default=None),

@@ -17,7 +17,7 @@ name: vllm-service-vad-only
 #
 # Weights: the `silero-vad` package bundles its model, so unlike diarize-only
 # nothing is downloaded — this shape works fully offline on first start. It runs
-# the same `docker/vad_server.py` the full-stack `vad` service does, so it
+# the same `src/vad_server.py` the full-stack `vad` service does, so it
 # speaks the identical multipart `/vad` contract.
 #
 # Pair with `compose.gliner-only.yaml`, `compose.rerank-only.yaml`,

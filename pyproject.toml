@@ -1,0 +1,42 @@
+[project]
+name = "vllm-service"
+version = "0.0.0"
+description = "LiteLLM router + vLLM backends (lint config for the bundled FastAPI servers)."
+requires-python = ">=3.11"
+# Light, *typed* deps shared by the bundled FastAPI servers. Declared so
+# `mypy --strict` type-checks the first-party code against real FastAPI /
+# pydantic / numpy types — without them, strict mode flags every BaseModel
+# subclass and every @app route decorator (Any base / untyped decorator).
+# The heavy ML backends (torch, transformers, openai-whisper, pyannote.audio,
+# silero-vad) are deliberately NOT listed: they are installed only in the
+# images, and mypy treats them as Any via ignore_missing_imports.
+dependencies = [
+    "fastapi>=0.115.0",
+    "pydantic>=2.0",
+    "numpy",
+]
+
+[tool.uv]
+package = false
+
+[dependency-groups]
+dev = [
+    "mypy==1.19.0",
+    "pre-commit",
+]
+
+[tool.ruff]
+target-version = "py311"
+line-length = 120
+
+[tool.ruff.lint]
+select = ["E", "F", "W", "I", "B", "D", "ANN", "UP", "RUF"]
+ignore = ["ANN401"]
+
+[tool.ruff.lint.pydocstyle]
+convention = "google"
+
+[tool.mypy]
+strict = true
+ignore_missing_imports = true
+no_incremental = true

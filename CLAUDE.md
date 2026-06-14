@@ -17,9 +17,9 @@ backends with a single LiteLLM Proxy router. The Docker assets live under
 `docker/Dockerfile.diarize.cpu`, `docker/Dockerfile.asr.cpu`,
 `docker/Dockerfile.vad.cpu`, `docker/litellm.config.yaml`) plus `.env`
 and `.dockerignore` at the repo root. The only Python sources are
-`docker/rerank_server.py`, `docker/clip_server.py`,
-`docker/diarize_server.py` (and its `docker/diarize_compat.py` helper),
-`docker/asr_server.py`, and `docker/vad_server.py` —
+`src/rerank_server.py`, `src/clip_server.py`,
+`src/diarize_server.py` (and its `src/diarize_compat.py` helper),
+`src/asr_server.py`, and `src/vad_server.py` —
 small FastAPI wrappers around Hugging Face models that ship because there
 is no off-the-shelf server that speaks the Jina-shape `/rerank`, `/clip`,
 `/diarize`, or `/vad` contracts the full stack exposes. (`asr_server.py` is
@@ -63,7 +63,7 @@ Seven independent compose projects, picked per host:
   so consumers (docint's `VLLMRerankPostprocessor`) target either
   backend by changing the base URL alone. Uses `Dockerfile.rerank.cpu`
   (uv-managed Python 3.11, CPU torch, transformers) and ships a tiny
-  FastAPI server at `docker/rerank_server.py` that drives the cross-
+  FastAPI server at `src/rerank_server.py` that drives the cross-
   encoder directly (tokenize → forward → sigmoid).
 - **CLIP-only** (`docker/compose.clip-only.yaml`, CPU OK) — a single
   `clip-only` container on `inference-net`, no router, no GPU. Same
@@ -75,13 +75,13 @@ Seven independent compose projects, picked per host:
   (`docint/utils/clip_client.py`) targets either backend by changing
   the base URL alone. Uses `Dockerfile.clip.cpu` (uv-managed
   Python 3.11, CPU torch, transformers, Pillow) and ships
-  `docker/clip_server.py`.
+  `src/clip_server.py`.
 - **Diarize-only** (`docker/compose.diarize-only.yaml`, CPU OK) — a single
   `diarize-only` container on `inference-net`, no router, no GPU. Same
   audience as NER-only / Rerank-only / CLIP-only; co-deployable so a
   non-CUDA host can offer `/gliner`, `/rerank`, `/clip/*`, and `/diarize`
   at once. Reached as `http://diarize-only:8000/diarize`. Runs the same
-  `docker/diarize_server.py` the full-stack `diarize` service does, so it
+  `src/diarize_server.py` the full-stack `diarize` service does, so it
   speaks the identical multipart `/diarize` contract; consumers (Nextext)
   target either backend by changing the base URL alone. Uses
   `Dockerfile.diarize.cpu` (uv-managed Python 3.11, CPU torch +
@@ -92,7 +92,7 @@ Seven independent compose projects, picked per host:
 - **ASR-only** (`docker/compose.asr-only.yaml`, CPU OK) — a single `asr-only`
   container on `inference-net`, no router, no GPU. Same audience as the other
   CPU shapes. The full-stack `asr` runs Whisper on vLLM (CUDA-only), so this
-  shape instead ships `docker/asr_server.py` around **openai-whisper** but
+  shape instead ships `src/asr_server.py` around **openai-whisper** but
   exposes the identical OpenAI `/v1/audio/transcriptions` contract, so
   consumers (Nextext) target either backend by changing the base URL alone.
   Reached as `http://asr-only:8000/v1/audio/transcriptions`. Uses
@@ -102,7 +102,7 @@ Seven independent compose projects, picked per host:
   download.
 - **VAD-only** (`docker/compose.vad-only.yaml`, CPU OK) — a single `vad-only`
   container on `inference-net`, no router, no GPU. Runs the same
-  `docker/vad_server.py` the full-stack `vad` service does (Silero VAD), so it
+  `src/vad_server.py` the full-stack `vad` service does (Silero VAD), so it
   speaks the identical multipart `/vad` contract; consumers (Nextext) target
   either backend by changing the base URL alone. Reached as
   `http://vad-only:8000/vad`. Uses `Dockerfile.vad.cpu` (uv-managed
@@ -227,13 +227,23 @@ make build               # build images for the full stack
 make bundle              # build + ship the full stack as a versioned .tar.gz pair
 ```
 
-There is no test suite or linter. The Python files
-(`docker/rerank_server.py`, `docker/clip_server.py`,
-`docker/diarize_server.py`, `docker/asr_server.py`,
-`docker/vad_server.py`) are small enough to verify by curl —
-rerank, clip, asr, and vad against their running standalone containers,
-diarize through the full-stack router — see the Architecture / Rerank-only,
-CLIP-only, Diarization, ASR-only, and VAD sections below.
+There is no test suite, but the Python sources in `src/` are linted with the
+org-wide strict regime — ruff + mypy via `.pre-commit-config.yaml`, mirroring
+`nos-tromo/.github`'s canonical `configs/python-strict/` (only `target-version`
+differs → `py311`). CI enforces it in the `python-lint` job, which first runs
+that repo's `validate_strict_config.py` to fail on any drift from the canonical
+config. Run locally with `uv sync` then `uv run pre-commit run --all-files`. The
+heavy ML backends (torch, transformers, openai-whisper, pyannote, silero) are
+not installed for linting — `mypy` treats them as `Any` (`ignore_missing_imports`);
+only the light typed deps (`fastapi`, `pydantic`, `numpy`) are declared so
+strict mode can check the first-party code.
+
+The servers (`src/rerank_server.py`, `src/clip_server.py`,
+`src/diarize_server.py`, `src/asr_server.py`, `src/vad_server.py`) are also
+small enough to verify by curl — rerank, clip, asr, and vad against their
+running standalone containers, diarize through the full-stack router — see the
+Architecture / Rerank-only, CLIP-only, Diarization, ASR-only, and VAD sections
+below.
 
 ## Architecture
 
@@ -279,11 +289,11 @@ Four backends are exceptions that do not run vLLM:
   endpoint is `POST /gliner` with body `{text, labels, threshold}`, reached
   via the router's `/gliner` pass-through (not `/v1/...`).
 - `clip` — CLIP image+text embedding via FastAPI (`CLIP_MODEL`). Uses
-  **`docker/Dockerfile.clip.cuda`** and runs `docker/clip_server.py`;
+  **`docker/Dockerfile.clip.cuda`** and runs `src/clip_server.py`;
   reached via the router's `/clip/*` pass-throughs.
 - `diarize` — speaker diarization via FastAPI (`DIARIZE_MODEL`, default
   `pyannote/speaker-diarization-3.1`). Uses
-  **`docker/Dockerfile.diarize.cuda`** and runs `docker/diarize_server.py`.
+  **`docker/Dockerfile.diarize.cuda`** and runs `src/diarize_server.py`.
   pyannote is a multi-model pipeline (PyanNet segmentation + WeSpeaker
   embedding + agglomerative clustering), none of which are vLLM-supported
   architectures, so vLLM-native serving is not viable. The endpoint is
@@ -291,7 +301,7 @@ Four backends are exceptions that do not run vLLM:
   reached via the router's `/diarize` pass-through.
 - `vad` — Silero voice activity detection via FastAPI (`VAD_MODEL`, default
   `silero_vad`). Uses **`docker/Dockerfile.vad.cpu`** and runs
-  `docker/vad_server.py`. Silero is a tiny JIT speech/non-speech classifier,
+  `src/vad_server.py`. Silero is a tiny JIT speech/non-speech classifier,
   not a vLLM-supported architecture; it is CPU-only (no GPU benefit), so it
   runs on CPU even in the full stack. The endpoint is `POST /vad` (multipart
   audio + optional tuning form fields), reached via the router's `/vad`
@@ -377,7 +387,7 @@ the `silero-vad` package bundles a single model.)
 
 ### Rerank-only shape (CPU)
 
-The `rerank-only` compose project runs `docker/rerank_server.py` — a small
+The `rerank-only` compose project runs `src/rerank_server.py` — a small
 FastAPI app that loads a Hugging Face cross-encoder
 (`AutoModelForSequenceClassification`), tokenizes each (query, document)
 pair, takes the seq-classification logit, and sigmoid-normalizes — the
@@ -414,7 +424,7 @@ curl -fsS -X POST http://localhost:${RERANK_HOST_PORT:-8001}/rerank \
 
 ### CLIP-only shape (CPU)
 
-The `clip-only` compose project runs `docker/clip_server.py` — a small
+The `clip-only` compose project runs `src/clip_server.py` — a small
 FastAPI app that loads a Hugging Face CLIP model (`CLIPModel` +
 `AutoProcessor`), runs the image or text tower, and L2-normalizes the
 output. Same forward pass the legacy in-process
@@ -461,7 +471,7 @@ curl -fsS http://localhost:${CLIP_HOST_PORT:-8002}/clip/dimension
 
 ### Diarization backend (full stack)
 
-The `diarize` service runs `docker/diarize_server.py` — a small FastAPI
+The `diarize` service runs `src/diarize_server.py` — a small FastAPI
 app around the `pyannote/speaker-diarization-3.1` pipeline. Uploaded
 bytes are decoded to 16 kHz mono float32 by piping through `ffmpeg`
 (any container ffmpeg can decode), then handed to the pipeline as a
@@ -495,7 +505,7 @@ volume. Consumers (Nextext) do speaker-to-ASR-segment alignment
 client-side by maximum overlap, so the service returns raw turns only.
 
 A `diarize-only` standalone CPU shape (`docker/compose.diarize-only.yaml`,
-`make up-diarize-only`) runs the same `docker/diarize_server.py` without the
+`make up-diarize-only`) runs the same `src/diarize_server.py` without the
 router — built from `Dockerfile.diarize.cpu` (uv-managed Python 3.11, CPU
 torch + torchaudio, `pyannote.audio`, `ffmpeg`), reached directly at
 `http://diarize-only:8000/diarize` with no Bearer auth, same posture as the
@@ -520,7 +530,7 @@ curl -fsS -X POST http://localhost:${DIARIZE_HOST_PORT:-8004}/diarize \
 ### ASR-only shape (CPU)
 
 The full-stack `asr` service runs Whisper on vLLM (CUDA-only). The `asr-only`
-compose project is its CPU counterpart: it runs `docker/asr_server.py` — a
+compose project is its CPU counterpart: it runs `src/asr_server.py` — a
 small FastAPI app around **openai-whisper** (the reference decoder Nextext also
 runs in-process) — and exposes the same OpenAI `POST /v1/audio/transcriptions`
 (and `/v1/audio/translations`) contract, so consumers swap backends by base URL
@@ -550,7 +560,7 @@ curl -fsS -X POST http://localhost:${ASR_HOST_PORT:-8005}/v1/audio/transcription
 
 ### VAD backend (full stack + vad-only)
 
-The `vad` service runs `docker/vad_server.py` — a small FastAPI app around
+The `vad` service runs `src/vad_server.py` — a small FastAPI app around
 **Silero VAD** (`silero-vad` pip package). It is a CPU service in **both** the
 full stack and the standalone `vad-only` shape (Silero gains nothing from
 CUDA), so a single `Dockerfile.vad.cpu` (uv-managed Python 3.11, CPU torch +

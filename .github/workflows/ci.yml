@@ -15,9 +15,39 @@ concurrency:
 
 jobs:
   validate:
-    # Pinned to v1 (latest stable v1.x.y).
+    # Pinned to v2 (latest stable major tag).
     uses: nos-tromo/.github/.github/workflows/infra-validation.yml@v2
     with:
       compose-files: '-f docker/compose.yaml -f docker/compose.override.yaml'
       dockerfiles-glob: 'docker/Dockerfile.*'
       shell-scripts-glob: 'scripts/*.sh'
+
+  # Lint the bundled FastAPI servers (src/) with the org-wide strict regime.
+  # This repo is infra-first, so it does NOT call the python-app-ci reusable
+  # workflow (that mandates a pytest job); instead it replicates that workflow's
+  # lint job: enforce strict-config alignment, then run ruff + mypy via
+  # pre-commit. No tests — there is no unit-testable logic without the heavy ML
+  # deps, which are deliberately left uninstalled (mypy treats them as Any).
+  python-lint:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v6
+      - name: Checkout canonical strict-config
+        # Pinned to the same @v2 as the infra-validation call above; the
+        # validator diffs this repo's pyproject/.pre-commit-config against the
+        # canonical strict config shipped at that ref.
+        uses: actions/checkout@v6
+        with:
+          repository: nos-tromo/.github
+          ref: v2
+          path: .nos-tromo-github-ref
+      - name: Validate strict-config alignment
+        run: python3 .nos-tromo-github-ref/scripts/validate_strict_config.py
+      - uses: astral-sh/setup-uv@v7
+        with:
+          enable-cache: true
+          cache-dependency-glob: '**/uv.lock'
+      - name: Sync dev environment
+        run: uv sync --frozen --group dev
+      - name: Run pre-commit
+        run: uv run pre-commit run --all-files --show-diff-on-failure

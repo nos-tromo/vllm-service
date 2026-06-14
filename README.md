@@ -200,7 +200,7 @@ same audience as NER-only — hosts without an NVIDIA GPU that still want
 to offer rerank to the consuming app. It runs one container,
 `rerank-only`, built from `Dockerfile.rerank.cpu` (uv-managed Python 3.11,
 CPU torch, `transformers`). No LiteLLM router, no GPU reservation. The
-container ships a tiny FastAPI server (`docker/rerank_server.py`) that
+container ships a tiny FastAPI server (`src/rerank_server.py`) that
 drives a Hugging Face cross-encoder directly (tokenize → forward →
 sigmoid — the same forward pass FlagEmbedding does internally for
 bge-reranker-style models, without FlagEmbedding's heavyweight
@@ -278,7 +278,7 @@ document on modern CPUs. Fine for typical top-K rerank workloads (K ≤
 same audience as NER-only / Rerank-only. It runs one container,
 `clip-only`, built from `Dockerfile.clip.cpu` (uv-managed Python 3.11,
 CPU torch, `transformers`, `Pillow`). No LiteLLM router, no GPU
-reservation. The container ships `docker/clip_server.py` — a small
+reservation. The container ships `src/clip_server.py` — a small
 FastAPI app that loads the same `CLIPModel` + `AutoProcessor` pair
 docint used to load in-process, runs the image or text tower, and
 L2-normalizes the output. Exposes the **same `/clip/embed_{image,text}`
@@ -352,7 +352,7 @@ search, not CLIP inference.
 same audience as NER-only / Rerank-only / CLIP-only. It runs one container,
 `diarize-only`, built from `Dockerfile.diarize.cpu` (uv-managed Python 3.11,
 CPU torch + torchaudio, `pyannote.audio`, `ffmpeg`). No LiteLLM router, no
-GPU reservation. The container ships `docker/diarize_server.py` — the same
+GPU reservation. The container ships `src/diarize_server.py` — the same
 FastAPI app the full-stack `diarize` service runs — so it exposes the
 **same multipart `/diarize` contract**, and consumers (Nextext) target
 either backend by changing only the base URL. Default `DIARIZE_MODEL` is
@@ -433,7 +433,7 @@ container, `asr-only`, built from `Dockerfile.asr.cpu` (uv-managed Python 3.11,
 CPU torch, `openai-whisper`, `ffmpeg`). No LiteLLM router, no GPU reservation.
 
 Unlike the full-stack `asr` service (Whisper on vLLM, CUDA-only), this shape
-ships `docker/asr_server.py` — a small FastAPI app that drives the reference
+ships `src/asr_server.py` — a small FastAPI app that drives the reference
 **openai-whisper** decoder (the same one Nextext runs in-process) — so it
 exposes the **same OpenAI `/v1/audio/transcriptions` (and
 `/v1/audio/translations`) contract** on CPU, and consumers target either
@@ -511,7 +511,7 @@ for interactive use.
 audience as the other `-only` shapes. It runs one container, `vad-only`, built
 from `Dockerfile.vad.cpu` (uv-managed Python 3.11, CPU torch + torchaudio,
 `silero-vad`, `ffmpeg`). No LiteLLM router, no GPU reservation. The container
-ships `docker/vad_server.py` — the same FastAPI app the full-stack `vad` service
+ships `src/vad_server.py` — the same FastAPI app the full-stack `vad` service
 runs — so it exposes the **same multipart `/vad` contract**, and consumers
 target either backend by changing only the base URL.
 
@@ -810,3 +810,28 @@ and `NER_DEVICE=cpu` in `.env`. See `.env.example` for the full list of
 > [NER-only deployment](#gliner-only-deployment) instead — same `/gliner`
 > request/response shape, but reached at `http://gliner-only:8000/gliner`
 > with no Bearer auth.
+
+## Linting the Python servers
+
+The FastAPI servers in `src/` are linted with the nos-tromo org-wide strict
+regime — `ruff` + `mypy --strict` via
+[`.pre-commit-config.yaml`](.pre-commit-config.yaml), mirroring the canonical
+config in [`nos-tromo/.github`](https://github.com/nos-tromo/.github)
+`configs/python-strict/`. The `python-lint` CI job (in
+[`.github/workflows/ci.yml`](.github/workflows/ci.yml)) runs the same hooks and
+additionally runs `validate_strict_config.py`, which fails the build if this
+repo's `pyproject.toml` / `.pre-commit-config.yaml` drift from the canonical
+config.
+
+Run it locally with [uv](https://docs.astral.sh/uv/):
+
+```bash
+uv sync                              # create the lint venv (mypy, pre-commit, typed deps)
+uv run pre-commit run --all-files    # ruff check + ruff format + mypy --strict
+```
+
+The heavy ML backends (torch, transformers, openai-whisper, pyannote, silero)
+are **not** installed for linting — `mypy` treats them as `Any`
+(`ignore_missing_imports`). Only the light, typed shared deps (`fastapi`,
+`pydantic`, `numpy`) are installed, so strict mode type-checks the first-party
+code.
