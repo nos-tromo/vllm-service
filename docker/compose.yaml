@@ -218,7 +218,7 @@ services:
   clip:
     # CLIP image+text embedding tower. Same image/text encoder docint
     # used to load in-process (openai/clip-vit-base-patch32 by default).
-    # FastAPI wrapper at docker/clip_server.py exposes /clip/embed_image
+    # FastAPI wrapper at src/clip_server.py exposes /clip/embed_image
     # (multipart or base64 JSON), /clip/embed_text, and /clip/dimension.
     # Routed by LiteLLM as a pass-through; clients POST to
     #   http://<router>:${ROUTER_HOST_PORT}/clip/embed_{image,text}
@@ -292,7 +292,7 @@ services:
     # Speaker diarization (pyannote/speaker-diarization-3.1). Like clip,
     # NOT a vLLM container — pyannote's PyanNet segmentation + WeSpeaker
     # embedding + agglomerative clustering are not vLLM-supported
-    # architectures, so a FastAPI wrapper (docker/diarize_server.py)
+    # architectures, so a FastAPI wrapper (src/diarize_server.py)
     # serves the pipeline instead. Endpoint shape:
     #   POST /diarize multipart file=<audio> [+ num/min/max_speakers]
     #     -> {"segments": [{"start", "end", "speaker"}], "speakers": [...]}
@@ -346,7 +346,7 @@ services:
     # Voice activity detection (Silero VAD) via FastAPI. Like clip and
     # diarize, NOT a vLLM container — Silero is a tiny JIT speech/non-speech
     # classifier, not a vLLM-supported architecture, so a FastAPI wrapper
-    # (docker/vad_server.py) serves it. Endpoint shape:
+    # (src/vad_server.py) serves it. Endpoint shape:
     #   POST /vad multipart file=<audio> [+ threshold / *_duration_ms ...]
     #     -> {"segments": [{"start", "end"}], "has_speech", "sampling_rate"}
     # CPU-only (Silero gains nothing from CUDA): no GPU reservation, so it

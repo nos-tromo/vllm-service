@@ -33,10 +33,10 @@ RUN pip install --no-cache-dir --break-system-packages \
 #     through the weights_only=True loader. Needs no gated weights, yet still
 #     catches a renamed symbol or a broken allowlist here — instead of only on
 #     the first real Pipeline.from_pretrained in production.
-COPY docker/diarize_compat.py /app/diarize_compat.py
+COPY src/diarize_compat.py /app/diarize_compat.py
 RUN PYTHONPATH=/app python -c "import tempfile, os, torch, diarize_compat; from pyannote.audio import Pipeline; import pyannote.audio.pipelines; from pyannote.audio.core.io import Audio; Audio(sample_rate=16000, mono='downmix'); p = tempfile.NamedTemporaryFile(suffix='.ckpt', delete=False).name; torch.save({'g': list(diarize_compat.TRUSTED_CHECKPOINT_GLOBALS), 'w': torch.zeros(1)}, p); torch.load(p, weights_only=True); os.unlink(p); print('diarize build smoke: OK')"
 
-COPY docker/diarize_server.py /app/diarize_server.py
+COPY src/diarize_server.py /app/diarize_server.py
 
 EXPOSE 8000
 
