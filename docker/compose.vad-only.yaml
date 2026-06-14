@@ -1,0 +1,82 @@
+name: vllm-service-vad-only
+
+# Standalone CPU voice-activity-detection stack (Silero VAD). Not a profile of
+# compose.yaml — a separate compose project for hosts that cannot run the full
+# CUDA stack (macOS, CPU-only Linux, AMD/ROCm boxes running Ollama for
+# chat/embed).
+#
+# Topology:
+#   - one container, `vad-only`, on the external `inference-net`
+#   - no LiteLLM router, no vLLM backends, no GPU reservation
+#   - the router pass-through `http://vllm-router:4000/vad` is unavailable in
+#     this shape; consumers point at `http://vad-only:8000/vad`
+#
+# Auth: the container has no built-in Bearer-token gate. `inference-net` is a
+# private Docker network shared only between trusted compose projects, mirroring
+# how the other `-only` shapes expose theirs.
+#
+# Weights: the `silero-vad` package bundles its model, so unlike diarize-only
+# nothing is downloaded — this shape works fully offline on first start. It runs
+# the same `docker/vad_server.py` the full-stack `vad` service does, so it
+# speaks the identical multipart `/vad` contract.
+#
+# Pair with `compose.gliner-only.yaml`, `compose.rerank-only.yaml`,
+# `compose.clip-only.yaml`, and `compose.asr-only.yaml` on the same host to give
+# a non-CUDA box the full set against `inference-net`.
+
+x-no-proxy-env: &no-proxy-env
+  NO_PROXY: "vad-only,localhost,127.0.0.1,172.16.0.0/12,10.0.0.0/8${EXTRA_NO_PROXY:-}"
+  no_proxy: "vad-only,localhost,127.0.0.1,172.16.0.0/12,10.0.0.0/8${EXTRA_NO_PROXY:-}"
+
+x-env-file: &env-file
+  - path: ../.env
+    required: false
+
+# Shared logging — the local driver rotates and compresses
+# per-container; tail with `docker compose logs -f <svc>`.
+x-logging: &default-logging
+  driver: "local"
+  options:
+    max-size: "50m"
+    max-file: "5"
+    compress: "true"
+
+services:
+  vad-only:
+    image: vllm-service-vad-cpu:${VLLM_SERVICE_VERSION:-latest}
+    build:
+      context: ..
+      dockerfile: docker/Dockerfile.vad.cpu
+    logging: *default-logging
+    env_file: *env-file
+    environment:
+      <<: *no-proxy-env
+      VAD_MODEL: ${VAD_MODEL:-silero_vad}
+      # Hardcoded cpu: this shape has no GPU reservation, and Silero is CPU-only
+      # by nature (so cpu is also the full-stack default).
+      VAD_DEVICE: cpu
+      VAD_USE_ONNX: ${VAD_USE_ONNX:-false}
+      HF_HUB_OFFLINE: ${HF_HUB_OFFLINE:-1}
+      TRANSFORMERS_OFFLINE: ${TRANSFORMERS_OFFLINE:-1}
+    volumes:
+      - huggingface-cache:/root/.cache/huggingface/hub
+    healthcheck:
+      test: ["CMD-SHELL", "curl -sf http://localhost:8000/health || exit 1"]
+      interval: 10s
+      timeout: 5s
+      retries: 60
+      start_period: 180s
+    networks:
+      inference-net:
+        aliases:
+          - vad-only
+    restart: unless-stopped
+
+volumes:
+  huggingface-cache:
+    external: true
+
+networks:
+  inference-net:
+    external: true
+    name: ${INFERENCE_NETWORK:-inference-net}

@@ -1,0 +1,13 @@
+### Dev override for the vad-only stack — publishes the VAD service on the host.
+###
+### NOT auto-loaded: it lives in docker/ and the Makefile passes explicit
+### -f flags. `make up-dev-vad-only` layers this on top of
+### docker/compose.vad-only.yaml so the service is reachable at
+### localhost:${VAD_HOST_PORT} for direct testing; `make up-vad-only`
+### runs the base alone (production shape). Sibling containers reach the
+### service as `vad-only:8000` on inference-net regardless of this override.
+
+services:
+  vad-only:
+    ports:
+      - "${VAD_HOST_PORT:-8006}:8000"
