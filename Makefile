@@ -49,7 +49,7 @@
 
 .DEFAULT_GOAL := help
 
-.PHONY: help network volumes \
+.PHONY: help pre-commit network volumes \
         build bundle up up-dev stop down \
         build-gliner-only bundle-gliner-only up-gliner-only up-dev-gliner-only stop-gliner-only down-gliner-only \
         build-rerank-only bundle-rerank-only up-rerank-only up-dev-rerank-only stop-rerank-only down-rerank-only \
@@ -85,6 +85,9 @@ COMPOSE_VAD_ONLY_DEV    := docker compose --env-file .env -f docker/compose.vad-
 
 help:
 	@echo "vllm-service — build-host helpers."
+	@echo
+	@echo "Development:"
+	@echo "  make pre-commit       run ruff check + ruff format + mypy over src/ (no Docker)"
 	@echo
 	@echo "Full stack (CUDA):"
 	@echo "  make network          create the external inference-net"
@@ -143,6 +146,14 @@ help:
 	@echo "  make up-dev-vad-only      like 'up-vad-only', but publishes the port on the host"
 	@echo "  make stop-vad-only        stop the VAD service"
 	@echo "  make down-vad-only        stop + remove the VAD service"
+
+# --- Development --------------------------------------------------------
+
+# Run the org-wide lint regime (ruff check + ruff format + mypy over src/).
+# `uv run` syncs the venv from uv.lock first, so this works from a clean
+# checkout with no separate `uv sync` step. Mirrors the CI python-lint job.
+pre-commit:
+	uv run pre-commit run --all-files
 
 # --- Full stack ---------------------------------------------------------
 
