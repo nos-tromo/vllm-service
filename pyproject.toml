@@ -1,0 +1,30 @@
+[project]
+name = "vllm-service"
+version = "0.0.0"
+description = "LiteLLM router + vLLM backends (lint config for the bundled FastAPI servers)."
+requires-python = ">=3.11"
+
+[tool.uv]
+package = false
+
+[dependency-groups]
+dev = [
+    "mypy==1.19.0",
+    "pre-commit",
+]
+
+[tool.ruff]
+target-version = "py311"
+line-length = 120
+
+[tool.ruff.lint]
+select = ["E", "F", "W", "I", "B", "D", "ANN", "UP", "RUF"]
+ignore = ["ANN401"]
+
+[tool.ruff.lint.pydocstyle]
+convention = "google"
+
+[tool.mypy]
+strict = true
+ignore_missing_imports = true
+no_incremental = true

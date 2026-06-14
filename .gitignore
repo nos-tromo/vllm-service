@@ -12,3 +12,11 @@
 *.tar.gz
 *.bundle
 .vllm-service-version
+
+# Python tooling
+__pycache__/
+*.pyc
+.ruff_cache/
+
+# CI: transient checkout of nos-tromo/.github for the strict-config validator
+.nos-tromo-github-ref/
