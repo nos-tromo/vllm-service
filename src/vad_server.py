@@ -127,7 +127,7 @@ def _decode_audio(data: bytes) -> np.ndarray:
 
 @app.post("/vad", response_model=VadResponse)
 def vad(
-    file: UploadFile = File(...),
+    file: UploadFile = File(...),  # noqa: B008 — FastAPI dependency marker
     threshold: float | None = Form(default=None),
     min_speech_duration_ms: int | None = Form(default=None),
     min_silence_duration_ms: int | None = Form(default=None),

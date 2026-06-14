@@ -227,7 +227,7 @@ def _transcribe(
 
 @app.post("/v1/audio/transcriptions")
 def transcriptions(
-    file: UploadFile = File(...),
+    file: UploadFile = File(...),  # noqa: B008 — FastAPI dependency marker
     model: str | None = Form(default=None),
     language: str | None = Form(default=None),
     prompt: str | None = Form(default=None),
@@ -255,7 +255,7 @@ def transcriptions(
 
 @app.post("/v1/audio/translations")
 def translations(
-    file: UploadFile = File(...),
+    file: UploadFile = File(...),  # noqa: B008 — FastAPI dependency marker
     model: str | None = Form(default=None),
     prompt: str | None = Form(default=None),
     temperature: float | None = Form(default=None),

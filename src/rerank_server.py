@@ -89,7 +89,8 @@ def _score_pairs(query: str, documents: list[str]) -> list[float]:
     )
     with torch.no_grad():
         logits = model(**inputs, return_dict=True).logits.view(-1).float()
-    return torch.sigmoid(logits).tolist()
+    scores: list[float] = torch.sigmoid(logits).tolist()
+    return scores
 
 
 @app.post("/rerank")
