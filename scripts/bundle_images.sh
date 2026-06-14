@@ -41,8 +41,22 @@ case "$PROFILE_ARG" in
     PROFILE_LABEL="diarize-only"
     COMPOSE_FILE="docker/compose.diarize-only.yaml"
     ;;
+  "asr-only")
+    # Separate compose project — single FastAPI/openai-whisper ASR container
+    # on inference-net, no router, no GPU. Same topology shape as the other
+    # -only shapes.
+    PROFILE_LABEL="asr-only"
+    COMPOSE_FILE="docker/compose.asr-only.yaml"
+    ;;
+  "vad-only")
+    # Separate compose project — single FastAPI/Silero voice-activity-detection
+    # container on inference-net, no router, no GPU. Same topology shape as the
+    # other -only shapes.
+    PROFILE_LABEL="vad-only"
+    COMPOSE_FILE="docker/compose.vad-only.yaml"
+    ;;
   *)
-    echo "Usage: $0 [gliner-only|rerank-only|clip-only|diarize-only]" >&2
+    echo "Usage: $0 [gliner-only|rerank-only|clip-only|diarize-only|asr-only|vad-only]" >&2
     exit 2
     ;;
 esac

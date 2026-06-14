@@ -1,6 +1,6 @@
 # LiteLLM Proxy configuration for the vLLM service stack.
 #
-# This config fronts the vLLM backends (chat, embed, rerank, audio) and
+# This config fronts the vLLM backends (chat, embed, rerank, asr) and
 # exposes a single OpenAI-compatible endpoint at :4000.
 #
 # Model names are read from environment variables via the os.environ/
@@ -51,7 +51,7 @@ model_list:
     litellm_params:
       model: os.environ/WHISPER_MODEL
       custom_llm_provider: hosted_vllm
-      api_base: http://audio:8000/v1
+      api_base: http://asr:8000/v1
       api_key: os.environ/OPENAI_API_KEY
 
 general_settings:
@@ -104,6 +104,15 @@ general_settings:
     # /v1/models — it has no OpenAI-shaped endpoint to route by model name.
     - path: "/diarize"
       target: "http://diarize:8000/diarize"
+    # Voice activity detection (Silero VAD). Not OpenAI-compatible — clients
+    # POST multipart `file=<audio bytes>` plus optional threshold / duration
+    # form fields and receive {"segments": [{"start", "end"}], "has_speech":
+    # bool, "sampling_rate": 16000}. Like /diarize, the headers block is
+    # omitted so LiteLLM forwards the original Content-Type (multipart
+    # boundary). The vad backend is not in model_list and does not appear in
+    # /v1/models — it has no OpenAI-shaped endpoint to route by model name.
+    - path: "/vad"
+      target: "http://vad:8000/vad"
 
 litellm_settings:
   # Silently drop OpenAI-only params that the upstream vLLM backend does

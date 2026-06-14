@@ -1,8 +1,8 @@
 name: vllm-service
 
 x-no-proxy-env: &no-proxy-env
-  NO_PROXY: "router,chat,embed,rerank,gliner,clip,audio,diarize,localhost,127.0.0.1,172.16.0.0/12,10.0.0.0/8${EXTRA_NO_PROXY:-}"
-  no_proxy: "router,chat,embed,rerank,gliner,clip,audio,diarize,localhost,127.0.0.1,172.16.0.0/12,10.0.0.0/8${EXTRA_NO_PROXY:-}"
+  NO_PROXY: "router,chat,embed,rerank,gliner,clip,asr,diarize,vad,localhost,127.0.0.1,172.16.0.0/12,10.0.0.0/8${EXTRA_NO_PROXY:-}"
+  no_proxy: "router,chat,embed,rerank,gliner,clip,asr,diarize,vad,localhost,127.0.0.1,172.16.0.0/12,10.0.0.0/8${EXTRA_NO_PROXY:-}"
 
 x-env-file: &env-file
   - path: ../.env
@@ -61,9 +61,11 @@ services:
         condition: service_healthy
       clip:
         condition: service_healthy
-      audio:
+      asr:
         condition: service_healthy
       diarize:
+        condition: service_healthy
+      vad:
         condition: service_healthy
       gliner:
         condition: service_healthy
@@ -256,8 +258,8 @@ services:
     networks:
       - vllm-net
 
-  audio:
-    image: vllm-service-audio:${VLLM_SERVICE_VERSION:-latest}
+  asr:
+    image: vllm-service-asr:${VLLM_SERVICE_VERSION:-latest}
     build:
       context: ..
       dockerfile: docker/Dockerfile.vllm
@@ -271,12 +273,12 @@ services:
     entrypoint: ["/bin/sh", "-lc"]
     command:
       - >-
-        export CUDA_VISIBLE_DEVICES="$${AUDIO_CUDA_VISIBLE_DEVICES:-0}";
+        export CUDA_VISIBLE_DEVICES="$${ASR_CUDA_VISIBLE_DEVICES:-0}";
         exec vllm serve "$${WHISPER_MODEL:-openai/whisper-large-v3}"
         --api-key "$${OPENAI_API_KEY:-sk-no-key-required}"
         --host 0.0.0.0
         --port 8000
-        --gpu-memory-utilization "$${AUDIO_GPU_MEMORY_UTILIZATION:-0.15}"
+        --gpu-memory-utilization "$${ASR_GPU_MEMORY_UTILIZATION:-0.15}"
     environment:
       <<: *vllm-env
       VLLM_MAX_AUDIO_CLIP_FILESIZE_MB: ${VLLM_MAX_AUDIO_CLIP_FILESIZE_MB:-200}
@@ -294,7 +296,7 @@ services:
     # serves the pipeline instead. Endpoint shape:
     #   POST /diarize multipart file=<audio> [+ num/min/max_speakers]
     #     -> {"segments": [{"start", "end", "speaker"}], "speakers": [...]}
-    # Sits between audio and gliner in the startup chain: the pipeline
+    # Sits between asr and gliner in the startup chain: the pipeline
     # allocates a small ad-hoc GPU footprint (no fixed reservation), and
     # every such allocator must be up before Ray Serve's
     # --target-memory-fraction claims the leftover GPU memory.
@@ -307,7 +309,7 @@ services:
     env_file: *env-file
     ipc: host
     depends_on:
-      audio:
+      asr:
         condition: service_healthy
     entrypoint: ["/bin/sh", "-lc"]
     command:
@@ -340,6 +342,43 @@ services:
     networks:
       - vllm-net
 
+  vad:
+    # Voice activity detection (Silero VAD) via FastAPI. Like clip and
+    # diarize, NOT a vLLM container — Silero is a tiny JIT speech/non-speech
+    # classifier, not a vLLM-supported architecture, so a FastAPI wrapper
+    # (docker/vad_server.py) serves it. Endpoint shape:
+    #   POST /vad multipart file=<audio> [+ threshold / *_duration_ms ...]
+    #     -> {"segments": [{"start", "end"}], "has_speech", "sampling_rate"}
+    # CPU-only (Silero gains nothing from CUDA): no GPU reservation, so it
+    # never competes for device memory and is irrelevant to the gliner
+    # startup ordering below. The silero-vad package bundles its weights, so
+    # nothing is downloaded at runtime.
+    image: vllm-service-vad:${VLLM_SERVICE_VERSION:-latest}
+    build:
+      context: ..
+      dockerfile: docker/Dockerfile.vad.cpu
+    logging: *default-logging
+    env_file: *env-file
+    depends_on:
+      diarize:
+        condition: service_healthy
+    environment:
+      <<: *no-proxy-env
+      HF_HUB_OFFLINE: ${HF_HUB_OFFLINE:-1}
+      TRANSFORMERS_OFFLINE: ${TRANSFORMERS_OFFLINE:-1}
+      VAD_MODEL: ${VAD_MODEL:-silero_vad}
+      VAD_DEVICE: cpu
+      VAD_USE_ONNX: ${VAD_USE_ONNX:-false}
+    volumes: *vllm-volumes
+    healthcheck:
+      test: ["CMD-SHELL", "curl -sf http://localhost:8000/health || exit 1"]
+      interval: 10s
+      timeout: 5s
+      retries: 60
+      start_period: 120s
+    networks:
+      - vllm-net
+
   gliner:
     # GLiNER zero-shot NER served via Ray Serve. Unlike the other backends,
     # this is NOT a vLLM container — GLiNER's span-matching head isn't a
@@ -359,7 +398,7 @@ services:
     env_file: *env-file
     ipc: host
     depends_on:
-      diarize:
+      vad:
         condition: service_healthy
     entrypoint: ["/bin/sh", "-lc"]
     command:

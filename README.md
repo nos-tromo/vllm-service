@@ -25,6 +25,7 @@ relevant backend:
 - `/gliner` (zero-shot NER; non-OpenAI shape)
 - `/clip/embed_image`, `/clip/embed_text`, `/clip/dimension` (CLIP image+text tower)
 - `/diarize` (speaker diarization; non-OpenAI shape)
+- `/vad` (Silero voice activity detection; non-OpenAI shape)
 
 Internally it runs:
 
@@ -34,15 +35,16 @@ Internally it runs:
 - `rerank`
 - `gliner` (GLiNER, served via Ray Serve rather than vLLM)
 - `clip` (CLIP image+text tower, served via FastAPI rather than vLLM)
-- `audio` (Whisper ASR, served via vLLM)
+- `asr` (Whisper ASR, served via vLLM)
 - `diarize` (pyannote speaker diarization, served via FastAPI rather than vLLM)
+- `vad` (Silero voice activity detection, served via FastAPI rather than vLLM)
 
 Model-to-backend routing is declared in `docker/litellm.config.yaml`. Clients
 select a backend purely by the `model` field they send; there is no path-based
 dispatch.
 
 For hosts that cannot run the CUDA stack (Mac dev boxes, ROCm or CPU-only
-Linux running Ollama for chat/embed), this repo also ships four standalone
+Linux running Ollama for chat/embed), this repo also ships six standalone
 CPU deployments:
 
 - **NER-only** (`docker/compose.gliner-only.yaml`) — a single `gliner-only`
@@ -56,10 +58,17 @@ CPU deployments:
 - **Diarize-only** (`docker/compose.diarize-only.yaml`) — a single
   `diarize-only` container exposing the same multipart `/diarize` contract
   as the full stack. See "Diarize-only deployment" below.
+- **ASR-only** (`docker/compose.asr-only.yaml`) — a single `asr-only`
+  container exposing the same OpenAI `/v1/audio/transcriptions` contract as
+  the full stack (CPU openai-whisper instead of vLLM). See "ASR-only
+  deployment" below.
+- **VAD-only** (`docker/compose.vad-only.yaml`) — a single `vad-only`
+  container exposing the same multipart `/vad` contract as the full stack.
+  See "VAD-only deployment" below.
 
-The four can be co-deployed on the same host so the consuming app has
-all of `/gliner`, `/rerank`, `/clip/*`, and `/diarize` available without
-the full CUDA stack.
+The six can be co-deployed on the same host so the consuming app has all of
+`/gliner`, `/rerank`, `/clip/*`, `/diarize`, `/v1/audio/transcriptions`, and
+`/vad` available without the full CUDA stack.
 
 ## Usage
 
@@ -100,7 +109,7 @@ longer finds the compose file.
 
    ```bash
    make build                 # build images for the full stack
-   make up-dev                # full stack with the router published on the host (router, chat, embed, rerank, clip, audio, diarize, gliner)
+   make up-dev                # full stack with the router published on the host (router, chat, embed, rerank, clip, asr, diarize, vad, gliner)
    make up                    # same as up-dev but production shape (no host ports)
    ```
 
@@ -411,9 +420,155 @@ real-time-to-several-times-real-time per audio minute, dominated by the
 segmentation and embedding passes. Fine for batch transcription pipelines
 (Nextext's workload); not suitable for interactive use.
 
-> Pair with the NER-only, Rerank-only, and CLIP-only deployments on the
-> same host to give a non-CUDA dev box `/gliner`, `/rerank`, `/clip/*`,
-> and `/diarize` against `inference-net`.
+> Pair with the NER-only, Rerank-only, CLIP-only, ASR-only, and VAD-only
+> deployments on the same host to give a non-CUDA dev box `/gliner`,
+> `/rerank`, `/clip/*`, `/diarize`, `/v1/audio/transcriptions`, and `/vad`
+> against `inference-net`.
+
+## ASR-only deployment
+
+`docker/compose.asr-only.yaml` is a standalone compose project for the same
+audience as NER-only / Rerank-only / CLIP-only / Diarize-only. It runs one
+container, `asr-only`, built from `Dockerfile.asr.cpu` (uv-managed Python 3.11,
+CPU torch, `openai-whisper`, `ffmpeg`). No LiteLLM router, no GPU reservation.
+
+Unlike the full-stack `asr` service (Whisper on vLLM, CUDA-only), this shape
+ships `docker/asr_server.py` — a small FastAPI app that drives the reference
+**openai-whisper** decoder (the same one Nextext runs in-process) — so it
+exposes the **same OpenAI `/v1/audio/transcriptions` (and
+`/v1/audio/translations`) contract** on CPU, and consumers target either
+backend by changing only the base URL. Default `WHISPER_MODEL` is
+`openai/whisper-large-v3`, mapped to the openai-whisper checkpoint name
+(`large-v3`) at load.
+
+Bring it up:
+
+```bash
+make network            # if not already created
+make volumes            # if not already created
+make build-asr-only     # builds vllm-service-asr-cpu
+make up-asr-only        # starts the asr-only container
+```
+
+On first start the container downloads the Whisper weights into the shared
+`huggingface-cache` volume (~3 GB for `large-v3`; openai-whisper fetches from
+its own CDN, not the HF Hub — the weights are public, no gated access). The
+healthcheck reports healthy once FastAPI is accepting requests. If your host is
+offline, pre-populate the cache on a networked machine first. For a quick CPU
+smoke test, set a smaller model such as `WHISPER_MODEL=openai/whisper-base` —
+`large-v3` on CPU is very slow.
+
+Consumers on `inference-net` reach it directly — there's no router in this
+shape:
+
+```bash
+curl http://asr-only:8000/v1/audio/transcriptions \
+  -F "file=@recording.mp3" \
+  -F "response_format=verbose_json"
+```
+
+Response (`verbose_json`):
+
+```json
+{
+  "task": "transcribe",
+  "language": "en",
+  "duration": 12.34,
+  "text": "...",
+  "segments": [
+    {"id": 0, "start": 0.0, "end": 4.2, "text": "...", "no_speech_prob": 0.01}
+  ]
+}
+```
+
+No `Authorization` header is required: the container has no built-in
+Bearer-token gate (same posture as the other `-only` shapes). The `model` form
+field is accepted but ignored — the server always uses the model it loaded at
+boot.
+
+Override defaults via `.env` — only `WHISPER_MODEL` / `ASR_*` knobs apply in
+this shape:
+
+```bash
+WHISPER_MODEL=openai/whisper-large-v3   # default
+ASR_DEVICE=cpu                          # default in asr-only
+# ASR_HOST_PORT=8005                     # host publish port for dev
+# ASR_WHISPER_NAME=large-v3              # override the openai-whisper checkpoint name
+```
+
+CPU openai-whisper is the slowest of the standalone shapes for large models —
+`large-v3` runs several times slower than real time; smaller checkpoints
+(`base`, `small`) are far quicker. Fine for batch transcription; not suitable
+for interactive use.
+
+> Pair with the NER-only, Rerank-only, CLIP-only, and VAD-only deployments on
+> the same host to give a non-CUDA dev box `/gliner`, `/rerank`, `/clip/*`,
+> `/v1/audio/transcriptions`, and `/vad` against `inference-net`.
+
+## VAD-only deployment
+
+`docker/compose.vad-only.yaml` is a standalone compose project for the same
+audience as the other `-only` shapes. It runs one container, `vad-only`, built
+from `Dockerfile.vad.cpu` (uv-managed Python 3.11, CPU torch + torchaudio,
+`silero-vad`, `ffmpeg`). No LiteLLM router, no GPU reservation. The container
+ships `docker/vad_server.py` — the same FastAPI app the full-stack `vad` service
+runs — so it exposes the **same multipart `/vad` contract**, and consumers
+target either backend by changing only the base URL.
+
+Unlike diarize-only, the `silero-vad` package bundles its model weights, so
+**nothing is downloaded** — this shape works fully offline on first start.
+
+Bring it up:
+
+```bash
+make network            # if not already created
+make volumes            # if not already created
+make build-vad-only     # builds vllm-service-vad-cpu
+make up-vad-only        # starts the vad-only container
+```
+
+Consumers on `inference-net` reach it directly — there's no router in this
+shape:
+
+```bash
+curl http://vad-only:8000/vad \
+  -F "file=@recording.mp3"
+```
+
+Response:
+
+```json
+{
+  "segments": [
+    {"start": 0.51, "end": 4.32},
+    {"start": 4.80, "end": 9.11}
+  ],
+  "has_speech": true,
+  "sampling_rate": 16000
+}
+```
+
+Times are absolute seconds. Like `/diarize`, the service returns raw speech
+turns — consumers reduce them (e.g. to a speech / no-speech gate) client-side.
+No `Authorization` header is required (same posture as the other `-only`
+shapes). Optional `threshold`, `min_speech_duration_ms`,
+`min_silence_duration_ms`, `speech_pad_ms`, and `max_speech_duration_s` form
+fields tune Silero; omitted ones use its defaults.
+
+Override defaults via `.env` — only `VAD_*` knobs apply in this shape:
+
+```bash
+VAD_MODEL=silero_vad     # default (informational; one bundled model)
+VAD_DEVICE=cpu           # default in vad-only
+# VAD_USE_ONNX=false      # true runs the bundled ONNX graph
+# VAD_HOST_PORT=8006       # host publish port for dev
+```
+
+Silero VAD is by far the fastest of the standalone shapes — a fraction of real
+time per audio minute on CPU.
+
+> Pair with the NER-only, Rerank-only, CLIP-only, and ASR-only deployments on
+> the same host to give a non-CUDA dev box the full set against `inference-net`.
 
 ## Offline image bundles
 
@@ -427,11 +582,13 @@ can ship alongside the `docker/` directory (which holds `compose.yaml` and
 On a build host with internet:
 
 ```bash
-make bundle              # full stack (chat, embed, rerank, gliner, clip, audio, diarize, router)
+make bundle              # full stack (chat, embed, rerank, gliner, clip, asr, diarize, vad, router)
 make bundle-gliner-only     # NER-only shape (just vllm-service-gliner-cpu)
 make bundle-rerank-only  # Rerank-only shape (just vllm-service-rerank-only)
 make bundle-clip-only    # CLIP-only shape (just vllm-service-clip-cpu)
 make bundle-diarize-only # Diarize-only shape (just vllm-service-diarize-cpu)
+make bundle-asr-only     # ASR-only shape (just vllm-service-asr-cpu)
+make bundle-vad-only     # VAD-only shape (just vllm-service-vad-cpu)
 ```
 
 This computes `VLLM_SERVICE_VERSION` as `YYYY-MM-DD-<short-sha>` (override by
@@ -481,7 +638,7 @@ between `load` and `up`.
 - `inference-net` is an external shared Docker network used for cross-project
   service discovery and reverse-proxy access.
 - Only the `router` service joins `inference-net`; `chat`, `embed`,
-  `rerank`, `gliner`, `clip`, `audio`, and `diarize` stay on the private
+  `rerank`, `gliner`, `clip`, `asr`, `diarize`, and `vad` stay on the private
   network.
 - The `router` service keeps its `vllm-router` alias on `inference-net` so
   existing consumers do not need to change their `OPENAI_API_BASE`.
@@ -498,15 +655,15 @@ Clients must use the exact model ID set in `.env` as the `model` field in
 their requests (e.g. `"model": "BAAI/bge-m3"`). The `/v1/models` endpoint
 returns the currently active IDs.
 
-`NER_MODEL`, `CLIP_MODEL`, and `DIARIZE_MODEL` are the exceptions: their
-servers have no OpenAI-shaped endpoints, so they are not in `model_list` and
-do not appear in `/v1/models`. Switching them still works by updating the
+`NER_MODEL`, `CLIP_MODEL`, `DIARIZE_MODEL`, and `VAD_MODEL` are the exceptions:
+their servers have no OpenAI-shaped endpoints, so they are not in `model_list`
+and do not appear in `/v1/models`. Switching them still works by updating the
 variable in `.env` and restarting the matching service (`gliner`, `clip`,
-`diarize`).
+`diarize`, `vad`).
 
-## Calling the audio service
+## Calling the ASR service
 
-The audio service runs Whisper via vLLM and exposes OpenAI-compatible
+The `asr` service runs Whisper via vLLM and exposes OpenAI-compatible
 `/v1/audio/transcriptions` and `/v1/audio/translations` endpoints.
 
 ```bash
@@ -518,6 +675,12 @@ curl http://vllm-router:9000/v1/audio/transcriptions \
 
 The maximum accepted file size defaults to 200 MB and can be raised with
 `VLLM_MAX_AUDIO_CLIP_FILESIZE_MB` in `.env`.
+
+> Hosts that can't run the CUDA stack at all should use the
+> [ASR-only deployment](#asr-only-deployment) instead — same
+> `/v1/audio/transcriptions` request/response shape, but reached at
+> `http://asr-only:8000/v1/audio/transcriptions` with no Bearer auth (CPU
+> openai-whisper instead of vLLM).
 
 ## Calling the diarization service
 
@@ -564,6 +727,45 @@ the cache afterwards.
 > [Diarize-only deployment](#diarize-only-deployment) instead — same
 > `/diarize` request/response shape, but reached at
 > `http://diarize-only:8000/diarize` with no Bearer auth.
+
+## Calling the VAD service
+
+The `vad` service runs [Silero VAD](https://github.com/snakers4/silero-vad)
+behind FastAPI. Like `gliner`, `clip`, and `diarize` it is **not** vLLM and
+does **not** expose OpenAI-compatible routes — it is reached through the
+router's `/vad` pass-through. The uploaded file may be any container ffmpeg can
+decode; it is resampled to 16 kHz mono server-side.
+
+```bash
+curl http://vllm-router:9000/vad \
+  -H "Authorization: Bearer $OPENAI_API_KEY" \
+  -F "file=@recording.mp3"
+```
+
+Response:
+
+```json
+{
+  "segments": [
+    {"start": 0.51, "end": 4.32},
+    {"start": 4.80, "end": 9.11}
+  ],
+  "has_speech": true,
+  "sampling_rate": 16000
+}
+```
+
+Times are absolute seconds; the service returns raw speech turns, leaving the
+speech / no-speech reduction to the consumer. Optional `threshold`,
+`min_speech_duration_ms`, `min_silence_duration_ms`, `speech_pad_ms`, and
+`max_speech_duration_s` form fields tune Silero; omitted ones use its defaults.
+The Silero weights ship inside the `silero-vad` package, so no download or HF
+token is needed.
+
+> Hosts that can't run the CUDA stack at all should use the
+> [VAD-only deployment](#vad-only-deployment) instead — same `/vad`
+> request/response shape, but reached at `http://vad-only:8000/vad` with no
+> Bearer auth.
 
 ## Calling the NER service
 
