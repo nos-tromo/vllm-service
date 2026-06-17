@@ -12,3 +12,10 @@ updates:
     directory: "/"
     schedule:
       interval: weekly
+    # mypy and ruff are centrally pinned in nos-tromo/.github/configs/
+    # python-strict/ and mirrored into pyproject.toml; the strict-config CI
+    # check fails on any local drift. They move only when the canonical
+    # config moves (manual re-mirror), never via an automated bump here.
+    ignore:
+      - dependency-name: "mypy"
+      - dependency-name: "ruff"
