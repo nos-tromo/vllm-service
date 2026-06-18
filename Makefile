@@ -49,8 +49,7 @@
 
 .DEFAULT_GOAL := help
 
-.PHONY: help pre-commit network volumes \
-        build bundle up up-dev stop down \
+.PHONY: help \
         build-gliner-only bundle-gliner-only up-gliner-only up-dev-gliner-only stop-gliner-only down-gliner-only \
         build-rerank-only bundle-rerank-only up-rerank-only up-dev-rerank-only stop-rerank-only down-rerank-only \
         build-clip-only bundle-clip-only up-clip-only up-dev-clip-only stop-clip-only down-clip-only \
@@ -58,18 +57,17 @@
         build-asr-only bundle-asr-only up-asr-only up-dev-asr-only stop-asr-only down-asr-only \
         build-vad-only bundle-vad-only up-vad-only up-dev-vad-only stop-vad-only down-vad-only
 
-# Versioned image tag.
-# On production: read from .vllm-service-version written by bundle_images.sh.
-# On dev: compute YYYY-MM-DD[-<short-sha>] on the fly.
-# Override entirely by exporting VLLM_SERVICE_VERSION before invoking make.
-VLLM_SERVICE_VERSION ?= $(shell \
-    cat .vllm-service-version 2>/dev/null || \
-    { _s=$$(git rev-parse --short HEAD 2>/dev/null); \
-      echo "$$(date +%Y-%m-%d)$${_s:+-$$_s}"; } )
-export VLLM_SERVICE_VERSION
+# The full-stack compose lifecycle (network/volumes/build/bundle/up/up-dev/
+# stop/down/pre-commit) + the versioned image tag come from make/common.mk,
+# vendored from nos-tromo/.github. The seven CPU `-only` shapes below are
+# vllm-service-specific and stay here.
+REPO     := vllm-service
+NETWORKS := inference-net
+VOLUMES  := huggingface-cache
+UP_FLAGS := --no-build
+TESTS    := no
+include make/common.mk
 
-COMPOSE                 := docker compose --env-file .env -f docker/compose.yaml
-COMPOSE_DEV             := docker compose --env-file .env -f docker/compose.yaml -f docker/compose.override.yaml
 COMPOSE_NER_ONLY        := docker compose --env-file .env -f docker/compose.gliner-only.yaml
 COMPOSE_NER_ONLY_DEV    := docker compose --env-file .env -f docker/compose.gliner-only.yaml -f docker/compose.gliner-only.override.yaml
 COMPOSE_RERANK_ONLY     := docker compose --env-file .env -f docker/compose.rerank-only.yaml
@@ -147,49 +145,6 @@ help:
 	@echo "  make stop-vad-only        stop the VAD service"
 	@echo "  make down-vad-only        stop + remove the VAD service"
 
-# --- Development --------------------------------------------------------
-
-# Run the org-wide lint regime (ruff check + ruff format + mypy over src/).
-# `uv run` syncs the venv from uv.lock first, so this works from a clean
-# checkout with no separate `uv sync` step. Mirrors the CI python-lint job.
-pre-commit:
-	uv run pre-commit run --all-files
-
-# --- Full stack ---------------------------------------------------------
-
-# Create the external Docker network (one-time per host; idempotent).
-network:
-	docker network create inference-net >/dev/null 2>&1 || true
-
-# Create the external Hugging Face cache volume (one-time per host; idempotent).
-volumes:
-	docker volume create huggingface-cache >/dev/null 2>&1 || true
-
-# Build images for the active service set.
-build:
-	DOCKER_BUILDKIT=1 $(COMPOSE) build
-
-# Build images and ship as a versioned .tar.gz pair (built + pulled).
-bundle:
-	./scripts/bundle_images.sh
-
-# Run the active service set without rebuilding images (production shape, no host ports).
-up:
-	$(COMPOSE) up --no-build
-
-# Like 'up' but layers compose.override.yaml on top to publish the
-# LiteLLM router port on the host.
-up-dev:
-	$(COMPOSE_DEV) up --no-build
-
-# Stop the active service set.
-stop:
-	$(COMPOSE) stop
-
-# Stop + remove the active service set. The huggingface-cache volume is
-# external, so model weights survive — the next 'up' won't re-download.
-down:
-	$(COMPOSE) down
 
 # --- NER-only stack -----------------------------------------------------
 #
