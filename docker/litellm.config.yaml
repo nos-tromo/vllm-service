@@ -119,9 +119,6 @@ litellm_settings:
   # not understand, rather than erroring out the request.
   drop_params: true
   set_verbose: false
-  # Last-resort guard: if a request still exceeds the model's context window,
-  # truncate the oldest messages rather than returning a hard 400 error.
-  trim_messages_to_fit_context: os.environ/LITELLM_TRIM_MESSAGES
 
 router_settings:
   routing_strategy: simple-shuffle
