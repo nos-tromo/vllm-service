@@ -15,9 +15,9 @@ concurrency:
 
 jobs:
   validate:
-    # Pinned to v2.5 (adds the make/common.mk drift-check job; the other infra
+    # Pinned to v2.6 (adds the make/common.mk drift-check job; the other infra
     # checks are unchanged from v2).
-    uses: nos-tromo/.github/.github/workflows/infra-validation.yml@v2.5
+    uses: nos-tromo/.github/.github/workflows/infra-validation.yml@v2.6
     with:
       compose-files: '-f docker/compose.yaml -f docker/compose.override.yaml'
       dockerfiles-glob: 'docker/Dockerfile.*'
@@ -34,13 +34,13 @@ jobs:
     steps:
       - uses: actions/checkout@v6
       - name: Checkout canonical strict-config
-        # Pinned to the same @v2.5 as the infra-validation call above; the
+        # Pinned to the same @v2.6 as the infra-validation call above; the
         # validator diffs this repo's pyproject/.pre-commit-config against the
         # canonical strict config shipped at that ref (unchanged since v2).
         uses: actions/checkout@v6
         with:
           repository: nos-tromo/.github
-          ref: v2.5
+          ref: v2.6
           path: .nos-tromo-github-ref
       - name: Validate strict-config alignment
         run: python3 .nos-tromo-github-ref/scripts/validate_strict_config.py
