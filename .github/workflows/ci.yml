@@ -32,12 +32,12 @@ jobs:
   python-lint:
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v6
+      - uses: actions/checkout@v7
       - name: Checkout canonical strict-config
         # Pinned to the same @v2.6 as the infra-validation call above; the
         # validator diffs this repo's pyproject/.pre-commit-config against the
         # canonical strict config shipped at that ref (unchanged since v2).
-        uses: actions/checkout@v6
+        uses: actions/checkout@v7
         with:
           repository: nos-tromo/.github
           ref: v2.6
