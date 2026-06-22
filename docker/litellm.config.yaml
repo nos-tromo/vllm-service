@@ -26,6 +26,13 @@ model_list:
       custom_llm_provider: openai
       api_base: http://embed:8000/v1
       api_key: os.environ/OPENAI_API_KEY
+      # vLLM (v0.20.1) rejects an explicit `encoding_format: null`, which LiteLLM
+      # injects whenever an OpenAI-style client omits the field — e.g. Open WebUI's
+      # hand-rolled aiohttp embeddings call (its RAG/document ingestion). Pin a valid
+      # default so the null never reaches the backend. Clients that send their own
+      # value still override this (the openai SDK defaults to "base64"), so SDK-based
+      # consumers like docint are unaffected.
+      encoding_format: float
 
   # Reranking — must use hosted_vllm provider; LiteLLM's native /v1/rerank
   # route takes precedence over pass_through_endpoints and rejects openai.
