@@ -26,11 +26,11 @@ jobs:
   # Lint the bundled FastAPI servers (src/) with the org-wide strict regime.
   # Infra-first with no test suite, so it calls the canonical python-app-ci
   # workflow with run-tests: false — the lint job only (strict-config alignment
-  # + ruff + mypy via pre-commit). Calling the reusable workflow instead of
+  # + ruff + pyrefly via pre-commit). Calling the reusable workflow instead of
   # inlining a copy keeps the canonical ref in lockstep — no hardcoded ref to
   # drift.
   python-lint:
-    uses: nos-tromo/.github/.github/workflows/python-app-ci.yml@v2
+    uses: nos-tromo/.github/.github/workflows/python-app-ci.yml@v3
     with:
       python-versions: '["3.11"]'
       run-tests: false
