@@ -228,13 +228,13 @@ make bundle              # build + ship the full stack as a versioned .tar.gz pa
 ```
 
 There is no test suite, but the Python sources in `src/` are linted with the
-org-wide strict regime — ruff + mypy via `.pre-commit-config.yaml`, mirroring
+org-wide strict regime — ruff + pyrefly via `.pre-commit-config.yaml`, mirroring
 `nos-tromo/.github`'s canonical `configs/python-strict/` (only `target-version`
 differs → `py311`). CI enforces it in the `python-lint` job, which first runs
 that repo's `validate_strict_config.py` to fail on any drift from the canonical
 config. Run locally with `uv sync` then `uv run pre-commit run --all-files`. The
 heavy ML backends (torch, transformers, openai-whisper, pyannote, silero) are
-not installed for linting — `mypy` treats them as `Any` (`ignore_missing_imports`);
+not installed for linting — `pyrefly` treats them as `Any` (`ignore-missing-imports`);
 only the light typed deps (`fastapi`, `pydantic`, `numpy`) are declared so
 strict mode can check the first-party code.
 
