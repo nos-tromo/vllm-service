@@ -85,7 +85,7 @@ help:
 	@echo "vllm-service — build-host helpers."
 	@echo
 	@echo "Development:"
-	@echo "  make pre-commit       run ruff check + ruff format + mypy over src/ (no Docker)"
+	@echo "  make pre-commit       run ruff check + ruff format + pyrefly over src/ (no Docker)"
 	@echo
 	@echo "Full stack (CUDA):"
 	@echo "  make network          create the external inference-net"

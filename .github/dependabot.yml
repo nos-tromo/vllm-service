@@ -12,7 +12,7 @@ updates:
     # nos-tromo/.github's reusable workflows (currently @v2.6); this repo's
     # hand-rolled python-lint job in ci.yml mirrors those pins. They move only
     # when the canonical workflows move (manual re-mirror on a new @vX.Y tag),
-    # never via an automated bump here — same policy as mypy/ruff below.
+    # never via an automated bump here — same policy as pyrefly/ruff below.
     ignore:
       - dependency-name: "actions/checkout"
       - dependency-name: "astral-sh/setup-uv"
@@ -20,10 +20,10 @@ updates:
     directory: "/"
     schedule:
       interval: weekly
-    # mypy and ruff are centrally pinned in nos-tromo/.github/configs/
+    # pyrefly and ruff are centrally pinned in nos-tromo/.github/configs/
     # python-strict/ and mirrored into pyproject.toml; the strict-config CI
     # check fails on any local drift. They move only when the canonical
     # config moves (manual re-mirror), never via an automated bump here.
     ignore:
-      - dependency-name: "mypy"
+      - dependency-name: "pyrefly"
       - dependency-name: "ruff"
