@@ -50,9 +50,11 @@ nap() {
 "$@" &
 CHILD_PID=$!
 
+# shellcheck disable=SC2317,SC2329  # reached only via the `trap` below; shellcheck
+# can't see the indirect invocation (SC2317 in <0.10, SC2329 in >=0.10).
 shutdown() {
   trap '' TERM INT
-  [ -n "$SLEEP_PID" ] && kill "$SLEEP_PID" 2>/dev/null || true
+  if [ -n "$SLEEP_PID" ]; then kill "$SLEEP_PID" 2>/dev/null || true; fi
   kill -TERM "$CHILD_PID" 2>/dev/null || true
   wait "$CHILD_PID" 2>/dev/null || true
   exit 0
