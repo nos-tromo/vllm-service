@@ -62,7 +62,7 @@ services:
         if [ "$${NER_DISABLE_COMPILE:-true}" = "true" ]; then
           set -- "$@" --no-compile;
         fi;
-        exec "$@"
+        exec /usr/local/bin/gliner-watchdog "$@"
     environment:
       <<: *no-proxy-env
       HF_HUB_OFFLINE: ${HF_HUB_OFFLINE:-1}
@@ -76,10 +76,10 @@ services:
     volumes:
       - huggingface-cache:/root/.cache/huggingface/hub
     healthcheck:
-      test: ["CMD-SHELL", "curl -sf http://localhost:8000/-/healthz || exit 1"]
-      interval: 10s
-      timeout: 5s
-      retries: 60
+      test: ["CMD-SHELL", "curl -sf -m 10 -X POST -H 'content-type: application/json' -d '{\"text\":\"ping\",\"labels\":[\"person\"],\"threshold\":0.5}' http://localhost:8000/gliner || exit 1"]
+      interval: 30s
+      timeout: 10s
+      retries: 5
       start_period: 180s
     networks:
       inference-net:
