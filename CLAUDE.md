@@ -45,6 +45,13 @@ Seven independent compose projects, picked per host:
   router's `/gliner` pass-through, diarization via `/diarize`, voice activity
   detection via `/vad`. (`vad` is a tiny CPU Silero service even in the full
   stack — Silero gains nothing from CUDA.)
+
+  The gliner container is supervised by `scripts/gliner_watchdog.sh` (installed as
+  `/usr/local/bin/gliner-watchdog`): it probes `POST /gliner` and self-exits after
+  `NER_WATCHDOG_FAILURES` consecutive failures so `restart: unless-stopped` recreates
+  the container, recovering from the Ray Serve rank-consistency wedge
+  (ray-project/ray#63862). The Docker healthcheck uses the same functional probe;
+  set `NER_WATCHDOG_ENABLED=false` to disable. Knobs: `NER_WATCHDOG_*` in `.env.example`.
 - **NER-only** (`docker/compose.gliner-only.yaml`, CPU OK) — a single
   `gliner-only` container on `inference-net`, no router, no GPU requirement.
   Intended for hosts that run Ollama (or another non-vLLM provider) for
