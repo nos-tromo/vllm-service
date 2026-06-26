@@ -237,3 +237,14 @@ Repo norm is "no unit-test suite; lint (ruff/pyrefly) + in-Dockerfile build smok
   release ships a **verified** fix, evaluate a forward upgrade and whether the watchdog can be
   relaxed (kept as defense-in-depth or removed).
 - Optional: heartbeat-file shared between watchdog and healthcheck to probe once.
+
+## Verification (2026-06-26)
+
+Wedge injected by killing the Ray Serve ProxyActor and immediately seizing port 8000 with a
+503-returning stub server, keeping the `python -m gliner.serve` child alive so the probe-failure
+path was exercised (Ray transparently respawns replica/proxy within ~2 s, making a raw
+`pkill ServeReplica` insufficient; port seizure was required to sustain 3 consecutive failures).
+RestartCount transition: 1 → 2 (baseline was 0 → 1 from an earlier child-death path test).
+Recovery time: container restarted and returned to `healthy` in under 30 s after watchdog exit.
+Alert line observed in `docker logs`: `{"level":"error","svc":"gliner-watchdog","msg":"gliner unresponsive after 3 consecutive probes; exiting for restart"}`.
+End-to-end NER confirmed post-recovery: `POST /gliner {"text":"Angela Merkel visited Berlin.","labels":["person","loc"]}` → `Angela Merkel (person, 0.992)`, `Berlin (loc, 0.969)`.
