@@ -14,8 +14,10 @@ RUN apt-get update \
 # gliner.serve module was introduced in v0.2.27 (PR #346); v0.2.26 on PyPI
 # does not have it. Install from the pinned commit tarball (no git required)
 # int8 quantization on GPU requires the 'torchao' package
+# Pin protobuf<7: preventive — this base already resolves 6.x, but explicit pin keeps both shapes consistent and prevents a future base bump from reintroducing the Ray Serve crash seen on the CPU image.
 RUN pip install --no-cache-dir --break-system-packages \
-    'gliner[serve] @ https://github.com/urchade/GLiNER/archive/910a1aefb300f17bb67d31d4a92890c8d78aaa4b.tar.gz' torchao
+    'gliner[serve] @ https://github.com/urchade/GLiNER/archive/910a1aefb300f17bb67d31d4a92890c8d78aaa4b.tar.gz' torchao \
+    'protobuf<7'
 
 # Force Ray Serve's HTTP proxy to bind 0.0.0.0 instead of the default
 # 127.0.0.1. Upstream gliner.serve.server calls
