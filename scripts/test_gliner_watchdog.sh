@@ -31,7 +31,8 @@ port_free() { ! curl -sf -m1 -X POST -d '{}' http://localhost:8000/gliner >/dev/
 reset() {           # ensure no stub is bound to :8000 and health flag cleared
   rm -f "$FLAG"
   for _ in $(seq 1 20); do port_free && return 0; sleep 0.5; done
-  return 0
+  echo "reset: port 8000 still busy after 10s — test isolation may fail" >&2
+  return 1
 }
 
 wait_healthy() {    # poll the stub directly until it answers 2xx, up to ~10s
@@ -39,6 +40,15 @@ wait_healthy() {    # poll the stub directly until it answers 2xx, up to ~10s
     curl -sf -m1 -X POST -H 'content-type: application/json' \
       -d '{"text":"x","labels":["person"],"threshold":0.5}' \
       http://localhost:8000/gliner >/dev/null 2>&1 && return 0
+    sleep 0.5
+  done
+  return 1
+}
+
+wait_armed() {      # poll the per-scenario log until "watchdog armed" appears, up to ~15s
+  local log="$1"
+  for _ in $(seq 1 30); do
+    grep -q "watchdog armed" "$log" 2>/dev/null && return 0
     sleep 0.5
   done
   return 1
@@ -54,28 +64,42 @@ export NER_WATCHDOG_GRACE_S=2 NER_WATCHDOG_INTERVAL_S=1 \
        NER_WATCHDOG_FAILURES=2 NER_WATCHDOG_TIMEOUT_S=2
 
 # A: healthy, then SIGTERM -> clean exit 0
-reset; sh "$WATCHDOG" python3 "$STUB" & WD=$!
+LOG_A="$(mktemp /tmp/wd_log_a.XXXXXX)"
+reset; sh "$WATCHDOG" python3 "$STUB" >"$LOG_A" 2>&1 & WD=$!
 wait_healthy || { echo "FAIL: A setup (stub never healthy)"; FAIL=$((FAIL+1)); }
-sleep 2                                   # let the watchdog arm
+wait_armed "$LOG_A" || { echo "FAIL: A setup (watchdog never armed)"; FAIL=$((FAIL+1)); }
 kill -TERM "$WD"; wait "$WD"; check "SIGTERM -> exit 0" 0 "$?"
+rm -f "$LOG_A"
 
 # B: healthy then unhealthy -> exit 1 (steady-state restart)
-reset; sh "$WATCHDOG" python3 "$STUB" & WD=$!
+LOG_B="$(mktemp /tmp/wd_log_b.XXXXXX)"
+reset; sh "$WATCHDOG" python3 "$STUB" >"$LOG_B" 2>&1 & WD=$!
 wait_healthy || { echo "FAIL: B setup"; FAIL=$((FAIL+1)); }
-sleep 2; touch "$FLAG"                     # flip stub to 503 after arming
+wait_armed "$LOG_B" || { echo "FAIL: B setup (watchdog never armed)"; FAIL=$((FAIL+1)); }
+touch "$FLAG"                              # flip stub to 503 after arming
 wait "$WD"; check "unhealthy -> exit 1" 1 "$?"
+rm -f "$LOG_B"
 
 # C: child dies on its own -> watchdog exits non-zero (propagates)
-reset; sh "$WATCHDOG" python3 "$STUB" & WD=$!
+LOG_C="$(mktemp /tmp/wd_log_c.XXXXXX)"
+reset; sh "$WATCHDOG" python3 "$STUB" >"$LOG_C" 2>&1 & WD=$!
 wait_healthy || { echo "FAIL: C setup"; FAIL=$((FAIL+1)); }
-sleep 2; pkill -P "$WD" -f "$STUB"         # kill ONLY the supervised child
+wait_armed "$LOG_C" || { echo "FAIL: C setup (watchdog never armed)"; FAIL=$((FAIL+1)); }
+CHILD_PID="$(pgrep -P "$WD" -f python3 | head -1)"
+if [ -n "$CHILD_PID" ]; then
+  kill -KILL "$CHILD_PID"                 # kill ONLY the supervised python3 child
+else
+  pkill -KILL -P "$WD" -f python3        # fallback: target direct children of WD matching python3
+fi
 wait "$WD"; C=$?
 if [ "$C" -ne 0 ]; then echo "PASS: child death -> exit $C"; PASS=$((PASS+1));
 else echo "FAIL: child death -> expected non-zero, got 0"; FAIL=$((FAIL+1)); fi
+rm -f "$LOG_C"
 
 # D: never healthy -> fail-fast exit 1 after 2x grace
 reset; touch "$FLAG"                       # stub answers 503 from the start
 sh "$WATCHDOG" python3 "$STUB" & WD=$!
+kill -0 "$WD" 2>/dev/null || { echo "FAIL: D setup (watchdog failed to start)"; FAIL=$((FAIL+1)); }
 wait "$WD"; check "never ready -> exit 1" 1 "$?"
 
 reset; rm -f "$STUB"
