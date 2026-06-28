@@ -64,7 +64,6 @@
 REPO     := vllm-service
 NETWORKS := inference-net
 VOLUMES  := huggingface-cache
-UP_FLAGS := --no-build
 TESTS    := no
 include make/common.mk
 
@@ -92,8 +91,9 @@ help:
 	@echo "  make volumes          create the huggingface-cache Docker volume"
 	@echo "  make build            build images for the active service set"
 	@echo "  make bundle           ship images as a versioned .tar.gz pair"
-	@echo "  make up               run the active service set (production shape, no host ports)"
-	@echo "  make up-dev           like 'up', but publishes the router port on the host"
+	@echo "  make up               run the active service set (detached, no build; production shape, no host ports)"
+	@echo "  make up-dev           like 'up' (detached, no build), but publishes the router port on the host"
+	@echo "  make dev              build the active service set, then up-dev"
 	@echo "  make stop             stop the active service set"
 	@echo "  make down             stop + remove the active service set"
 	@echo

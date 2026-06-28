@@ -137,13 +137,16 @@ Bring the stack up:
 
 ```bash
 make build                 # build images for the full stack
-make up                    # production shape (no host ports)
-make up-dev                # with host ports published (dev)
+make up                    # detached, no build; production shape (no host ports)
+make up-dev                # detached, no build; with host ports published (dev)
+make dev                   # build, then up-dev (dev convenience)
 ```
 
-`make up` runs the base `docker/compose.yaml` alone (production shape — no host
-ports); `make up-dev` layers `docker/compose.override.yaml` so the router is
-published on the host for dev.
+`make up` and `make up-dev` are detached and never build (`up -d --no-build`) —
+build first with `make build`, or use `make dev` (build + up-dev). `make up`
+runs the base `docker/compose.yaml` alone (production shape — no host ports);
+`make up-dev` layers `docker/compose.override.yaml` so the router is published
+on the host for dev.
 
 Or, for the NER-only shape (no CUDA, no router — pairs with Ollama):
 
