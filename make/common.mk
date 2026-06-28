@@ -6,6 +6,11 @@
 # pattern used for python-strict). Do not edit the vendored copy - change the
 # canonical file and re-vendor.
 #
+# `up` / `up-dev` are detached and never build: they run `up -d --no-build`
+# (production shape), matching the bespoke pulled-image members (data-plane,
+# open-webui-service). Build first, then bring up: `make build && make up-dev`
+# in dev (or just `make dev`); load/pull images before `make up` in prod.
+#
 # The including Makefile sets, BEFORE `include make/common.mk`:
 #   REPO      := <slug>                 # e.g. translator, chorus, vllm-service
 #   NETWORKS  := inference-net [data-net]
@@ -14,8 +19,6 @@
 #   COMPOSE_FILE     ?= docker/compose.yaml
 #   COMPOSE_OVERRIDE ?= docker/compose.override.yaml
 #   BUILD_ENV        ?= DOCKER_BUILDKIT=1     # env prefix for `build`
-#   UP_ENV           ?=                       # env prefix for `up`/`up-dev` (e.g. DOCKER_BUILDKIT=1)
-#   UP_FLAGS         ?=                       # extra flags for `up`/`up-dev` (e.g. --no-build, -d)
 #   TESTS            ?= yes                    # set to `no` in repos with no pytest suite
 # Each repo keeps its own `help` and any unique targets (migrate, nuke, the -only shapes).
 
@@ -26,8 +29,6 @@ endif
 COMPOSE_FILE     ?= docker/compose.yaml
 COMPOSE_OVERRIDE ?= docker/compose.override.yaml
 BUILD_ENV        ?= DOCKER_BUILDKIT=1
-UP_ENV           ?=
-UP_FLAGS         ?=
 TESTS            ?= yes
 
 # Versioned image tag. Production: read .<repo>-version (written by bundle.sh).
@@ -42,7 +43,7 @@ export $(VERSION_VAR)
 COMPOSE     := docker compose --env-file .env -f $(COMPOSE_FILE)
 COMPOSE_DEV := docker compose --env-file .env -f $(COMPOSE_FILE) -f $(COMPOSE_OVERRIDE)
 
-.PHONY: network volumes build bundle up up-dev stop down logs pre-commit
+.PHONY: network volumes build bundle up up-dev dev stop down logs pre-commit
 
 # Create the external networks this repo joins (one-time per host; idempotent).
 network:
@@ -61,11 +62,18 @@ build:
 bundle:
 	./scripts/bundle_images.sh
 
+# Detached, no build, production shape. `--no-build` errors if the image is
+# absent, so build first (`make build` in dev) or load/pull it (in prod).
 up:
-	$(UP_ENV) $(COMPOSE) up $(UP_FLAGS)
+	$(COMPOSE) up -d --no-build
 
+# Like `up` but layers the dev override (publishes host ports). Still detached
+# and no-build - run `make build` first, or use `make dev`.
 up-dev:
-	$(UP_ENV) $(COMPOSE_DEV) up $(UP_FLAGS)
+	$(COMPOSE_DEV) up -d --no-build
+
+# Dev convenience: build the image(s), then bring up with host ports.
+dev: build up-dev
 
 stop:
 	$(COMPOSE) stop
