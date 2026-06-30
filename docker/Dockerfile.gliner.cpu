@@ -25,7 +25,9 @@ RUN uv pip install --system --no-cache --compile-bytecode \
 # Same pinned gliner.serve commit as Dockerfile.gliner.cuda so the request /
 # response shape matches the CUDA variant. No torchao — int8 quantization
 # is a GPU-only optimization that the CPU server does not use.
-# Pin protobuf<7: Ray 2.55.1 under-constrains it (>=3.20.3) and its generated descriptors crash on protobuf 7.x; the working CUDA image uses 6.x.
+# Pin protobuf<7: Ray 2.55.1 under-constrains it (>=3.20.3) and its generated
+# descriptors crash on protobuf 7.x, which dropped FieldDescriptor.label;
+# protobuf<7 resolves 6.x, which still exposes .label. Same pin as the CUDA image.
 RUN uv pip install --system --no-cache --compile-bytecode \
     'gliner[serve] @ https://github.com/urchade/GLiNER/archive/910a1aefb300f17bb67d31d4a92890c8d78aaa4b.tar.gz' \
     'protobuf<7'
