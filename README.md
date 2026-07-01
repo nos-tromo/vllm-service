@@ -34,6 +34,14 @@ Internally it runs:
 - `embed`
 - `rerank`
 - `gliner` (GLiNER, served via Ray Serve rather than vLLM)
+
+  The gliner container is supervised by `scripts/gliner_watchdog.sh` (installed as
+  `/usr/local/bin/gliner-watchdog`): it probes `POST /gliner` and self-exits after
+  `NER_WATCHDOG_FAILURES` consecutive failures so `restart: unless-stopped` recreates
+  the container, recovering from the Ray Serve rank-consistency wedge
+  (ray-project/ray#63862). The Docker healthcheck uses the same functional probe;
+  set `NER_WATCHDOG_ENABLED=false` to disable. Knobs: `NER_WATCHDOG_*` in `.env.example`.
+
 - `clip` (CLIP image+text tower, served via FastAPI rather than vLLM)
 - `asr` (Whisper ASR, served via vLLM)
 - `diarize` (pyannote speaker diarization, served via FastAPI rather than vLLM)

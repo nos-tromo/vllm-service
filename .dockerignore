@@ -1,0 +1,7 @@
+# Offline-bundle artifacts (build outputs; never needed inside images)
+*.tar.gz
+# VCS, local scratch, caches
+.git/
+.superpowers/
+.mypy_cache/
+*.code-workspace

@@ -425,7 +425,7 @@ services:
         if [ "$${NER_DISABLE_COMPILE:-false}" = "true" ]; then
           set -- "$@" --no-compile;
         fi;
-        exec "$@"
+        exec /usr/local/bin/gliner-watchdog "$@"
     environment:
       <<: *no-proxy-env
       NVIDIA_VISIBLE_DEVICES: all
@@ -433,12 +433,13 @@ services:
       TRANSFORMERS_OFFLINE: ${TRANSFORMERS_OFFLINE:-1}
     volumes: *vllm-volumes
     healthcheck:
-      test: ["CMD-SHELL", "curl -sf http://localhost:8000/-/healthz || exit 1"]
-      interval: 10s
-      timeout: 5s
-      retries: 60
-      start_period: 120s
+      test: ["CMD-SHELL", "curl -sf -m 10 -X POST -H 'content-type: application/json' -d '{\"text\":\"ping\",\"labels\":[\"person\"],\"threshold\":0.5}' http://localhost:8000/gliner || exit 1"]
+      interval: 30s
+      timeout: 10s
+      retries: 5
+      start_period: 180s
     deploy: *cuda-deploy
+    restart: unless-stopped
     networks:
       - vllm-net
 

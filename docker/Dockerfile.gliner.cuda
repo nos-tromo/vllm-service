@@ -34,6 +34,12 @@ RUN pip install --no-cache-dir --break-system-packages \
 # upstream changes the line (so we notice when bumping the gliner pin).
 RUN python -c "import gliner.serve.server, pathlib; p=pathlib.Path(gliner.serve.server.__file__); t=p.read_text(); m='http_options={\"port\": config.http_port}'; assert m in t, f'gliner.serve.server bind-host patch target not found in {p}'; p.write_text(t.replace(m, 'http_options={\"host\": \"0.0.0.0\", \"port\": config.http_port}'))"
 
+# In-container self-heal watchdog: supervises gliner.serve and self-exits on a
+# failed NER probe so the container restarts (clears the Ray Serve rank wedge,
+# ray-project/ray#63862). See docs/superpowers/specs/2026-06-25-gliner-self-heal-watchdog-design.md
+COPY scripts/gliner_watchdog.sh /usr/local/bin/gliner-watchdog
+RUN chmod +x /usr/local/bin/gliner-watchdog && sh -n /usr/local/bin/gliner-watchdog
+
 ENV TOKENIZERS_PARALLELISM=true
 
 EXPOSE 8000
