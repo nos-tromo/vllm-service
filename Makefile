@@ -100,7 +100,7 @@ help:
 	@echo "NER-only stack (CPU; pairs with Ollama on non-CUDA hosts):"
 	@echo "  make build-gliner-only    build the gliner-cpu image"
 	@echo "  make bundle-gliner-only   ship the gliner-cpu image as a versioned .tar.gz"
-	@echo "  make up-gliner-only       run the GLiNER service on inference-net (no host port)"
+	@echo "  make up-gliner-only       run the GLiNER service on inference-net (detached, no host port)"
 	@echo "  make up-dev-gliner-only   like 'up-gliner-only', but publishes the port on the host"
 	@echo "  make stop-gliner-only     stop the GLiNER service"
 	@echo "  make down-gliner-only     stop + remove the GLiNER service"
@@ -108,7 +108,7 @@ help:
 	@echo "Rerank-only stack (CPU; pairs with Ollama on non-CUDA hosts):"
 	@echo "  make build-rerank-only    build the rerank-only image"
 	@echo "  make bundle-rerank-only   ship the rerank-only image as a versioned .tar.gz"
-	@echo "  make up-rerank-only       run the rerank service on inference-net (no host port)"
+	@echo "  make up-rerank-only       run the rerank service on inference-net (detached, no host port)"
 	@echo "  make up-dev-rerank-only   like 'up-rerank-only', but publishes the port on the host"
 	@echo "  make stop-rerank-only     stop the rerank service"
 	@echo "  make down-rerank-only     stop + remove the rerank service"
@@ -116,7 +116,7 @@ help:
 	@echo "CLIP-only stack (CPU; pairs with Ollama on non-CUDA hosts):"
 	@echo "  make build-clip-only      build the clip-cpu image"
 	@echo "  make bundle-clip-only     ship the clip-cpu image as a versioned .tar.gz"
-	@echo "  make up-clip-only         run the CLIP service on inference-net (no host port)"
+	@echo "  make up-clip-only         run the CLIP service on inference-net (detached, no host port)"
 	@echo "  make up-dev-clip-only     like 'up-clip-only', but publishes the port on the host"
 	@echo "  make stop-clip-only       stop the CLIP service"
 	@echo "  make down-clip-only       stop + remove the CLIP service"
@@ -124,7 +124,7 @@ help:
 	@echo "Diarize-only stack (CPU; pairs with Ollama on non-CUDA hosts):"
 	@echo "  make build-diarize-only   build the diarize-cpu image"
 	@echo "  make bundle-diarize-only  ship the diarize-cpu image as a versioned .tar.gz"
-	@echo "  make up-diarize-only      run the diarization service on inference-net (no host port)"
+	@echo "  make up-diarize-only      run the diarization service on inference-net (detached, no host port)"
 	@echo "  make up-dev-diarize-only  like 'up-diarize-only', but publishes the port on the host"
 	@echo "  make stop-diarize-only    stop the diarization service"
 	@echo "  make down-diarize-only    stop + remove the diarization service"
@@ -132,7 +132,7 @@ help:
 	@echo "ASR-only stack (CPU; pairs with Ollama on non-CUDA hosts):"
 	@echo "  make build-asr-only       build the asr-cpu image"
 	@echo "  make bundle-asr-only      ship the asr-cpu image as a versioned .tar.gz"
-	@echo "  make up-asr-only          run the ASR service on inference-net (no host port)"
+	@echo "  make up-asr-only          run the ASR service on inference-net (detached, no host port)"
 	@echo "  make up-dev-asr-only      like 'up-asr-only', but publishes the port on the host"
 	@echo "  make stop-asr-only        stop the ASR service"
 	@echo "  make down-asr-only        stop + remove the ASR service"
@@ -140,7 +140,7 @@ help:
 	@echo "VAD-only stack (CPU; pairs with Ollama on non-CUDA hosts):"
 	@echo "  make build-vad-only       build the vad-cpu image"
 	@echo "  make bundle-vad-only      ship the vad-cpu image as a versioned .tar.gz"
-	@echo "  make up-vad-only          run the VAD service on inference-net (no host port)"
+	@echo "  make up-vad-only          run the VAD service on inference-net (detached, no host port)"
 	@echo "  make up-dev-vad-only      like 'up-vad-only', but publishes the port on the host"
 	@echo "  make stop-vad-only        stop the VAD service"
 	@echo "  make down-vad-only        stop + remove the VAD service"
@@ -159,11 +159,11 @@ bundle-gliner-only:
 	./scripts/bundle_images.sh gliner-only
 
 up-gliner-only:
-	$(COMPOSE_NER_ONLY) up --no-build
+	$(COMPOSE_NER_ONLY) up -d --no-build
 
 # Like 'up-gliner-only' but publishes the GLiNER port on the host.
 up-dev-gliner-only:
-	$(COMPOSE_NER_ONLY_DEV) up --no-build
+	$(COMPOSE_NER_ONLY_DEV) up -d --no-build
 
 stop-gliner-only:
 	$(COMPOSE_NER_ONLY) stop
@@ -185,11 +185,11 @@ bundle-rerank-only:
 	./scripts/bundle_images.sh rerank-only
 
 up-rerank-only:
-	$(COMPOSE_RERANK_ONLY) up --no-build
+	$(COMPOSE_RERANK_ONLY) up -d --no-build
 
 # Like 'up-rerank-only' but publishes the rerank port on the host.
 up-dev-rerank-only:
-	$(COMPOSE_RERANK_ONLY_DEV) up --no-build
+	$(COMPOSE_RERANK_ONLY_DEV) up -d --no-build
 
 stop-rerank-only:
 	$(COMPOSE_RERANK_ONLY) stop
@@ -211,11 +211,11 @@ bundle-clip-only:
 	./scripts/bundle_images.sh clip-only
 
 up-clip-only:
-	$(COMPOSE_CLIP_ONLY) up --no-build
+	$(COMPOSE_CLIP_ONLY) up -d --no-build
 
 # Like 'up-clip-only' but publishes the CLIP port on the host.
 up-dev-clip-only:
-	$(COMPOSE_CLIP_ONLY_DEV) up --no-build
+	$(COMPOSE_CLIP_ONLY_DEV) up -d --no-build
 
 stop-clip-only:
 	$(COMPOSE_CLIP_ONLY) stop
@@ -238,11 +238,11 @@ bundle-diarize-only:
 	./scripts/bundle_images.sh diarize-only
 
 up-diarize-only:
-	$(COMPOSE_DIARIZE_ONLY) up --no-build
+	$(COMPOSE_DIARIZE_ONLY) up -d --no-build
 
 # Like 'up-diarize-only' but publishes the diarization port on the host.
 up-dev-diarize-only:
-	$(COMPOSE_DIARIZE_ONLY_DEV) up --no-build
+	$(COMPOSE_DIARIZE_ONLY_DEV) up -d --no-build
 
 stop-diarize-only:
 	$(COMPOSE_DIARIZE_ONLY) stop
@@ -265,11 +265,11 @@ bundle-asr-only:
 	./scripts/bundle_images.sh asr-only
 
 up-asr-only:
-	$(COMPOSE_ASR_ONLY) up --no-build
+	$(COMPOSE_ASR_ONLY) up -d --no-build
 
 # Like 'up-asr-only' but publishes the ASR port on the host.
 up-dev-asr-only:
-	$(COMPOSE_ASR_ONLY_DEV) up --no-build
+	$(COMPOSE_ASR_ONLY_DEV) up -d --no-build
 
 stop-asr-only:
 	$(COMPOSE_ASR_ONLY) stop
@@ -292,11 +292,11 @@ bundle-vad-only:
 	./scripts/bundle_images.sh vad-only
 
 up-vad-only:
-	$(COMPOSE_VAD_ONLY) up --no-build
+	$(COMPOSE_VAD_ONLY) up -d --no-build
 
 # Like 'up-vad-only' but publishes the VAD port on the host.
 up-dev-vad-only:
-	$(COMPOSE_VAD_ONLY_DEV) up --no-build
+	$(COMPOSE_VAD_ONLY_DEV) up -d --no-build
 
 stop-vad-only:
 	$(COMPOSE_VAD_ONLY) stop
