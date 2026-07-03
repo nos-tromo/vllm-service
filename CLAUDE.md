@@ -234,7 +234,8 @@ Build and bundle commands:
 
 ```bash
 make build               # build images for the full stack
-make bundle              # build + ship the full stack as a versioned .tar.gz pair
+make bundle              # versioned .tar.gz pair from the latest annotated release tag (production)
+make bundle-dev          # .tar.gz pair of the current working tree (dev/soak)
 ```
 
 There is no test suite, but the Python sources in `src/` are linted with the

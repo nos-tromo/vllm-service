@@ -10,6 +10,8 @@
 # (production shape), matching the bespoke pulled-image members (data-plane,
 # open-webui-service). Build first, then bring up: `make build && make up-dev`
 # in dev (or just `make dev`); load/pull images before `make up` in prod.
+# `bundle` builds the latest reachable annotated tag (production); `bundle-dev`
+# bundles the current working tree (dev/soak). See scripts/bundle-lib.sh.
 #
 # The including Makefile sets, BEFORE `include make/common.mk`:
 #   REPO      := <slug>                 # e.g. translator, chorus, vllm-service
@@ -43,7 +45,7 @@ export $(VERSION_VAR)
 COMPOSE     := docker compose --env-file .env -f $(COMPOSE_FILE)
 COMPOSE_DEV := docker compose --env-file .env -f $(COMPOSE_FILE) -f $(COMPOSE_OVERRIDE)
 
-.PHONY: network volumes build bundle up up-dev dev stop down logs pre-commit
+.PHONY: network volumes build bundle bundle-dev up up-dev dev stop down logs pre-commit
 
 # Create the external networks this repo joins (one-time per host; idempotent).
 network:
@@ -59,8 +61,15 @@ volumes:
 build:
 	$(BUILD_ENV) $(COMPOSE) build
 
+# Airgap release artifact. `bundle` is PRODUCTION: it builds the latest annotated
+# tag reachable from HEAD (checks it out, builds, restores your branch) and
+# refuses on a dirty tree or when no tag is reachable. `bundle-dev` bundles the
+# current working tree as-is (date+sha / override) for dev iteration and soak.
 bundle:
 	./scripts/bundle_images.sh
+
+bundle-dev:
+	BUNDLE_DEV=1 ./scripts/bundle_images.sh
 
 # Detached, no build, production shape. `--no-build` errors if the image is
 # absent, so build first (`make build` in dev) or load/pull it (in prod).
