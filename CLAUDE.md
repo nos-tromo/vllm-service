@@ -321,9 +321,10 @@ Four backends are exceptions that do not run vLLM:
 Each buildable service in `docker/compose.yaml` carries
 `image: vllm-service-<svc>:${VLLM_SERVICE_VERSION:-latest}`. A raw `docker
 compose -f docker/compose.yaml build` produces `:latest` tags for dev
-workflows; `make bundle` exports `VLLM_SERVICE_VERSION=<date>-<short-sha>` so
-the same compose file also produces version-tagged tarballs for offline
-shipping.
+workflows; `make bundle` exports `VLLM_SERVICE_VERSION=<release-tag>` (the latest
+annotated tag — `make bundle-dev` or an off-tag build falls back to
+`<date>-<short-sha>`) so the same compose file also produces version-tagged
+tarballs for offline shipping.
 
 All backends listen on internal port 8000 and expose only `vllm-net` — they are
 not reachable from outside the compose project. Only `router` joins the external
