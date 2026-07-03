@@ -96,6 +96,20 @@ logs:
 pre-commit:
 	uv run pre-commit run --all-files
 
+# Local pre-push gate: backend lint/type-check (pre-commit = ruff + pyrefly) plus,
+# when a frontend/ exists, its eslint + build. `make verify` green => CI's lint/build
+# gate is green for TRACKED files. Like pre-commit it checks tracked files only, so
+# `git add` brand-new files first. CI stays the full safety net (tests + docker image
+# build). Assumes frontend deps are installed (does not run `pnpm install`).
+.PHONY: verify
+verify: pre-commit
+	@if [ -d frontend ]; then \
+		echo ">> frontend: eslint + build"; \
+		cd frontend && pnpm lint && pnpm build; \
+	else \
+		echo ">> no frontend/ — backend checks only"; \
+	fi
+
 ifeq ($(TESTS),yes)
 .PHONY: test
 test:
