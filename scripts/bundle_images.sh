@@ -19,6 +19,7 @@ case "$PROFILE_ARG" in
   *) echo "Usage: $0 [gliner-only|rerank-only|clip-only|diarize-only|asr-only|vad-only]" >&2; exit 2 ;;
 esac
 
+[[ -n "${BUNDLE_DEV:-}" ]] || bundle_checkout_release vllm-service
 bundle_version vllm-service; VER="$BUNDLE_VERSION"
 
 COMPOSE=(docker compose --env-file .env -f "$COMPOSE_FILE")
