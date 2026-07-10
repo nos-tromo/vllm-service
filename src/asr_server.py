@@ -149,6 +149,7 @@ def _transcribe(
     prompt: str | None,
     temperature: float | None,
     response_format: str,
+    timestamp_granularities: list[str] | None = None,
 ) -> Any:
     """Decode an upload and run Whisper, shaping the OpenAI response.
 
@@ -164,6 +165,10 @@ def _transcribe(
         temperature: Optional sampling temperature; ``None`` uses Whisper's
             built-in fallback schedule.
         response_format: ``json`` (default), ``verbose_json``, or ``text``.
+        timestamp_granularities: Optional OpenAI-style granularity list; when
+            it contains ``"word"`` and ``response_format`` is ``verbose_json``,
+            per-word timings are computed and returned as a top-level ``words``
+            array.
 
     Returns:
         A dict (serialized as JSON) for ``json`` / ``verbose_json``, or a
@@ -177,7 +182,10 @@ def _transcribe(
     except ValueError as exc:
         raise HTTPException(status_code=422, detail=f"failed to decode audio: {exc}") from exc
 
+    want_words = bool(timestamp_granularities) and "word" in timestamp_granularities
     options: dict[str, Any] = {"task": task, "fp16": DEVICE != "cpu"}
+    if want_words:
+        options["word_timestamps"] = True
     if language:
         options["language"] = language
     if prompt:
@@ -210,13 +218,24 @@ def _transcribe(
             }
             for i, seg in enumerate(result.get("segments", []))
         ]
-        return {
+        body: dict[str, Any] = {
             "task": task,
             "language": result.get("language"),
             "duration": len(audio) / SAMPLE_RATE,
             "text": text,
             "segments": segments,
         }
+        if want_words:
+            body["words"] = [
+                {
+                    "word": str(word.get("word", "")),
+                    "start": float(word.get("start", 0.0)),
+                    "end": float(word.get("end", 0.0)),
+                }
+                for seg in result.get("segments", [])
+                for word in (seg.get("words") or [])
+            ]
+        return body
     return {"text": text}
 
 
@@ -228,6 +247,9 @@ def transcriptions(
     prompt: str | None = Form(default=None),
     temperature: float | None = Form(default=None),
     response_format: str = Form(default="json"),
+    timestamp_granularities: list[str] | None = Form(  # noqa: B008 — FastAPI dependency marker
+        default=None, alias="timestamp_granularities[]"
+    ),
 ) -> Any:
     """Transcribe an uploaded media file (Whisper ``task=transcribe``).
 
@@ -241,11 +263,14 @@ def transcriptions(
         prompt: Optional decoding prompt.
         temperature: Optional sampling temperature.
         response_format: ``json`` (default), ``verbose_json``, or ``text``.
+        timestamp_granularities: OpenAI-style granularity list (bracketed form
+            field ``timestamp_granularities[]``); ``["word"]`` adds per-word
+            timings to a ``verbose_json`` response.
 
     Returns:
         The transcription in the requested ``response_format``.
     """
-    return _transcribe(file, "transcribe", language, prompt, temperature, response_format)
+    return _transcribe(file, "transcribe", language, prompt, temperature, response_format, timestamp_granularities)
 
 
 @app.post("/v1/audio/translations")
