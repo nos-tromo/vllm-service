@@ -8,22 +8,24 @@ RUN apt-get update \
     && apt-get install -y --no-install-recommends curl ffmpeg \
     && rm -rf /var/lib/apt/lists/*
 
-# pyannote.audio rides on the cu128 torch/torchaudio baked into the pytorch
-# base image (its torch/torchaudio floors are satisfied in place).
+# pyannote.audio 4.x for community-1 (the default model — see diarize_pipeline
+# DEFAULT_MODEL): community-1 needs 4.x (it passes a `plda` kwarg 3.x rejects),
+# and 4.x decodes via torchcodec instead of torchaudio. build_pipeline already
+# handles 4.x's renamed auth kwarg (token=) and diarize_server extracts
+# .speaker_diarization from 4.x's DiarizeOutput, so the huggingface_hub<1.0
+# cap (needed only for pyannote 3.x's use_auth_token= call) is dropped.
 # --break-system-packages required on PyTorch 2.11+ (Debian PEP 668).
-# pyannote.audio<4 keeps the use_auth_token kwarg and the torch-native
-# wespeaker path proven with the speaker-diarization-3.1 pipeline (4.x
-# renamed the kwarg and moved decoding to torchcodec).
-# huggingface_hub<1.0 because pyannote 3.x calls
-# hf_hub_download(use_auth_token=...), an alias huggingface_hub 1.0
-# removed, and pyannote's own floor (>=0.13) is unbounded.
+# VERIFY AT BUILD: torchcodec must match the base image's torch + CUDA
+# (pytorch 2.11 / cu12.8). If the install or the smoke below fails, bump
+# PYTORCH_IMAGE and/or pin an explicit torchcodec version.
 RUN pip install --no-cache-dir --break-system-packages \
     'fastapi>=0.115.0' \
     'uvicorn[standard]>=0.32.0' \
     'python-multipart>=0.0.9' \
     'pydantic>=2.0' \
-    'pyannote.audio>=3.3.2,<4' \
-    'huggingface_hub>=0.13.0,<1.0'
+    'pyannote.audio>=4,<5' \
+    'torchcodec' \
+    'huggingface_hub>=0.30'
 
 # Build-time smoke test — fail the build (not the running container) on a
 # base-image bump that breaks either compatibility shim in diarize_compat.py:
@@ -34,7 +36,7 @@ RUN pip install --no-cache-dir --break-system-packages \
 #     catches a renamed symbol or a broken allowlist here — instead of only on
 #     the first real Pipeline.from_pretrained in production.
 COPY src/diarize_compat.py /app/diarize_compat.py
-RUN PYTHONPATH=/app python -c "import tempfile, os, torch, diarize_compat; from pyannote.audio import Pipeline; import pyannote.audio.pipelines; from pyannote.audio.core.io import Audio; Audio(sample_rate=16000, mono='downmix'); p = tempfile.NamedTemporaryFile(suffix='.ckpt', delete=False).name; torch.save({'g': list(diarize_compat.TRUSTED_CHECKPOINT_GLOBALS), 'w': torch.zeros(1)}, p); torch.load(p, weights_only=True); os.unlink(p); print('diarize build smoke: OK')"
+RUN PYTHONPATH=/app python -c "import tempfile, os, torch, torchcodec, diarize_compat; from pyannote.audio import Pipeline; import pyannote.audio.pipelines; from pyannote.audio.core.io import Audio; Audio(sample_rate=16000, mono='downmix'); p = tempfile.NamedTemporaryFile(suffix='.ckpt', delete=False).name; torch.save({'g': list(diarize_compat.TRUSTED_CHECKPOINT_GLOBALS), 'w': torch.zeros(1)}, p); torch.load(p, weights_only=True); os.unlink(p); print('diarize build smoke: OK')"
 
 COPY src/diarize_audio.py /app/diarize_audio.py
 COPY src/diarize_pipeline.py /app/diarize_pipeline.py
