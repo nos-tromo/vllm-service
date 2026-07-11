@@ -35,10 +35,13 @@ eval = [
     "pyyaml>=6",
 ]
 eval-run = [
-    "pyannote.audio>=3.3.2,<4",
-    # pyannote 3.x calls hf_hub_download(use_auth_token=...), an alias removed in
-    # huggingface_hub 1.0 — pin <1.0 (mirrors docker/Dockerfile.diarize.*).
-    "huggingface_hub>=0.13.0,<1.0",
+    # 4.x (not the production Docker's <4 pin): newer diarization models —
+    # e.g. pyannote/speaker-diarization-community-1, which passes a `plda`
+    # kwarg 3.x's SpeakerDiarization doesn't accept — require pyannote.audio 4.x.
+    # This is a DEV-ONLY eval env; deploying such a model to the /diarize server
+    # is a separate pyannote 3.x->4.x migration (renamed auth kwarg, torchcodec
+    # decode). build_pipeline tolerates both majors' from_pretrained signatures.
+    "pyannote.audio>=4,<5",
     # pyannote.audio imports matplotlib.pyplot at module load (undeclared in its
     # own metadata; the Docker base image happens to provide it).
     "matplotlib",

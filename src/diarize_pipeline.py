@@ -87,7 +87,12 @@ def build_pipeline(
 
     resolved_model = model_id or os.environ.get("DIARIZE_MODEL", _DEFAULT_MODEL)
     resolved_device = device or os.environ.get("DIARIZE_DEVICE", "cuda")
-    pipeline = Pipeline.from_pretrained(resolved_model, use_auth_token=os.environ.get("HF_TOKEN") or None)
+    token = os.environ.get("HF_TOKEN") or None
+    try:
+        # pyannote.audio 4.x renamed the auth kwarg to `token`; 3.x uses `use_auth_token`.
+        pipeline = Pipeline.from_pretrained(resolved_model, token=token)
+    except TypeError:
+        pipeline = Pipeline.from_pretrained(resolved_model, use_auth_token=token)
     if pipeline is None:
         raise RuntimeError(
             f"Pipeline.from_pretrained({resolved_model!r}) returned None — gated-repo access "

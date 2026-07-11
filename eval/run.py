@@ -59,7 +59,11 @@ def run_diarization(pipeline: Any, files: list[tuple[str, str]], out_dir: str, c
         with open(audio_path, "rb") as handle:
             audio = decode_audio(handle.read())
         waveform = _to_waveform(audio)
-        annotation = pipeline({"waveform": waveform, "sample_rate": SAMPLE_RATE, "uri": uri}, **config.pipeline_kwargs)
+        result = pipeline({"waveform": waveform, "sample_rate": SAMPLE_RATE, "uri": uri}, **config.pipeline_kwargs)
+        # pyannote.audio 4.x returns a DiarizeOutput wrapper; 3.x (and the fake
+        # test pipeline) return the Annotation directly. `.speaker_diarization`
+        # is the standard overlap-allowing Annotation, matching 3.x's output.
+        annotation: Any = getattr(result, "speaker_diarization", result)
         out_path = os.path.join(out_dir, f"{uri}.rttm")
         with open(out_path, "w", encoding="utf-8") as rttm:
             annotation.write_rttm(rttm)
