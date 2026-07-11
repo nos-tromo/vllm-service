@@ -21,6 +21,26 @@ from diarize_audio import SAMPLE_RATE, decode_audio
 from eval.configs import DiarizeConfig
 
 
+def _to_waveform(audio: np.ndarray) -> Any:
+    """Convert 1-D float32 PCM to the ``(channel, time)`` tensor pyannote needs.
+
+    pyannote's pipeline calls ``Tensor.unfold`` on the waveform, so it must be a
+    torch tensor, not a numpy array. torch is imported lazily here — never at
+    module load — so importing this module (and the fake-pipeline unit tests,
+    which monkeypatch this function) stays torch-free. Mirrors the ``/diarize``
+    server's ``torch.from_numpy(audio).unsqueeze(0)`` exactly (eval == production).
+
+    Args:
+        audio: 1-D float32 PCM samples at ``SAMPLE_RATE`` from ``decode_audio``.
+
+    Returns:
+        A ``(1, time)`` float32 torch tensor.
+    """
+    import torch
+
+    return torch.from_numpy(np.asarray(audio, dtype=np.float32)).unsqueeze(0)
+
+
 def run_diarization(pipeline: Any, files: list[tuple[str, str]], out_dir: str, config: DiarizeConfig) -> list[str]:
     """Diarize each file and write one hypothesis RTTM per recording.
 
@@ -38,7 +58,7 @@ def run_diarization(pipeline: Any, files: list[tuple[str, str]], out_dir: str, c
     for uri, audio_path in files:
         with open(audio_path, "rb") as handle:
             audio = decode_audio(handle.read())
-        waveform = np.asarray(audio, dtype=np.float32).reshape(1, -1)
+        waveform = _to_waveform(audio)
         annotation = pipeline({"waveform": waveform, "sample_rate": SAMPLE_RATE, "uri": uri}, **config.pipeline_kwargs)
         out_path = os.path.join(out_dir, f"{uri}.rttm")
         with open(out_path, "w", encoding="utf-8") as rttm:

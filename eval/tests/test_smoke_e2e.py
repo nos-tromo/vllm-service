@@ -158,6 +158,7 @@ def test_prepare_load_run_score_sweep_glue(tmp_path: Path, monkeypatch: pytest.M
     database_yml = _build_corpus(tmp_path, database_name, uris)
     protocol_name = f"{database_name}.SpeakerDiarization.Benchmark"
     monkeypatch.setattr("eval.run.decode_audio", lambda data: np.zeros(_SAMPLE_RATE, dtype=np.float32))
+    monkeypatch.setattr("eval.run._to_waveform", lambda audio: audio)  # skip the lazy torch import
 
     registry.load_database(str(database_yml))
     protocol = registry.get_protocol(protocol_name, preprocessors={"audio": FileFinder()})
@@ -218,6 +219,7 @@ def test_run_sweep_orchestrates_the_same_glue(
 
     monkeypatch.setattr(diarize_pipeline, "build_pipeline", lambda **kwargs: _FakePipeline())
     monkeypatch.setattr("eval.run.decode_audio", lambda data: np.zeros(_SAMPLE_RATE, dtype=np.float32))
+    monkeypatch.setattr("eval.run._to_waveform", lambda audio: audio)  # skip the lazy torch import
 
     config = DiarizeConfig(label="smoke-sweep-fake")
     with caplog.at_level(logging.INFO, logger="eval.sweep"):

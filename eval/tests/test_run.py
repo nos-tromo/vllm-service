@@ -31,6 +31,9 @@ class _FakePipeline:
 def test_writes_one_rttm_per_file_and_passes_bounds(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
     """Each file yields an RTTM; config speaker-bounds reach the pipeline call."""
     monkeypatch.setattr("eval.run.decode_audio", lambda data: np.zeros(16000, dtype=np.float32))  # bypass ffmpeg
+    monkeypatch.setattr(
+        "eval.run._to_waveform", lambda audio: audio
+    )  # skip the lazy torch import (fake ignores waveform)
     (tmp_path / "a.wav").write_bytes(b"x")
     fake = _FakePipeline()
     out = tmp_path / "hyp"
