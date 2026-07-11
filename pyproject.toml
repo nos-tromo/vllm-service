@@ -36,6 +36,12 @@ eval = [
 ]
 eval-run = [
     "pyannote.audio>=3.3.2,<4",
+    # pyannote 3.x calls hf_hub_download(use_auth_token=...), an alias removed in
+    # huggingface_hub 1.0 — pin <1.0 (mirrors docker/Dockerfile.diarize.*).
+    "huggingface_hub>=0.13.0,<1.0",
+    # pyannote.audio imports matplotlib.pyplot at module load (undeclared in its
+    # own metadata; the Docker base image happens to provide it).
+    "matplotlib",
 ]
 
 [tool.ruff]
