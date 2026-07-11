@@ -165,15 +165,25 @@ def main() -> None:
         protocols.append(
             ProtocolPaths(
                 name="VoxConverse",
-                audio_dir=args.voxconverse_audio_dir,
-                rttm=args.voxconverse_rttm,
-                uem=args.voxconverse_uem,
+                # Absolute paths: pyannote.database resolves the Databases audio
+                # glob relative to the database.yml's own directory, so a
+                # repo-relative dir would be double-prefixed (data/data/...).
+                audio_dir=str(Path(args.voxconverse_audio_dir).resolve()),
+                rttm=str(Path(args.voxconverse_rttm).resolve()),
+                uem=str(Path(args.voxconverse_uem).resolve()),
             )
         )
     if _require_all_or_none(
         parser, "--ami-audio-dir/--ami-rttm/--ami-uem", (args.ami_audio_dir, args.ami_rttm, args.ami_uem)
     ):
-        protocols.append(ProtocolPaths(name="AMI", audio_dir=args.ami_audio_dir, rttm=args.ami_rttm, uem=args.ami_uem))
+        protocols.append(
+            ProtocolPaths(
+                name="AMI",
+                audio_dir=str(Path(args.ami_audio_dir).resolve()),
+                rttm=str(Path(args.ami_rttm).resolve()),
+                uem=str(Path(args.ami_uem).resolve()),
+            )
+        )
 
     if not protocols:
         parser.error("at least one protocol's flag trio must be given (VoxConverse and/or AMI)")
