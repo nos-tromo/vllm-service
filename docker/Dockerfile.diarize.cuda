@@ -36,6 +36,8 @@ RUN pip install --no-cache-dir --break-system-packages \
 COPY src/diarize_compat.py /app/diarize_compat.py
 RUN PYTHONPATH=/app python -c "import tempfile, os, torch, diarize_compat; from pyannote.audio import Pipeline; import pyannote.audio.pipelines; from pyannote.audio.core.io import Audio; Audio(sample_rate=16000, mono='downmix'); p = tempfile.NamedTemporaryFile(suffix='.ckpt', delete=False).name; torch.save({'g': list(diarize_compat.TRUSTED_CHECKPOINT_GLOBALS), 'w': torch.zeros(1)}, p); torch.load(p, weights_only=True); os.unlink(p); print('diarize build smoke: OK')"
 
+COPY src/diarize_audio.py /app/diarize_audio.py
+COPY src/diarize_pipeline.py /app/diarize_pipeline.py
 COPY src/diarize_server.py /app/diarize_server.py
 
 EXPOSE 8000

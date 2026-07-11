@@ -24,6 +24,28 @@ dev = [
     "pre-commit",
     "pyrefly==1.1.1",
 ]
+# Dev-only eval harness. `eval` is torch-free (pyannote.metrics/database/core are
+# pure-python) so every unit test installs without torch. `eval-run` adds
+# pyannote.audio (torch) and is needed only for real diarization runs (Task 8).
+eval = [
+    "pyannote.metrics>=3.2",
+    "pyannote.database>=5.0",
+    "pytest>=8",
+    "soundfile>=0.12",
+    "pyyaml>=6",
+]
+eval-run = [
+    # 4.x (not the production Docker's <4 pin): newer diarization models —
+    # e.g. pyannote/speaker-diarization-community-1, which passes a `plda`
+    # kwarg 3.x's SpeakerDiarization doesn't accept — require pyannote.audio 4.x.
+    # This is a DEV-ONLY eval env; deploying such a model to the /diarize server
+    # is a separate pyannote 3.x->4.x migration (renamed auth kwarg, torchcodec
+    # decode). build_pipeline tolerates both majors' from_pretrained signatures.
+    "pyannote.audio>=4,<5",
+    # pyannote.audio imports matplotlib.pyplot at module load (undeclared in its
+    # own metadata; the Docker base image happens to provide it).
+    "matplotlib",
+]
 
 [tool.ruff]
 target-version = "py311"

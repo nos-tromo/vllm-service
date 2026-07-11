@@ -96,7 +96,7 @@ _model_lock = threading.Lock()
 def _decode_audio(data: bytes) -> np.ndarray:
     """Decode arbitrary media bytes to 16 kHz mono float32 PCM via ffmpeg.
 
-    Mirrors ``diarize_server._decode_audio``: the same s16le -> float32 /
+    Mirrors ``diarize_audio.decode_audio``: the same s16le -> float32 /
     32768 normalization ``whisper.load_audio`` performs, spooled through a
     temp file because MP4-family containers with a trailing moov atom cannot
     be demuxed from a non-seekable stdin pipe.
