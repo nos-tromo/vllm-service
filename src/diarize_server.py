@@ -38,15 +38,16 @@ from __future__ import annotations
 
 import os
 import threading
+from typing import Any
 
 import torch
 from fastapi import FastAPI, File, Form, HTTPException, UploadFile
 from pydantic import BaseModel
 
 from diarize_audio import SAMPLE_RATE, decode_audio
-from diarize_pipeline import build_pipeline
+from diarize_pipeline import DEFAULT_MODEL, build_pipeline
 
-MODEL_ID = os.environ.get("DIARIZE_MODEL", "pyannote/speaker-diarization-3.1")
+MODEL_ID = os.environ.get("DIARIZE_MODEL", DEFAULT_MODEL)  # shared default → /health can't drift from the loaded model
 DEVICE = os.environ.get("DIARIZE_DEVICE", "cuda")
 
 app = FastAPI(title="vllm-service diarize", version="1.0")
@@ -131,9 +132,14 @@ def diarize(
         kwargs["max_speakers"] = max_speakers
     try:
         with _pipeline_lock:
-            annotation = pipeline({"waveform": waveform, "sample_rate": SAMPLE_RATE}, **kwargs)
+            result = pipeline({"waveform": waveform, "sample_rate": SAMPLE_RATE}, **kwargs)
     except Exception as exc:
         raise HTTPException(status_code=500, detail=f"diarization failed: {exc}") from exc
+
+    # pyannote.audio 4.x returns a DiarizeOutput wrapper; 3.x returns the Annotation
+    # directly. `.speaker_diarization` is the standard, overlap-allowing Annotation
+    # (matches 3.x semantics — consumers align speakers by overlap).
+    annotation: Any = getattr(result, "speaker_diarization", result)
 
     segments = [
         DiarizeSegment(start=float(turn.start), end=float(turn.end), speaker=str(speaker))
