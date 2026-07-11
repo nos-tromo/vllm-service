@@ -421,7 +421,7 @@ returns 400.
 Override defaults via `.env` — only `DIARIZE_*` knobs apply in this shape:
 
 ```bash
-DIARIZE_MODEL=pyannote/speaker-diarization-3.1   # default
+DIARIZE_MODEL=pyannote/speaker-diarization-community-1   # default (pyannote.audio 4.x; gated)
 DIARIZE_DEVICE=cpu                               # default in diarize-only
 # DIARIZE_HOST_PORT=8004                          # host publish port for dev
 ```

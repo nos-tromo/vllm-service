@@ -329,7 +329,7 @@ services:
       # them; it writes the hub-standard models--org--name layout, so the
       # two caches coexist cleanly.
       PYANNOTE_CACHE: /root/.cache/huggingface/hub
-      DIARIZE_MODEL: ${DIARIZE_MODEL:-pyannote/speaker-diarization-3.1}
+      DIARIZE_MODEL: ${DIARIZE_MODEL:-pyannote/speaker-diarization-community-1}
       DIARIZE_DEVICE: ${DIARIZE_DEVICE:-cuda}
     volumes: *vllm-volumes
     healthcheck:

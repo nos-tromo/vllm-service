@@ -54,7 +54,7 @@ services:
     env_file: *env-file
     environment:
       <<: *no-proxy-env
-      DIARIZE_MODEL: ${DIARIZE_MODEL:-pyannote/speaker-diarization-3.1}
+      DIARIZE_MODEL: ${DIARIZE_MODEL:-pyannote/speaker-diarization-community-1}
       # Hardcoded cpu (not interpolated): this shape has no GPU reservation,
       # so it must run on CPU even if a shared .env sets DIARIZE_DEVICE=cuda
       # for the full stack. Mirrors clip-only's CLIP_DEVICE: cpu.
