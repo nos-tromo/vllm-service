@@ -37,8 +37,6 @@ transcription segments by maximum overlap.
 from __future__ import annotations
 
 import os
-import subprocess
-import tempfile
 import threading
 
 import numpy as np
@@ -46,34 +44,15 @@ import torch
 from fastapi import FastAPI, File, Form, HTTPException, UploadFile
 from pydantic import BaseModel
 
-# Apply the pyannote 3.x compatibility shims before importing pyannote: restore
-# the torchaudio symbols torchaudio 2.9+ removed, and allowlist the trusted
-# checkpoint globals so torch>=2.6's weights_only loader accepts the weights.
-# See src/diarize_compat.py for both rationales. The shim-before-pyannote order
-# is fenced with isort: off/on so ruff cannot hoist the pyannote import above it.
-# isort: off
-import diarize_compat  # noqa: F401
-from pyannote.audio import Pipeline
-# isort: on
+from diarize_audio import SAMPLE_RATE, decode_audio
+from diarize_pipeline import build_pipeline
 
 MODEL_ID = os.environ.get("DIARIZE_MODEL", "pyannote/speaker-diarization-3.1")
 DEVICE = os.environ.get("DIARIZE_DEVICE", "cuda")
-SAMPLE_RATE = 16_000
 
 app = FastAPI(title="vllm-service diarize", version="1.0")
 
-# Pipeline.from_pretrained returns None (instead of raising) when the gated
-# repos have not been accepted or no valid token is available — guard so the
-# container crash-loops loudly instead of failing per-request.
-pipeline = Pipeline.from_pretrained(MODEL_ID, use_auth_token=os.environ.get("HF_TOKEN") or None)
-if pipeline is None:
-    raise RuntimeError(
-        f"Pipeline.from_pretrained({MODEL_ID!r}) returned None — gated-repo access "
-        "missing? Accept the conditions for pyannote/speaker-diarization-3.1 and "
-        "pyannote/segmentation-3.0 on the Hugging Face Hub, then run once with "
-        "HF_HUB_OFFLINE=0, TRANSFORMERS_OFFLINE=0, and HF_TOKEN set."
-    )
-pipeline.to(torch.device(DEVICE))
+pipeline = build_pipeline()  # env defaults, no overrides — identical to before
 
 # Diarization runs for seconds-to-minutes on the device; serialize requests
 # so concurrent uploads queue instead of contending for GPU memory.
@@ -93,55 +72,6 @@ class DiarizeResponse(BaseModel):
 
     segments: list[DiarizeSegment]
     speakers: list[str]
-
-
-def _decode_audio(data: bytes) -> np.ndarray:
-    """Decode arbitrary media bytes to 16 kHz mono float32 PCM via ffmpeg.
-
-    Applies the same s16le -> float32 / 32768 normalization that
-    ``whisper.load_audio`` performs. The bytes are spooled to a temp file
-    because MP4-family containers with a trailing moov atom cannot be
-    demuxed from a non-seekable stdin pipe.
-
-    Args:
-        data: Raw bytes of any container/codec ffmpeg can decode.
-
-    Returns:
-        A 1-D float32 array of samples at ``SAMPLE_RATE``.
-
-    Raises:
-        ValueError: If ffmpeg fails or the payload holds no audio samples.
-    """
-    with tempfile.NamedTemporaryFile() as tmp:
-        tmp.write(data)
-        tmp.flush()
-        proc = subprocess.run(
-            [
-                "ffmpeg",
-                "-nostdin",
-                "-threads",
-                "0",
-                "-i",
-                tmp.name,
-                "-f",
-                "s16le",
-                "-ac",
-                "1",
-                "-acodec",
-                "pcm_s16le",
-                "-ar",
-                str(SAMPLE_RATE),
-                "pipe:1",
-            ],
-            capture_output=True,
-        )
-    if proc.returncode != 0:
-        tail = proc.stderr.decode("utf-8", errors="replace")[-500:]
-        raise ValueError(f"ffmpeg could not decode payload: {tail}")
-    audio = np.frombuffer(proc.stdout, dtype=np.int16).astype(np.float32) / 32768.0
-    if audio.size == 0:
-        raise ValueError("decoded audio contains no samples")
-    return audio
 
 
 @app.post("/diarize", response_model=DiarizeResponse)
@@ -188,7 +118,7 @@ def diarize(
     if not audio_bytes:
         raise HTTPException(status_code=400, detail="empty audio payload")
     try:
-        audio = _decode_audio(audio_bytes)
+        audio: np.ndarray = decode_audio(audio_bytes)
     except ValueError as exc:
         raise HTTPException(status_code=422, detail=f"failed to decode audio: {exc}") from exc
 
