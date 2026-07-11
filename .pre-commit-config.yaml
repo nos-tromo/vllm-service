@@ -13,4 +13,4 @@ repos:
         types: [python]
         require_serial: true
         pass_filenames: false
-        args: ["src"]
+        args: ["src", "eval"]

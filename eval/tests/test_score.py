@@ -1,6 +1,6 @@
 """Tests for DER scoring (hand-computed cases, collar=0)."""
 
-from pyannote.core import Annotation, Segment
+from pyannote.core import Annotation, Segment, Timeline
 
 from eval.score import score_run
 
@@ -41,6 +41,21 @@ def test_speaker_count_error_and_bias() -> None:
     assert report.files[0].speaker_count_error == 1
     assert report.speaker_count_mae == 1.0
     assert report.speaker_count_bias == -1.0
+
+
+def test_der_is_one_when_reference_is_empty_but_hypothesis_speaks() -> None:
+    """Empty reference + a hallucinated hypothesis segment → der 1.0, not 0.0.
+
+    With zero reference speech, ``confusion + false_alarm + missed`` over a
+    ``total`` of 0 must report the worst case (1.0), matching pyannote's own
+    per-file "diarization error rate" convention — not the old hand-rolled
+    ``_rate`` division, which returned 0.0 (perfect) for a 0 denominator.
+    """
+    ref = Annotation()
+    hyp = _ann([(0.0, 5.0, "A")])
+    uem = Timeline(segments=[Segment(0.0, 5.0)])
+    report = score_run([("f1", ref, hyp, uem)], collar=0.0)
+    assert report.files[0].der == 1.0
 
 
 def test_markdown_has_overall_row() -> None:

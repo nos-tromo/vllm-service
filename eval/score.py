@@ -18,6 +18,7 @@ _CONFUSION = "confusion"
 _MISS = "missed detection"
 _FALSE_ALARM = "false alarm"
 _TOTAL = "total"
+_DER = "diarization error rate"
 
 
 @dataclass(frozen=True)
@@ -105,6 +106,26 @@ def _rate(numerator: float, denominator: float) -> float:
     return numerator / denominator if denominator else 0.0
 
 
+def _acc(metric: DiarizationErrorRate, key: str) -> float:
+    """Read one accumulated component from a running ``DiarizationErrorRate``.
+
+    ``DiarizationErrorRate.__getitem__`` is typed to return ``float |
+    Dict[str, float]`` because the same accessor is shared with metrics whose
+    components nest sub-dicts; the scalar components this module reads never
+    do, so this narrows the union for pyrefly and at runtime.
+
+    Args:
+        metric: The metric instance accumulated across every scored file.
+        key: One of the detailed-component keys (e.g. ``_CONFUSION``).
+
+    Returns:
+        The accumulated component value as a float.
+    """
+    value = metric[key]
+    assert not isinstance(value, dict)
+    return float(value)
+
+
 def score_run(
     items: list[tuple[str, Annotation, Annotation, Timeline | None]],
     *,
@@ -127,6 +148,7 @@ def score_run(
     count_signed: list[int] = []
     for uri, reference, hypothesis, uem in items:
         components = metric(reference, hypothesis, uem=uem, detailed=True)
+        assert isinstance(components, dict)
         total = float(components[_TOTAL])
         confusion = float(components[_CONFUSION])
         false_alarm = float(components[_FALSE_ALARM])
@@ -136,7 +158,7 @@ def score_run(
         files.append(
             FileScore(
                 uri=uri,
-                der=_rate(confusion + false_alarm + missed, total),
+                der=float(components[_DER]),
                 confusion=confusion,
                 false_alarm=false_alarm,
                 missed_detection=missed,
@@ -152,9 +174,9 @@ def score_run(
     return RunReport(
         files=files,
         overall_der=abs(metric),
-        overall_confusion=float(metric[_CONFUSION]),
-        overall_false_alarm=float(metric[_FALSE_ALARM]),
-        overall_missed_detection=float(metric[_MISS]),
+        overall_confusion=_acc(metric, _CONFUSION),
+        overall_false_alarm=_acc(metric, _FALSE_ALARM),
+        overall_missed_detection=_acc(metric, _MISS),
         speaker_count_mae=_rate(sum(count_errors), len(count_errors)),
         speaker_count_bias=_rate(sum(count_signed), len(count_signed)),
     )
