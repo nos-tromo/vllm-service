@@ -1,8 +1,33 @@
 # Diarize server → pyannote.audio 4.x migration (to deploy community-1) — plan (scaffold)
 
-**Date:** 2026-07-11
-**Status:** Draft / scaffold — flagged decisions need sign-off before execution.
-**Depends on:** vllm-service#55 (the diarize refactor + eval harness + version-tolerant `build_pipeline`). Branch it off `main` **after #55 merges** (this scaffold sits on `feature/diarize-pyannote-4x`, stacked on #55).
+**Date:** 2026-07-11 (code first-cut 2026-07-12)
+**Status:** Code first-cut implemented on `feature/diarize-pyannote-4x` (off merged `main`); **build + GPU + gated-bundle validation still required** (needs infra I can't reach: no CUDA build, no GPU, no gated-weights bundling here).
+**Decisions (signed off):** **D1 = community-1 is the default** (`DEFAULT_MODEL` + compose defaults flipped; its gated weights MUST be bundled). **D2 = standard `.speaker_diarization`** output. **D3** (3.1-on-4.x parity) → validated at acceptance (task 5).
+**Depends on:** vllm-service#55 — now **merged** to `main`; this branch is off `main`.
+
+## Progress (2026-07-12) — code first-cut done, gate-green
+
+Implemented + validated in the torch-free gate (ruff + pyrefly + eval suite):
+- `src/diarize_pipeline.py`: `DEFAULT_MODEL` = community-1 (public, shared).
+- `src/diarize_server.py`: extracts `.speaker_diarization` from the 4.x
+  `DiarizeOutput` (cross-version-safe `getattr`); `/health` `MODEL_ID` now reads
+  the shared `DEFAULT_MODEL` (also fixes the T5-flagged `/health` drift).
+- `docker/Dockerfile.diarize.{cpu,cuda}`: `pyannote.audio>=4,<5` + `torchcodec`,
+  dropped `huggingface_hub<1.0`, `torchcodec` added to the build smoke —
+  **first cut, marked "VERIFY AT BUILD"** for the torch/torchcodec/CUDA matrix.
+- `docker/compose*.yaml` + canonical `.env.example`/`README` default → community-1.
+
+**Still required (this branch is not merge-ready until these pass):**
+1. **Build the cpu + cuda images** — resolve the torch/torchcodec/CUDA version
+   matrix (may need a `PYTORCH_IMAGE` bump); the build smoke must pass.
+2. **Server smoke** — `POST /diarize` a short clip against the running 4.x
+   container (3.1 and community-1), confirm the response contract.
+3. **Gated community-1 airgap bundling** + confirm its exact gated dependencies,
+   then **finalize all docs + the gated-download runbook** (`.env.example`,
+   `README.md`, `CLAUDE.md`, `compose.diarize-only.yaml` comment) — deliberately
+   left pointing at the 3.1 procedure until community-1's gated deps are confirmed
+   on a real bundle.
+4. **Acceptance:** re-run the #55 eval harness against the deployed image (D3).
 
 ## Goal
 
