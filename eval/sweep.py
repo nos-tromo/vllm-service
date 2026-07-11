@@ -15,12 +15,17 @@ import argparse
 import json
 import logging
 import os
+import sys
 from pathlib import Path
 
 from pyannote.core import Annotation, Timeline
 from pyannote.database import FileFinder, registry
 from pyannote.database.util import load_rttm
 
+# src/ is not a package; put it on sys.path so a lazy `from diarize_pipeline
+# import build_pipeline` resolves regardless of import order (e.g. a bare
+# `python -m eval.sweep` invocation, where eval.run has not run yet).
+sys.path.insert(0, os.path.join(os.path.dirname(os.path.dirname(__file__)), "src"))
 from eval.configs import DiarizeConfig
 from eval.score import RunReport, score_run
 
