@@ -39,7 +39,6 @@ from __future__ import annotations
 import os
 import threading
 
-import numpy as np
 import torch
 from fastapi import FastAPI, File, Form, HTTPException, UploadFile
 from pydantic import BaseModel
@@ -118,7 +117,7 @@ def diarize(
     if not audio_bytes:
         raise HTTPException(status_code=400, detail="empty audio payload")
     try:
-        audio: np.ndarray = decode_audio(audio_bytes)
+        audio = decode_audio(audio_bytes)
     except ValueError as exc:
         raise HTTPException(status_code=422, detail=f"failed to decode audio: {exc}") from exc
 
