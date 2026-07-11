@@ -19,3 +19,8 @@ __pycache__/
 
 # CI: transient checkout of nos-tromo/.github for the strict-config validator
 .nos-tromo-github-ref/
+
+# Dev-only diarization eval harness (see eval/README.md)
+/data/
+eval/**/__pycache__/
+.eval-runs/

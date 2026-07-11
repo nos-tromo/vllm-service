@@ -5,3 +5,7 @@
 .superpowers/
 .mypy_cache/
 *.code-workspace
+
+# Dev-only eval harness — never part of any image
+eval/
+data/
