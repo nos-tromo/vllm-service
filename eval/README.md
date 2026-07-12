@@ -5,6 +5,11 @@ plus its components and speaker-count error) for the `/diarize` backend
 (`src/diarize_server.py`) against public benchmarks, and can sweep a small
 grid of configurations to compare them.
 
+For the complementary question — *how good is Nextext's end-to-end transcript
+on my own fast, purely-vocal content?* — see **Transcript-level scoring**
+below: a collar-free, RTTM-free speaker-accuracy + turn-boundary-F1 scorer that
+runs against operator-corrected transcripts rather than benchmark references.
+
 **Not shipped.** `eval/` and `data/` are excluded from every Docker image and
 from `make bundle` (see `.dockerignore`/`.gitignore`). Nothing here runs at
 serve time; `src/diarize_pipeline.py` is the only module in this design that
@@ -208,6 +213,80 @@ writes it to a file.
 `--collar` (default `0.25`, matching pyannote's model-card convention) and
 `--protocol` (default `VoxConverse.SpeakerDiarization.Benchmark`) can target
 `AMI.SpeakerDiarization.Benchmark` instead, or a stricter `--collar 0`.
+
+## Transcript-level scoring (speaker accuracy + turn-boundary F1)
+
+The DER path above scores the **`/diarize` backend** against RTTM benchmarks.
+`eval/transcript_metric.py` is a **second, complementary scorer** for the
+question DER can't answer: *how good is Nextext's end-to-end transcript on my
+own hard content?* It scores the timestamped, speaker-labelled segments an
+operator actually reads — no RTTM, no public benchmark, no GPU — against a
+corrected copy of the same transcript.
+
+Why not DER here: DER's forgiveness collar (0.25 s, pyannote's model-card
+default) blurs exactly the sub-second speaker changes that dominate fast,
+purely-vocal content (e.g. Arabic social-media clips). This scorer instead
+reports two collar-free, segment-level numbers:
+
+- **Speaker accuracy** (`seg_acc`, `dur_acc`) — the fraction of segments (and of
+  duration) attributed to the right speaker, after an optimal relabelling of the
+  hypothesis's arbitrary speaker ids onto the truth's. *"Did we name the speaker
+  right?"*
+- **Turn-boundary F1** (`turn_P`/`turn_R`/`turn_F1`) — precision/recall of
+  "the speaker changes at this segment boundary", independent of labels. Low
+  precision = invented turns (over-splitting); low recall = merged speakers
+  (missed turns). *"Did we detect the turn?"*
+
+Because ground truth is made by correcting labels on the pipeline's **own**
+output, hypothesis and reference share one segmentation — scoring is an exact
+per-segment comparison, with no error-prone time alignment.
+
+### The three-step loop
+
+1. **Run the clip through Nextext** with *max speakers > 1* (so it diarizes),
+   and download the `transcript.csv` artifact. Do this for 3-5 clips that
+   represent your hard cases.
+
+2. **Make a labelling template** and correct it. The template pre-fills
+   `true_speaker` with the pipeline's guess, so you only edit the rows it got
+   wrong (open in any spreadsheet or text editor; it's tab-separated):
+
+   ```bash
+   uv run --group eval python -m eval.make_transcript_template \
+       path/to/transcript.csv -o clips/sheep_clip.label.tsv
+   # -> edit the `true_speaker` column; leave hyp_speaker, times, and text alone.
+   ```
+
+   Correcting one clip is ~10 minutes: play it, and wherever a line is
+   attributed to the wrong person, fix that row's `true_speaker`. That corrected
+   file *is* the ground truth — there is nothing else to label.
+
+3. **Score** one or more corrected templates (a per-clip table plus a
+   micro-averaged OVERALL, ranked printout; optional Markdown/CSV output):
+
+   ```bash
+   uv run --group eval python -m eval.transcript_metric \
+       clips/*.label.tsv --report eval/reports/2026-07-12-real-content.md
+   ```
+
+Example on a 7-segment clip where the pipeline mislabelled two lines and
+over-split two turns:
+
+```
+| clip       | seg_acc | dur_acc | turn_P | turn_R | turn_F1 | ref# | hyp# | segs |
+| sheep_clip |  0.714  |  0.786  |  0.600 |  1.000 |  0.750  |   3  |   3  |   7  |
+```
+
+`turn_P 0.60` = five turns flagged, three real (two false splits); `turn_R 1.0`
+= every real turn found; `seg_acc 0.714` = five of seven lines on the right
+speaker. These are the levers to tune against — not a collar-forgiven DER.
+
+Notes on resolution: Nextext's `transcript.csv` rounds segment times to whole
+seconds, and this metric is label/boundary-driven, so that rounding only lightly
+perturbs `dur_acc` and never touches `seg_acc` or the turn F1. Ground truth is
+capped at Whisper's own segmentation — a speaker swap *inside* one Whisper
+segment can't be labelled or scored; measure segment-level attribution and the
+turns Whisper did split.
 
 ## Notes
 
