@@ -94,6 +94,8 @@ def main() -> None:
     parser.add_argument("--model", default=None, help="pyannote pipeline id; default: DIARIZE_MODEL env or 3.1.")
     parser.add_argument("--device", default=None, help="Torch device; default: DIARIZE_DEVICE env or cuda.")
     parser.add_argument("--clustering-threshold", type=float, default=None, help="Clustering-threshold override.")
+    parser.add_argument("--fa", type=float, default=None, help="Clustering Fa (PLDA) override; community-1 only.")
+    parser.add_argument("--fb", type=float, default=None, help="Clustering Fb (PLDA) override; lower → more speakers.")
     parser.add_argument("--min-speakers", type=int, default=None, help="Lower bound on the speaker count.")
     parser.add_argument("--max-speakers", type=int, default=None, help="Upper bound on the speaker count.")
     parser.add_argument("--num-speakers", type=int, default=None, help="Exact speaker count, if known.")
@@ -108,6 +110,8 @@ def main() -> None:
         model_id=args.model,
         device=args.device,
         clustering_threshold=args.clustering_threshold,
+        fa=args.fa,
+        fb=args.fb,
         num_speakers=args.num_speakers,
         min_speakers=args.min_speakers,
         max_speakers=args.max_speakers,
@@ -120,6 +124,8 @@ def main() -> None:
         device=config.device,
         clustering_threshold=config.clustering_threshold,
         segmentation_min_duration_off=config.segmentation_min_duration_off,
+        fa=config.fa,
+        fb=config.fb,
     )
     written = run_diarization(pipeline, files, args.out_dir, config)
     print(f"wrote {len(written)} hypothesis RTTM file(s) to {args.out_dir}")
