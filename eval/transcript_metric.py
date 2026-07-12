@@ -34,6 +34,7 @@ from typing import Any
 import numpy as np
 from scipy.optimize import linear_sum_assignment
 
+from eval.make_transcript_template import transcript_csv_to_segments
 from eval.transcript_label import LabeledSegment, read_labeled
 
 
@@ -329,12 +330,31 @@ class TranscriptReport:
         return rows
 
 
-def score_files(paths: list[Path]) -> TranscriptReport:
-    """Read labelled template TSVs and score them into one report.
+def _read_segments(path: Path) -> list[LabeledSegment]:
+    """Read labelled segments, dispatching on file type.
+
+    A ``.csv`` is read as a Nextext ``transcript.csv`` labelled in place (a
+    ``true_speaker`` column added); anything else is read as a ``.tsv`` template.
 
     Args:
-        paths: Labelled template TSVs (each the output of
-            :mod:`eval.make_transcript_template` after correction).
+        path: A labelled ``.csv`` or ``.tsv``.
+
+    Returns:
+        The labelled segments in file order.
+    """
+    if path.suffix.lower() == ".csv":
+        return transcript_csv_to_segments(path)
+    return read_labeled(path)
+
+
+def score_files(paths: list[Path]) -> TranscriptReport:
+    """Read labelled transcripts and score them into one report.
+
+    Args:
+        paths: Labelled transcripts — either ``.tsv`` templates (from
+            :mod:`eval.make_transcript_template`, corrected) or Nextext
+            ``transcript.csv`` files labelled in place with a ``true_speaker``
+            column. File type is detected per path by extension.
 
     Returns:
         A :class:`TranscriptReport` with a per-clip row for each path (named by
@@ -342,7 +362,7 @@ def score_files(paths: list[Path]) -> TranscriptReport:
     """
     named: list[tuple[str, TranscriptScore]] = []
     for path in paths:
-        named.append((path.stem, score_transcript(read_labeled(path))))
+        named.append((path.stem, score_transcript(_read_segments(path))))
     return TranscriptReport.from_scores(named)
 
 
@@ -352,7 +372,12 @@ def _main() -> None:
         description="Score corrected diarization transcripts: segment speaker "
         "accuracy + turn-boundary F1 (no forgiveness collar).",
     )
-    parser.add_argument("labeled", nargs="+", type=Path, help="labelled template TSV(s)")
+    parser.add_argument(
+        "labeled",
+        nargs="+",
+        type=Path,
+        help="labelled .tsv template(s) or Nextext transcript.csv with a true_speaker column",
+    )
     parser.add_argument("--report", type=Path, default=None, help="also write the Markdown table here")
     parser.add_argument("--csv", type=Path, default=None, help="also write per-clip rows as CSV here")
     args = parser.parse_args()

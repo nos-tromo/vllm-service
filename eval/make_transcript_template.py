@@ -28,7 +28,25 @@ from eval.transcript_label import LabeledSegment, write_template
 _START = "start"
 _END = "end"
 _SPEAKER = "speaker"
+_TRUE_SPEAKER = "true_speaker"
 _TEXT = "text"
+
+# Nextext writes this literal into the speaker column when a transcript segment
+# overlapped no diarization turn — i.e. the pipeline failed to attribute it. It
+# is a "don't know", not a speaker identity, so it is read as unlabelled.
+_UNKNOWN = "Unknown"
+
+
+def _normalize_hyp_speaker(value: str) -> str:
+    """Map Nextext's unlabelled sentinels (``""`` / ``"Unknown"``) to ``""``.
+
+    Args:
+        value: A raw ``speaker``-column value.
+
+    Returns:
+        ``""`` when the value is blank or the ``Unknown`` sentinel, else the value.
+    """
+    return "" if value == _UNKNOWN else value
 
 
 def parse_timestamp(value: str) -> float:
@@ -71,18 +89,24 @@ def parse_timestamp(value: str) -> float:
 
 
 def transcript_csv_to_segments(csv_path: Path) -> list[LabeledSegment]:
-    """Read a Nextext ``transcript.csv`` into pre-filled labelling segments.
+    """Read a Nextext ``transcript.csv`` into labelling segments.
 
-    The ``speaker`` column becomes both ``hyp_speaker`` and ``true_speaker``
-    (the truth is pre-filled to the guess so only wrong rows need editing). When
-    the CSV has no ``speaker`` column (an undiarized single-speaker transcript),
-    both are the empty string.
+    The ``speaker`` column is the hypothesis (``Unknown``/blank -> unlabelled).
+    Handles both a fresh transcript.csv and one an operator has labelled in place:
+
+    * With a ``true_speaker`` column, it is read as the ground truth (so a
+      labelled CSV can be scored directly, without the intermediate template).
+    * Without one, ``true_speaker`` is pre-filled to the hypothesis so only
+      wrong rows need editing.
+
+    A CSV with no ``speaker`` column (an undiarized single-speaker transcript)
+    yields an empty hypothesis for every row.
 
     Args:
         csv_path: Path to a Nextext ``transcript.csv``.
 
     Returns:
-        Segments in file order, ready for :func:`eval.transcript_label.write_template`.
+        Segments in file order.
 
     Raises:
         ValueError: If the CSV lacks any of the required ``start``/``end``/``text``
@@ -95,16 +119,18 @@ def transcript_csv_to_segments(csv_path: Path) -> list[LabeledSegment]:
         if missing:
             raise ValueError(f"{csv_path} is missing required column(s): {', '.join(missing)}")
         has_speaker = _SPEAKER in fieldnames
+        has_true = _TRUE_SPEAKER in fieldnames
 
         segments: list[LabeledSegment] = []
         for row in reader:
-            speaker = (row.get(_SPEAKER) or "").strip() if has_speaker else ""
+            hyp = _normalize_hyp_speaker((row.get(_SPEAKER) or "").strip()) if has_speaker else ""
+            true = (row.get(_TRUE_SPEAKER) or "").strip() if has_true else hyp
             segments.append(
                 LabeledSegment(
                     start=parse_timestamp(row[_START]),
                     end=parse_timestamp(row[_END]),
-                    hyp_speaker=speaker,
-                    true_speaker=speaker,
+                    hyp_speaker=hyp,
+                    true_speaker=true,
                     text=(row.get(_TEXT) or "").strip(),
                 )
             )

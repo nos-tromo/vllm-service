@@ -8,11 +8,12 @@ change-F1 is relabelling-independent (a change is just "adjacent labels differ")
 """
 
 import math
+from pathlib import Path
 
 import pytest
 
 from eval.transcript_label import LabeledSegment
-from eval.transcript_metric import TranscriptReport, score_transcript
+from eval.transcript_metric import TranscriptReport, score_files, score_transcript
 
 
 def _seg(start: float, end: float, hyp: str, true: str, text: str = "x") -> LabeledSegment:
@@ -135,6 +136,20 @@ def test_report_over_no_clips_is_a_caller_error() -> None:
     """Pooling zero clips is a mistake, matching score_transcript's empty guard."""
     with pytest.raises(ValueError):
         TranscriptReport.from_scores([])
+
+
+def test_score_files_reads_a_labeled_nextext_csv(tmp_path: Path) -> None:
+    """score_files accepts a labelled transcript.csv directly (not only .tsv templates)."""
+    csv_path = tmp_path / "clip.csv"
+    csv_path.write_text(
+        "start,end,speaker,true_speaker,text\n"
+        "0:00:00,0:00:01,Speaker 1,Speaker 1,a\n"
+        "0:00:01,0:00:02,Speaker 2,Speaker 2,b\n",
+        encoding="utf-8",
+    )
+    report = score_files([csv_path])
+    assert report.files[0][0] == "clip"
+    assert report.overall_accuracy_seg == 1.0
 
 
 def test_unmapped_hypothesis_label_scores_wrong() -> None:

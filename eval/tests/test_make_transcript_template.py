@@ -52,6 +52,32 @@ def test_generates_prefilled_segments_from_diarized_csv(tmp_path: Path) -> None:
     assert segments[1].text == "why would he stop there?"
 
 
+def test_reads_labeled_csv_with_true_speaker_column(tmp_path: Path) -> None:
+    """A transcript.csv the operator labelled in place (added a true_speaker column)."""
+    csv_path = tmp_path / "transcript.csv"
+    csv_path.write_text(
+        "start,end,speaker,true_speaker,text\n"
+        "0:00:00,0:00:03,Speaker 1,Speaker 1,a\n"
+        "0:00:03,0:00:05,Speaker 1,Speaker 2,b\n",
+        encoding="utf-8",
+    )
+    segments = transcript_csv_to_segments(csv_path)
+    assert (segments[0].hyp_speaker, segments[0].true_speaker) == ("Speaker 1", "Speaker 1")
+    assert (segments[1].hyp_speaker, segments[1].true_speaker) == ("Speaker 1", "Speaker 2")
+
+
+def test_unknown_hyp_speaker_is_normalized_to_unlabelled(tmp_path: Path) -> None:
+    """Nextext's 'Unknown' sentinel (no overlapping turn) becomes unlabelled, not a speaker."""
+    csv_path = tmp_path / "transcript.csv"
+    csv_path.write_text(
+        "start,end,speaker,true_speaker,text\n0:00:00,0:00:03,Unknown,Speaker 1,a\n",
+        encoding="utf-8",
+    )
+    segments = transcript_csv_to_segments(csv_path)
+    assert segments[0].hyp_speaker == ""  # not credited as identifying a speaker
+    assert segments[0].true_speaker == "Speaker 1"
+
+
 def test_undiarized_csv_has_no_speaker_column_so_hyp_is_blank(tmp_path: Path) -> None:
     """Nextext omits the speaker column for <2 speakers; hyp becomes unlabelled."""
     csv_path = tmp_path / "transcript.csv"
