@@ -33,6 +33,7 @@ eval = [
     "pytest>=8",
     "soundfile>=0.12",
     "pyyaml>=6",
+    "scipy>=1.17.1",
 ]
 eval-run = [
     # 4.x (not the production Docker's <4 pin): newer diarization models —
