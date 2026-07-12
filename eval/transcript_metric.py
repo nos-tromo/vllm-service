@@ -10,7 +10,9 @@ Two complementary numbers:
 
 * **Speaker accuracy** — the fraction of segments (and of duration) whose speaker
   is correct, after an optimal relabelling of the hypothesis's arbitrary speaker
-  ids onto the truth's (Hungarian assignment maximising matched duration). Answers
+  ids onto the truth's (Hungarian assignment). Each figure is maximised under its
+  own mapping — segment accuracy over matched segment count, duration accuracy
+  over matched seconds — so neither depends on how the other's ties break. Answers
   "did we attribute this line to the right person?"
 * **Turn-boundary (speaker-change) F1** — over every adjacent-segment boundary,
   precision/recall/F1 of "the speaker changes here". Relabelling-independent —
@@ -59,8 +61,11 @@ class TranscriptScore:
         n_ref_changes: Real speaker-change boundaries.
         n_hyp_changes: Predicted speaker-change boundaries.
         n_correct_changes: Boundaries where a change is both real and predicted.
-        label_mapping: The optimal hypothesis-label -> truth-label relabelling
-            used for accuracy (over non-empty labels only).
+        label_mapping: The duration-optimal hypothesis-label -> truth-label
+            relabelling (the canonical "who is this speaker" identity, over
+            non-empty labels only). Segment accuracy is maximised under a
+            separate count-optimal mapping, so this may differ from the exact
+            assignment behind ``speaker_accuracy_seg``.
     """
 
     n_segments: int
@@ -81,18 +86,20 @@ class TranscriptScore:
     label_mapping: dict[str, str]
 
 
-def _optimal_mapping(segments: list[LabeledSegment], durations: list[float]) -> dict[str, str]:
-    """Find the hyp->true label relabelling that maximises matched duration.
+def _optimal_mapping(segments: list[LabeledSegment], weights: list[float]) -> dict[str, str]:
+    """Find the hyp->true label relabelling that maximises matched ``weights``.
 
     Speaker ids are arbitrary, so the hypothesis's labels are mapped onto the
-    truth's before comparison. A duration-weighted contingency table over the
-    segments where both sides are labelled is solved as a linear assignment
-    (Hungarian). Empty labels are excluded from the mapping — they are handled
-    separately as "unlabelled".
+    truth's before comparison. A contingency table over the segments where both
+    sides are labelled — each cell the summed ``weights`` of its segments — is
+    solved as a linear assignment (Hungarian). Pass per-segment durations to
+    maximise matched duration, or all-ones to maximise matched segment count.
+    Empty labels are excluded from the mapping — they are handled separately as
+    "unlabelled".
 
     Args:
         segments: The transcript segments.
-        durations: Per-segment duration in seconds, aligned to ``segments``.
+        weights: Per-segment non-negative weight, aligned to ``segments``.
 
     Returns:
         A mapping from non-empty hypothesis labels to non-empty truth labels.
@@ -106,13 +113,32 @@ def _optimal_mapping(segments: list[LabeledSegment], durations: list[float]) -> 
     hyp_index = {label: i for i, label in enumerate(hyp_labels)}
     true_index = {label: j for j, label in enumerate(true_labels)}
     weight = np.zeros((len(hyp_labels), len(true_labels)), dtype=float)
-    for seg, dur in zip(segments, durations, strict=True):
+    for seg, unit in zip(segments, weights, strict=True):
         if seg.hyp_speaker and seg.true_speaker:
-            weight[hyp_index[seg.hyp_speaker], true_index[seg.true_speaker]] += dur
+            weight[hyp_index[seg.hyp_speaker], true_index[seg.true_speaker]] += unit
 
-    # linear_sum_assignment minimises cost, so negate to maximise matched duration.
+    # linear_sum_assignment minimises cost, so negate to maximise matched weight.
     row_ind, col_ind = linear_sum_assignment(-weight)
     return {hyp_labels[r]: true_labels[c] for r, c in zip(row_ind.tolist(), col_ind.tolist(), strict=True)}
+
+
+def _is_correct(seg: LabeledSegment, mapping: dict[str, str]) -> bool:
+    """Whether a segment's hypothesis speaker matches the truth under ``mapping``.
+
+    An unlabelled hypothesis (``hyp_speaker == ""``) is correct only where the
+    truth is also unlabelled; a hypothesis label absent from ``mapping`` (an
+    unmapped surplus speaker) never matches.
+
+    Args:
+        seg: The segment to test.
+        mapping: A hyp->true label relabelling from :func:`_optimal_mapping`.
+
+    Returns:
+        ``True`` when the (relabelled) hypothesis speaker equals the truth.
+    """
+    if not seg.hyp_speaker:
+        return not seg.true_speaker
+    return mapping.get(seg.hyp_speaker) == seg.true_speaker
 
 
 def _change_boundaries(labels: list[str]) -> set[int]:
@@ -140,18 +166,15 @@ def score_transcript(segments: list[LabeledSegment]) -> TranscriptScore:
     durations = [max(0.0, seg.end - seg.start) for seg in segments]
     total_duration = sum(durations)
 
-    mapping = _optimal_mapping(segments, durations)
+    # Each accuracy is maximised under its OWN optimal relabelling: segment
+    # accuracy under a count-weighted mapping, duration accuracy under a
+    # duration-weighted one. Sharing a single (duration) mapping would make the
+    # segment figure depend on how duration ties are broken and can understate it.
+    seg_mapping = _optimal_mapping(segments, [1.0] * n)
+    dur_mapping = _optimal_mapping(segments, durations)
 
-    correct_segments = 0
-    correct_duration = 0.0
-    for seg, dur in zip(segments, durations, strict=True):
-        if not seg.hyp_speaker:
-            is_correct = not seg.true_speaker  # unlabelled matches only unlabelled
-        else:
-            is_correct = mapping.get(seg.hyp_speaker) == seg.true_speaker
-        if is_correct:
-            correct_segments += 1
-            correct_duration += dur
+    correct_segments = sum(1 for seg in segments if _is_correct(seg, seg_mapping))
+    correct_duration = sum(dur for seg, dur in zip(segments, durations, strict=True) if _is_correct(seg, dur_mapping))
 
     ref_changes = _change_boundaries([seg.true_speaker for seg in segments])
     hyp_changes = _change_boundaries([seg.hyp_speaker for seg in segments])
@@ -171,7 +194,9 @@ def score_transcript(segments: list[LabeledSegment]) -> TranscriptScore:
         n_segments=n,
         total_duration=total_duration,
         speaker_accuracy_seg=correct_segments / n,
-        speaker_accuracy_dur=correct_duration / total_duration if total_duration else 0.0,
+        # No duration signal (all zero-length) -> defer to the segment figure
+        # rather than report a misleading 0.0.
+        speaker_accuracy_dur=(correct_duration / total_duration if total_duration else correct_segments / n),
         correct_segments=correct_segments,
         correct_duration=correct_duration,
         change_precision=precision,
@@ -183,7 +208,7 @@ def score_transcript(segments: list[LabeledSegment]) -> TranscriptScore:
         n_ref_changes=len(ref_changes),
         n_hyp_changes=len(hyp_changes),
         n_correct_changes=true_positive,
-        label_mapping=mapping,
+        label_mapping=dur_mapping,
     )
 
 
@@ -220,7 +245,12 @@ class TranscriptReport:
 
         Returns:
             The assembled :class:`TranscriptReport`.
+
+        Raises:
+            ValueError: If ``named_scores`` is empty (nothing to pool).
         """
+        if not named_scores:
+            raise ValueError("cannot build a report from zero clips")
         total_seg = sum(s.n_segments for _, s in named_scores)
         correct_seg = sum(s.correct_segments for _, s in named_scores)
         total_dur = sum(s.total_duration for _, s in named_scores)

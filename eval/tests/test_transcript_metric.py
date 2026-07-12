@@ -106,6 +106,46 @@ def test_empty_transcript_is_a_caller_error() -> None:
         score_transcript([])
 
 
+def test_seg_accuracy_is_invariant_to_speaker_label_spelling() -> None:
+    """seg_acc uses a count-optimal mapping, so renaming a true speaker can't change it.
+
+    hyp "1" merges one 3 s true-A segment and three 1 s true-B segments. Duration
+    ties (A=3 s, B=3 s) but counts do not (A=1, B=3). A duration-optimal mapping
+    would break the tie on label spelling and flip seg_acc between 0.25 and 0.75;
+    a count-optimal mapping always identifies "1" as the 3-segment speaker.
+    """
+    base = [_seg(0, 3, "1", "A"), _seg(3, 4, "1", "B"), _seg(4, 5, "1", "B"), _seg(5, 6, "1", "B")]
+    renamed = [_seg(0, 3, "1", "Z"), _seg(3, 4, "1", "B"), _seg(4, 5, "1", "B"), _seg(5, 6, "1", "B")]
+    assert score_transcript(base).speaker_accuracy_seg == 0.75
+    assert score_transcript(renamed).speaker_accuracy_seg == 0.75
+    # duration accuracy stays at the duration optimum (3 s of 6 s) either way.
+    assert score_transcript(base).speaker_accuracy_dur == 0.5
+
+
+def test_zero_duration_transcript_falls_back_to_segment_accuracy() -> None:
+    """All-zero-length segments carry no duration signal; dur_acc defers to seg_acc."""
+    segs = [_seg(1.0, 1.0, "1", "A"), _seg(2.0, 2.0, "1", "A")]
+    s = score_transcript(segs)
+    assert s.total_duration == 0.0
+    assert s.speaker_accuracy_seg == 1.0
+    assert s.speaker_accuracy_dur == 1.0  # not a misleading 0.0
+
+
+def test_report_over_no_clips_is_a_caller_error() -> None:
+    """Pooling zero clips is a mistake, matching score_transcript's empty guard."""
+    with pytest.raises(ValueError):
+        TranscriptReport.from_scores([])
+
+
+def test_unmapped_hypothesis_label_scores_wrong() -> None:
+    """With more hyp speakers than true, the surplus hyp label stays unmapped (wrong)."""
+    segs = [_seg(0, 1, "1", "A"), _seg(1, 2, "2", "A"), _seg(2, 3, "3", "A")]
+    s = score_transcript(segs)
+    assert s.hyp_speakers == 3
+    assert s.ref_speakers == 1
+    assert math.isclose(s.speaker_accuracy_seg, 1 / 3)  # only one hyp label maps to A
+
+
 def test_score_exposes_raw_counts_for_pooling() -> None:
     """Accuracy is also carried as raw counts so multi-clip pooling stays exact."""
     segs = [_seg(0, 1, "1", "A"), _seg(1, 2, "1", "B"), _seg(2, 3, "1", "A")]
