@@ -173,9 +173,13 @@ uv run --group eval python -m eval.run \
   --label baseline-3.1
 ```
 
-Config knobs (`--model`, `--device`, `--clustering-threshold`,
+Config knobs (`--model`, `--device`, `--clustering-threshold`, `--fa`, `--fb`,
 `--min-speakers`, `--max-speakers`, `--num-speakers`) default to `None`,
 which means "pipeline/env default" — see `eval/configs.py::DiarizeConfig`.
+`--fb`/`--fa` are community-1's PLDA clustering weights and its only effective
+speaker-granularity knob: **lower `--fb` → more speakers** (`--clustering-threshold`
+is inert for community-1's clustering; it applies to 3.1's). These map to the
+`DIARIZE_FB`/`DIARIZE_FA` server env vars, so a value tuned here deploys as-is.
 
 ## Running and scoring a sweep
 
@@ -190,7 +194,8 @@ defaults to `None`):
 [
   {"label": "baseline-3.1"},
   {"label": "community-1", "model_id": "pyannote/speaker-diarization-community-1"},
-  {"label": "threshold-0.55", "clustering_threshold": 0.55},
+  {"label": "fb-0.6", "fb": 0.6},
+  {"label": "fb-0.4", "fb": 0.4},
   {"label": "floor2", "min_speakers": 2}
 ]
 ```
