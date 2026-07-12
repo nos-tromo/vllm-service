@@ -24,13 +24,23 @@ def _resolve_param_overrides(
     *,
     clustering_threshold: float | None,
     segmentation_min_duration_off: float | None,
+    fa: float | None = None,
+    fb: float | None = None,
 ) -> dict[str, Any] | None:
     """Merge requested hyperparameter overrides onto the pipeline's defaults.
+
+    ``Fa``/``Fb`` are community-1's PLDA-clustering weights and its only effective
+    speaker-granularity knob — lowering ``Fb`` yields more speakers (``threshold``
+    is inert for its clustering). They live under ``clustering`` alongside
+    ``threshold``; 3.1's centroid clustering has no such keys, so requesting them
+    against a 3.1 pipeline raises (below).
 
     Args:
         defaults: The pipeline's instantiated parameter tree.
         clustering_threshold: New clustering threshold, or None to leave it.
         segmentation_min_duration_off: New segmentation value, or None.
+        fa: New clustering ``Fa`` weight, or None to leave it.
+        fb: New clustering ``Fb`` weight, or None to leave it.
 
     Returns:
         A new merged parameter dict, or None when no override was requested (the
@@ -39,13 +49,21 @@ def _resolve_param_overrides(
     Raises:
         ValueError: If an override targets a key absent from ``defaults``.
     """
-    if clustering_threshold is None and segmentation_min_duration_off is None:
+    if clustering_threshold is None and segmentation_min_duration_off is None and fa is None and fb is None:
         return None
     merged = copy.deepcopy(defaults)
     if clustering_threshold is not None:
         if "threshold" not in merged.get("clustering", {}):
             raise ValueError(f"loaded pipeline has no clustering.threshold to override; keys={sorted(merged)}")
         merged["clustering"]["threshold"] = clustering_threshold
+    if fa is not None:
+        if "Fa" not in merged.get("clustering", {}):
+            raise ValueError(f"loaded pipeline has no clustering.Fa to override; keys={sorted(merged)}")
+        merged["clustering"]["Fa"] = fa
+    if fb is not None:
+        if "Fb" not in merged.get("clustering", {}):
+            raise ValueError(f"loaded pipeline has no clustering.Fb to override; keys={sorted(merged)}")
+        merged["clustering"]["Fb"] = fb
     if segmentation_min_duration_off is not None:
         if "min_duration_off" not in merged.get("segmentation", {}):
             raise ValueError(f"loaded pipeline has no segmentation.min_duration_off to override; keys={sorted(merged)}")
@@ -59,6 +77,8 @@ def build_pipeline(
     device: str | None = None,
     clustering_threshold: float | None = None,
     segmentation_min_duration_off: float | None = None,
+    fa: float | None = None,
+    fb: float | None = None,
 ) -> Pipeline:
     """Load the diarization pipeline, applying overrides only when given.
 
@@ -70,6 +90,8 @@ def build_pipeline(
         device: Torch device; None → ``DIARIZE_DEVICE`` env or ``cuda``.
         clustering_threshold: Clustering-threshold override, or None.
         segmentation_min_duration_off: Segmentation override, or None.
+        fa: Clustering ``Fa`` (PLDA) override, or None.
+        fb: Clustering ``Fb`` (PLDA) override, or None.
 
     Returns:
         The instantiated pyannote ``Pipeline`` moved to ``device``.
@@ -104,6 +126,8 @@ def build_pipeline(
         pipeline.parameters(instantiated=True),
         clustering_threshold=clustering_threshold,
         segmentation_min_duration_off=segmentation_min_duration_off,
+        fa=fa,
+        fb=fb,
     )
     if overrides is not None:
         pipeline.instantiate(overrides)
