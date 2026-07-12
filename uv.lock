@@ -3213,6 +3213,8 @@ eval = [
     { name = "pyannote-metrics" },
     { name = "pytest" },
     { name = "pyyaml" },
+    { name = "scipy", version = "1.17.1", source = { registry = "https://pypi.org/simple" }, marker = "python_full_version < '3.12'" },
+    { name = "scipy", version = "1.18.0", source = { registry = "https://pypi.org/simple" }, marker = "python_full_version >= '3.12'" },
     { name = "soundfile" },
 ]
 eval-run = [
@@ -3237,6 +3239,7 @@ eval = [
     { name = "pyannote-metrics", specifier = ">=3.2" },
     { name = "pytest", specifier = ">=8" },
     { name = "pyyaml", specifier = ">=6" },
+    { name = "scipy", specifier = ">=1.17.1" },
     { name = "soundfile", specifier = ">=0.12" },
 ]
 eval-run = [

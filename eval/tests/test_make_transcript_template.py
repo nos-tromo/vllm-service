@@ -20,6 +20,19 @@ def test_parse_timestamp_also_accepts_float_seconds() -> None:
     assert parse_timestamp("0") == 0.0
 
 
+def test_parse_timestamp_handles_day_and_minute_second_forms() -> None:
+    """Timedelta renders long clips with a day prefix and short ones as MM:SS."""
+    assert parse_timestamp("1 day, 0:00:00") == 86400.0
+    assert parse_timestamp("2 days, 1:00:00") == 176400.0
+    assert parse_timestamp("05:30") == 330.0
+
+
+def test_parse_timestamp_rejects_garbage() -> None:
+    """A value that is neither a float nor a colon timestamp is an error."""
+    with pytest.raises(ValueError):
+        parse_timestamp("not a time")
+
+
 def test_generates_prefilled_segments_from_diarized_csv(tmp_path: Path) -> None:
     """A diarized transcript.csv becomes segments with hyp == true (pre-filled)."""
     csv_path = tmp_path / "transcript.csv"

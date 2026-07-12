@@ -45,7 +45,8 @@ def parse_timestamp(value: str) -> float:
         The time in seconds.
 
     Raises:
-        ValueError: If the value is neither a float nor a ``H:MM:SS`` string.
+        ValueError: If the value is neither float seconds nor a colon-separated
+            ``[H:]MM:SS`` (optionally ``N day(s), ...``) timestamp.
     """
     text = value.strip()
     try:
