@@ -15,16 +15,27 @@ RUN apt-get update \
 # .speaker_diarization from 4.x's DiarizeOutput, so the huggingface_hub<1.0
 # cap (needed only for pyannote 3.x's use_auth_token= call) is dropped.
 # --break-system-packages required on PyTorch 2.11+ (Debian PEP 668).
-# VERIFY AT BUILD: torchcodec must match the base image's torch + CUDA
-# (pytorch 2.11 / cu12.8). If the install or the smoke below fails, bump
-# PYTORCH_IMAGE and/or pin an explicit torchcodec version.
+# torchcodec must be the +cpu build from the PyTorch index: the plain PyPI
+# wheels (0.12+) are built against CUDA 13 and dlopen libnvrtc.so.13, and the
+# +cu128 build dlopens libnppicc.so.12 — neither lib exists in this pytorch
+# `-runtime` base image (it ships only a CUDA subset, no NVRTC/NPP). The +cpu
+# build links only torch + ffmpeg, which is all we use: diarize_audio decodes
+# uploads via the ffmpeg CLI and pyannote only ever receives waveform dicts,
+# so torchcodec's GPU decode path is never exercised. 0.11 is the torch-2.11
+# row of torchcodec's compatibility table. Installed first (and pinned) so
+# pyannote's own torchcodec>=0.7 dependency is already satisfied and pip
+# doesn't pull the broken PyPI wheel. When bumping PYTORCH_IMAGE, re-pick the
+# pin from https://github.com/pytorch/torchcodec#installing-torchcodec — the
+# smoke test below fails the build on a mismatch.
 RUN pip install --no-cache-dir --break-system-packages \
+    --index-url https://download.pytorch.org/whl/cpu \
+    'torchcodec==0.11.1' \
+    && pip install --no-cache-dir --break-system-packages \
     'fastapi>=0.115.0' \
     'uvicorn[standard]>=0.32.0' \
     'python-multipart>=0.0.9' \
     'pydantic>=2.0' \
     'pyannote.audio>=4,<5' \
-    'torchcodec' \
     'huggingface_hub>=0.30'
 
 # Build-time smoke test — fail the build (not the running container) on a
