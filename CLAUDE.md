@@ -18,7 +18,8 @@ backends with a single LiteLLM Proxy router. The Docker assets live under
 `docker/Dockerfile.vad.cpu`, `docker/litellm.config.yaml`) plus `.env`
 and `.dockerignore` at the repo root. The only Python sources are
 `src/rerank_server.py`, `src/clip_server.py`,
-`src/diarize_server.py` (and its `src/diarize_compat.py` helper),
+`src/diarize_server.py` (and its `src/diarize_audio.py`,
+`src/diarize_pipeline.py`, and `src/diarize_compat.py` helpers),
 `src/asr_server.py`, and `src/vad_server.py` —
 small FastAPI wrappers around Hugging Face models that ship because there
 is no off-the-shelf server that speaks the Jina-shape `/rerank`, `/clip`,
@@ -26,10 +27,11 @@ is no off-the-shelf server that speaks the Jina-shape `/rerank`, `/clip`,
 the exception — it speaks the standard OpenAI `/v1/audio/transcriptions`
 contract, but exists to serve Whisper on CPU via openai-whisper where the
 full stack uses vLLM.) (`diarize_compat.py`
-holds the two pyannote-3.x-vs-base-image compat shims, applied before
+holds the two pyannote-vs-base-image compat shims, applied before
 pyannote is imported: it restores the handful of `torchaudio` symbols
-pyannote.audio 3.x imports that torchaudio 2.9+ removed — the server
-decodes audio via ffmpeg and never uses torchaudio's file I/O — and it
+that torchaudio 2.9+ removed (each stub is `hasattr`-guarded, so it's a
+no-op where pyannote no longer needs them — the server decodes audio via
+ffmpeg and never uses torchaudio's file I/O) — and it
 allowlists the trusted checkpoint globals (`TRUSTED_CHECKPOINT_GLOBALS`)
 so PyTorch 2.6+'s `weights_only=True` `torch.load` can load the gated
 weights. Both diarize Dockerfiles' build smoke tests round-trip those
@@ -92,7 +94,8 @@ Seven independent compose projects, picked per host:
   speaks the identical multipart `/diarize` contract; consumers (Nextext)
   target either backend by changing the base URL alone. Uses
   `Dockerfile.diarize.cpu` (uv-managed Python 3.11, CPU torch +
-  torchaudio, `pyannote.audio`, `ffmpeg`). The pyannote weights are gated
+  torchaudio + torchcodec, `pyannote.audio`, `ffmpeg`). The pyannote
+  weights are gated
   on the HF Hub (see "Diarization backend" below for the one-time
   pre-download), so unlike the other CPU shapes its cache cannot be
   populated anonymously.
@@ -303,7 +306,7 @@ Four backends are exceptions that do not run vLLM:
   **`docker/Dockerfile.clip.cuda`** and runs `src/clip_server.py`;
   reached via the router's `/clip/*` pass-throughs.
 - `diarize` — speaker diarization via FastAPI (`DIARIZE_MODEL`, default
-  `pyannote/speaker-diarization-3.1`). Uses
+  `pyannote/speaker-diarization-community-1`). Uses
   **`docker/Dockerfile.diarize.cuda`** and runs `src/diarize_server.py`.
   pyannote is a multi-model pipeline (PyanNet segmentation + WeSpeaker
   embedding + agglomerative clustering), none of which are vLLM-supported
@@ -484,15 +487,33 @@ curl -fsS http://localhost:${CLIP_HOST_PORT:-8002}/clip/dimension
 ### Diarization backend (full stack)
 
 The `diarize` service runs `src/diarize_server.py` — a small FastAPI
-app around the `pyannote/speaker-diarization-3.1` pipeline. Uploaded
+app around a pyannote speaker-diarization pipeline (pyannote.audio 4.x;
+default model `pyannote/speaker-diarization-community-1`). Decoding
+lives in `src/diarize_audio.py`, pipeline construction in
+`src/diarize_pipeline.py` (`build_pipeline` handles 4.x's renamed auth
+kwarg `token=`; the server unwraps 4.x's `DiarizeOutput` via its
+`.speaker_diarization` attribute, falling back to the bare `Annotation`
+3.x returns). Uploaded
 bytes are decoded to 16 kHz mono float32 by piping through `ffmpeg`
 (any container ffmpeg can decode), then handed to the pipeline as a
 pre-decoded waveform dict; torchaudio file decoding is never used (the
 server stubs the backend-probing API torchaudio 2.9+ removed before
-importing pyannote). The Dockerfile pins `pyannote.audio>=3.3.2,<4`
-(4.x renamed the auth kwarg and moved decoding to torchcodec) and
-`huggingface_hub<1.0` (1.0 removed the `use_auth_token` alias pyannote
-3.x passes). Endpoints:
+importing pyannote). The Dockerfile pins `pyannote.audio>=4,<5` (4.x is
+required by the community-1 checkpoint and imports torchcodec instead of
+torchaudio for decoding) and installs `torchcodec==0.11.1` as the `+cpu`
+build from the PyTorch index, pinned and installed *before* pyannote so
+pip doesn't resolve pyannote's own `torchcodec>=0.7` dependency to a
+broken wheel: the plain PyPI wheels (0.12+) are CUDA-13 builds that
+dlopen `libnvrtc.so.13`, and the `+cu128` build dlopens `libnppicc.so.12`
+(NPP) — neither library ships in the pytorch `-runtime` base image. The
+`+cpu` build costs nothing: torchcodec's CUDA path is video-only NVDEC
+decoding, and this service pre-decodes via ffmpeg, so torchcodec is an
+import-time formality; torch itself stays the base image's cu128 build
+and inference runs on CUDA. 0.11 is the torch-2.11 row of torchcodec's
+compatibility table — re-pick the pin when bumping `PYTORCH_IMAGE` (the
+build smoke test fails on a mismatch). The old `huggingface_hub<1.0` cap
+is dropped — it was only needed for the `use_auth_token` alias pyannote
+3.x passed. Endpoints:
 
 ```
 POST /diarize               # multipart `file=<bytes>` + optional integer
@@ -506,9 +527,13 @@ GET  /health
 ```
 
 Model identity is fixed at container startup via `DIARIZE_MODEL`
-(default `pyannote/speaker-diarization-3.1`). The checkpoints are gated
-on the Hugging Face Hub: accept the conditions for both
-`pyannote/speaker-diarization-3.1` and `pyannote/segmentation-3.0`,
+(default `pyannote/speaker-diarization-community-1`; the 3.1 pipeline
+still loads on pyannote 4.x if configured). The checkpoints are gated
+on the Hugging Face Hub: accept the conditions for the model repo —
+for community-1 that's `pyannote/speaker-diarization-community-1` (its
+exact gated dependency set is still being confirmed; the README runbook
+documents the 3.1 procedure, which needs both
+`pyannote/speaker-diarization-3.1` and `pyannote/segmentation-3.0`) —
 then run once with `HF_HUB_OFFLINE=0`, `TRANSFORMERS_OFFLINE=0`, and
 `HF_TOKEN` set so the weights land in the shared `huggingface-cache`
 volume — the compose env points `PYANNOTE_CACHE` there, since pyannote
@@ -519,7 +544,7 @@ client-side by maximum overlap, so the service returns raw turns only.
 A `diarize-only` standalone CPU shape (`docker/compose.diarize-only.yaml`,
 `make up-diarize-only`) runs the same `src/diarize_server.py` without the
 router — built from `Dockerfile.diarize.cpu` (uv-managed Python 3.11, CPU
-torch + torchaudio, `pyannote.audio`, `ffmpeg`), reached directly at
+torch + torchaudio + torchcodec, `pyannote.audio`, `ffmpeg`), reached directly at
 `http://diarize-only:8000/diarize` with no Bearer auth, same posture as the
 other `-only` shapes. In the full stack, requests go through the router,
 which gates with the master key. Smoke-test (full stack):
