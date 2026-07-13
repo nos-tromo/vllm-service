@@ -1,7 +1,7 @@
 # Diarize server → pyannote.audio 4.x migration (to deploy community-1) — plan (scaffold)
 
-**Date:** 2026-07-11 (code first-cut 2026-07-12)
-**Status:** Code first-cut implemented on `feature/diarize-pyannote-4x` (off merged `main`); **build + GPU + gated-bundle validation still required** (needs infra I can't reach: no CUDA build, no GPU, no gated-weights bundling here).
+**Date:** 2026-07-11 (code first-cut 2026-07-12; build + GPU smoke validated 2026-07-13)
+**Status:** Code first-cut implemented on `feature/diarize-pyannote-4x` (off merged `main`); **build + GPU server smoke validated 2026-07-13** (see progress below). Remaining: multi-speaker smoke assertion, gated community-1 airgap bundling + runbook, acceptance eval (D3).
 **Decisions (signed off):** **D1 = community-1 is the default** (`DEFAULT_MODEL` + compose defaults flipped; its gated weights MUST be bundled). **D2 = standard `.speaker_diarization`** output. **D3** (3.1-on-4.x parity) → validated at acceptance (task 5).
 **Depends on:** vllm-service#55 — now **merged** to `main`; this branch is off `main`.
 
@@ -17,17 +17,38 @@ Implemented + validated in the torch-free gate (ruff + pyrefly + eval suite):
   **first cut, marked "VERIFY AT BUILD"** for the torch/torchcodec/CUDA matrix.
 - `docker/compose*.yaml` + canonical `.env.example`/`README` default → community-1.
 
+## Progress (2026-07-13) — build + GPU server smoke validated
+
+Validated on a CUDA workstation (fix landed as `0ff24d4`, docs as `fc1884e`):
+1. ~~**Build the cpu + cuda images**~~ **DONE.** The torch/torchcodec/CUDA
+   matrix resolved **without** a `PYTORCH_IMAGE` bump, but the unpinned
+   `torchcodec` was a real failure exactly as flagged: PyPI resolved 0.14.0
+   (a CUDA-13 build → dlopens `libnvrtc.so.13`, absent on the cu12.8 base),
+   and even the matching `+cu128` 0.11.1 wheel fails on the `-runtime` base
+   (needs NPP). Fix: pin **`torchcodec==0.11.1` as the `+cpu` build** from
+   `download.pytorch.org/whl/cpu`, installed *before* pyannote — it links no
+   CUDA libs, torch stays `2.11.0+cu128`, and torchcodec is import-time-only
+   here (ffmpeg pre-decodes). Both build smokes pass (cuda + cpu images built
+   2026-07-13); CI green on PR #56.
+2. **Server smoke — PARTIAL.** Full stack up, `diarize` healthy on
+   `device: cuda` with **community-1 loaded** (4.x auth + `DiarizeOutput`
+   extraction exercised); `POST /diarize` (8 s test tone) → 200
+   `{"segments": [], "speakers": []}` in 0.65 s — contract shape confirmed,
+   correctly empty for non-speech. Still owed: a **multi-speaker clip**
+   asserting non-empty chronological segments, and the 3.1-on-4.x load.
+3. Docs partially finalized: `CLAUDE.md` updated for 4.x/torchcodec +
+   community-1 (`fc1884e`); the gated-download runbook (`README.md`,
+   `.env.example`) still deliberately documents the 3.1 procedure until
+   community-1's gated deps are confirmed on a real bundle.
+
 **Still required (this branch is not merge-ready until these pass):**
-1. **Build the cpu + cuda images** — resolve the torch/torchcodec/CUDA version
-   matrix (may need a `PYTORCH_IMAGE` bump); the build smoke must pass.
-2. **Server smoke** — `POST /diarize` a short clip against the running 4.x
-   container (3.1 and community-1), confirm the response contract.
-3. **Gated community-1 airgap bundling** + confirm its exact gated dependencies,
-   then **finalize all docs + the gated-download runbook** (`.env.example`,
-   `README.md`, `CLAUDE.md`, `compose.diarize-only.yaml` comment) — deliberately
-   left pointing at the 3.1 procedure until community-1's gated deps are confirmed
-   on a real bundle.
-4. **Acceptance:** re-run the #55 eval harness against the deployed image (D3).
+1. **Server smoke, multi-speaker** — `POST /diarize` a short multi-speaker
+   clip (community-1 and 3.1-on-4.x), assert non-empty chronological segments.
+2. **Gated community-1 airgap bundling** + confirm its exact gated dependencies,
+   then **finalize the gated-download runbook** (`.env.example`, `README.md`,
+   `compose.diarize-only.yaml` comment) — deliberately left pointing at the
+   3.1 procedure until community-1's gated deps are confirmed on a real bundle.
+3. **Acceptance:** re-run the #55 eval harness against the deployed image (D3).
 
 ## Goal
 
