@@ -1,7 +1,7 @@
 # Diarize server → pyannote.audio 4.x migration (to deploy community-1) — plan (scaffold)
 
 **Date:** 2026-07-11 (code first-cut 2026-07-12; build + GPU smoke validated 2026-07-13)
-**Status:** Code first-cut implemented on `feature/diarize-pyannote-4x` (off merged `main`); **build + GPU server smoke validated 2026-07-13** (see progress below). Remaining: multi-speaker smoke assertion, gated community-1 airgap bundling + runbook, acceptance eval (D3).
+**Status:** Code first-cut implemented on `feature/diarize-pyannote-4x` (off merged `main`); **build + GPU server smoke (incl. multi-speaker, community-1 + 3.1-on-4.x) validated 2026-07-13** (see progress below). Remaining: gated community-1 airgap bundling + runbook, acceptance eval (D3).
 **Decisions (signed off):** **D1 = community-1 is the default** (`DEFAULT_MODEL` + compose defaults flipped; its gated weights MUST be bundled). **D2 = standard `.speaker_diarization`** output. **D3** (3.1-on-4.x parity) → validated at acceptance (task 5).
 **Depends on:** vllm-service#55 — now **merged** to `main`; this branch is off `main`.
 
@@ -30,25 +30,27 @@ Validated on a CUDA workstation (fix landed as `0ff24d4`, docs as `fc1884e`):
    CUDA libs, torch stays `2.11.0+cu128`, and torchcodec is import-time-only
    here (ffmpeg pre-decodes). Both build smokes pass (cuda + cpu images built
    2026-07-13); CI green on PR #56.
-2. **Server smoke — PARTIAL.** Full stack up, `diarize` healthy on
+2. ~~**Server smoke**~~ **DONE.** Full stack up, `diarize` healthy on
    `device: cuda` with **community-1 loaded** (4.x auth + `DiarizeOutput`
    extraction exercised); `POST /diarize` (8 s test tone) → 200
-   `{"segments": [], "speakers": []}` in 0.65 s — contract shape confirmed,
-   correctly empty for non-speech. Still owed: a **multi-speaker clip**
-   asserting non-empty chronological segments, and the 3.1-on-4.x load.
+   `{"segments": [], "speakers": []}` in 0.65 s — correctly empty for
+   non-speech. **Multi-speaker smoke (2026-07-13):** the pyannote tutorial
+   30 s two-speaker AMI excerpt → **community-1**: 13 chronological
+   segments, 2 speakers, 1.5 s; **3.1-on-4.x** (recreated the container
+   with `DIARIZE_MODEL=pyannote/speaker-diarization-3.1`, loaded from the
+   shared cache): 13 chronological segments, 2 speakers, 1.6 s. Both match
+   the response contract; community-1 restored as the running default after.
 3. Docs partially finalized: `CLAUDE.md` updated for 4.x/torchcodec +
    community-1 (`fc1884e`); the gated-download runbook (`README.md`,
    `.env.example`) still deliberately documents the 3.1 procedure until
    community-1's gated deps are confirmed on a real bundle.
 
 **Still required (this branch is not merge-ready until these pass):**
-1. **Server smoke, multi-speaker** — `POST /diarize` a short multi-speaker
-   clip (community-1 and 3.1-on-4.x), assert non-empty chronological segments.
-2. **Gated community-1 airgap bundling** + confirm its exact gated dependencies,
+1. **Gated community-1 airgap bundling** + confirm its exact gated dependencies,
    then **finalize the gated-download runbook** (`.env.example`, `README.md`,
    `compose.diarize-only.yaml` comment) — deliberately left pointing at the
    3.1 procedure until community-1's gated deps are confirmed on a real bundle.
-3. **Acceptance:** re-run the #55 eval harness against the deployed image (D3).
+2. **Acceptance:** re-run the #55 eval harness against the deployed image (D3).
 
 ## Goal
 
