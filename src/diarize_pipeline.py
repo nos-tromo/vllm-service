@@ -16,7 +16,7 @@ from typing import TYPE_CHECKING, Any
 if TYPE_CHECKING:  # torch-free at runtime; only for type-checkers
     from pyannote.audio import Pipeline
 
-_DEFAULT_MODEL = "pyannote/speaker-diarization-3.1"
+DEFAULT_MODEL = "pyannote/speaker-diarization-community-1"
 
 
 def _resolve_param_overrides(
@@ -85,7 +85,7 @@ def build_pipeline(
     from pyannote.audio import Pipeline
     # isort: on
 
-    resolved_model = model_id or os.environ.get("DIARIZE_MODEL", _DEFAULT_MODEL)
+    resolved_model = model_id or os.environ.get("DIARIZE_MODEL", DEFAULT_MODEL)
     resolved_device = device or os.environ.get("DIARIZE_DEVICE", "cuda")
     token = os.environ.get("HF_TOKEN") or None
     try:
