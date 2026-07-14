@@ -106,7 +106,10 @@ def test_no_vad_url_returns_ungated_turns(monkeypatch: pytest.MonkeyPatch) -> No
     """Unset DIARIZE_VAD_URL → byte-identical legacy behavior, no /vad call."""
     monkeypatch.delenv("DIARIZE_VAD_URL", raising=False)
 
+    calls: list[object] = []
+
     def _explode(*args: object, **kwargs: object) -> None:
+        calls.append((args, kwargs))
         raise AssertionError("requests.post must not be called when gating is off")
 
     monkeypatch.setattr(diarize_server.requests, "post", _explode)
@@ -115,6 +118,10 @@ def test_no_vad_url_returns_ungated_turns(monkeypatch: pytest.MonkeyPatch) -> No
     body = response.json()
     assert [s["start"] for s in body["segments"]] == [0.0, 10.0]
     assert body["speakers"] == ["SPEAKER_00", "SPEAKER_01"]
+    # A regression that calls /vad would have the raised AssertionError
+    # swallowed by the server's fail-open handler — assert on the call log
+    # directly so the test can't pass silently.
+    assert calls == []
 
 
 def test_kill_switch_disables_gating(monkeypatch: pytest.MonkeyPatch) -> None:
@@ -122,13 +129,19 @@ def test_kill_switch_disables_gating(monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.setenv("DIARIZE_VAD_URL", "http://vad:8000")
     monkeypatch.setenv("DIARIZE_VAD_GATE", "off")
 
+    calls: list[object] = []
+
     def _explode(*args: object, **kwargs: object) -> None:
+        calls.append((args, kwargs))
         raise AssertionError("requests.post must not be called when the kill switch is off")
 
     monkeypatch.setattr(diarize_server.requests, "post", _explode)
     response = client.post("/diarize", files=_UPLOAD)
     assert response.status_code == 200
     assert len(response.json()["segments"]) == 2
+    # See test_no_vad_url_returns_ungated_turns: the fail-open handler would
+    # swallow a stray call's AssertionError, so assert on the call log.
+    assert calls == []
 
 
 def test_gated_turns_are_cropped_to_speech(monkeypatch: pytest.MonkeyPatch) -> None:
@@ -176,6 +189,33 @@ def test_vad_failure_fails_open(monkeypatch: pytest.MonkeyPatch) -> None:
     body = response.json()
     assert len(body["segments"]) == 2
     assert body["speakers"] == ["SPEAKER_00", "SPEAKER_01"]
+
+
+def test_non_finite_pad_ms_falls_back_to_default(monkeypatch: pytest.MonkeyPatch) -> None:
+    """DIARIZE_VAD_PAD_MS=nan must not crash the request; it falls back to 100."""
+    monkeypatch.setenv("DIARIZE_VAD_URL", "http://vad:8000")
+    monkeypatch.setenv("DIARIZE_VAD_PAD_MS", "nan")
+    calls: list[dict[str, object]] = []
+
+    class _Response:
+        status_code = 200
+
+        def raise_for_status(self) -> None:
+            pass
+
+        def json(self) -> dict[str, object]:
+            return {"segments": [{"start": 1.0, "end": 3.0}], "has_speech": True, "sampling_rate": 16000}
+
+    def _fake_post(
+        url: str, files: object = None, data: dict[str, object] | None = None, timeout: float | None = None
+    ) -> _Response:
+        calls.append({"url": url, "data": data, "timeout": timeout})
+        return _Response()
+
+    monkeypatch.setattr(diarize_server.requests, "post", _fake_post)
+    response = client.post("/diarize", files=_UPLOAD)
+    assert response.status_code == 200
+    assert calls[0]["data"] == {"threshold": 0.4, "speech_pad_ms": 100}
 
 
 def test_tuning_env_is_forwarded(monkeypatch: pytest.MonkeyPatch) -> None:

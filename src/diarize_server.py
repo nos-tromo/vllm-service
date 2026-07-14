@@ -40,6 +40,7 @@ transcription segments by maximum overlap.
 from __future__ import annotations
 
 import logging
+import math
 import os
 import threading
 from dataclasses import dataclass
@@ -103,7 +104,9 @@ def _load_vad_gate_config() -> VadGateConfig | None:
 
     Returns:
         The resolved config, or None when the URL is unset/blank or the
-        kill switch is off.
+        kill switch is off. A non-finite (``nan``/``inf``) override is
+        treated the same as unset — it falls back to the default rather
+        than raising.
     """
     url = (os.environ.get("DIARIZE_VAD_URL") or "").strip().rstrip("/")
     if not url:
@@ -113,6 +116,15 @@ def _load_vad_gate_config() -> VadGateConfig | None:
     threshold = _env_float("DIARIZE_VAD_THRESHOLD")
     pad_ms = _env_float("DIARIZE_VAD_PAD_MS")
     timeout = _env_float("DIARIZE_VAD_TIMEOUT")
+    if threshold is not None and not math.isfinite(threshold):
+        _log.warning("Ignoring DIARIZE_VAD_THRESHOLD=%r: not finite; using the default.", threshold)
+        threshold = None
+    if pad_ms is not None and not math.isfinite(pad_ms):
+        _log.warning("Ignoring DIARIZE_VAD_PAD_MS=%r: not finite; using the default.", pad_ms)
+        pad_ms = None
+    if timeout is not None and not math.isfinite(timeout):
+        _log.warning("Ignoring DIARIZE_VAD_TIMEOUT=%r: not finite; using the default.", timeout)
+        timeout = None
     return VadGateConfig(
         url=url,
         threshold=0.4 if threshold is None else threshold,
