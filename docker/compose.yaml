@@ -331,6 +331,17 @@ services:
       PYANNOTE_CACHE: /root/.cache/huggingface/hub
       DIARIZE_MODEL: ${DIARIZE_MODEL:-pyannote/speaker-diarization-community-1}
       DIARIZE_DEVICE: ${DIARIZE_DEVICE:-cuda}
+      # VAD gating: crop /diarize turns to the vad service's Silero speech
+      # timeline (drops music/noise over-detected as speech; measured −35%
+      # false alarm). On by default in the full stack; DIARIZE_VAD_GATE=off
+      # disables, and the gate fails open if vad is unreachable. Request-time
+      # call — no depends_on needed (router traffic starts after vad is
+      # healthy anyway).
+      DIARIZE_VAD_URL: ${DIARIZE_VAD_URL:-http://vad:8000}
+      DIARIZE_VAD_GATE: ${DIARIZE_VAD_GATE:-true}
+      DIARIZE_VAD_THRESHOLD: ${DIARIZE_VAD_THRESHOLD:-0.4}
+      DIARIZE_VAD_PAD_MS: ${DIARIZE_VAD_PAD_MS:-100}
+      DIARIZE_VAD_TIMEOUT: ${DIARIZE_VAD_TIMEOUT:-30}
     volumes: *vllm-volumes
     healthcheck:
       test: ["CMD-SHELL", "curl -sf http://localhost:8000/health || exit 1"]
