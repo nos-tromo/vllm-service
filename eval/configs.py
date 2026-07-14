@@ -16,6 +16,10 @@ class DiarizeConfig:
         device: Torch device string; None → the server's env/cuda default.
         clustering_threshold: Clustering-threshold override; None → pretrained default.
         segmentation_min_duration_off: Segmentation override; None → pretrained default.
+        fa: Clustering ``Fa`` (PLDA) override; None → pretrained default. community-1's
+            speaker-granularity knob (with ``fb``); inapplicable to 3.1.
+        fb: Clustering ``Fb`` (PLDA) override; None → pretrained default. Lower → more
+            speakers.
         num_speakers: Exact speaker count, if forced.
         min_speakers: Lower bound on the speaker count.
         max_speakers: Upper bound on the speaker count.
@@ -26,6 +30,8 @@ class DiarizeConfig:
     device: str | None = None
     clustering_threshold: float | None = None
     segmentation_min_duration_off: float | None = None
+    fa: float | None = None
+    fb: float | None = None
     num_speakers: int | None = None
     min_speakers: int | None = None
     max_speakers: int | None = None

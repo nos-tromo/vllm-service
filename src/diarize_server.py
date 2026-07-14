@@ -36,6 +36,7 @@ transcription segments by maximum overlap.
 
 from __future__ import annotations
 
+import logging
 import os
 import threading
 from typing import Any
@@ -50,9 +51,40 @@ from diarize_pipeline import DEFAULT_MODEL, build_pipeline
 MODEL_ID = os.environ.get("DIARIZE_MODEL", DEFAULT_MODEL)  # shared default → /health can't drift from the loaded model
 DEVICE = os.environ.get("DIARIZE_DEVICE", "cuda")
 
+_log = logging.getLogger("diarize")
+
+
+def _env_float(name: str) -> float | None:
+    """Read an optional float clustering override from the environment.
+
+    Args:
+        name: Environment variable name.
+
+    Returns:
+        The parsed float, or None when unset/blank/unparseable. An unparseable
+        value warns and falls back so a typo cannot crash server startup.
+    """
+    raw = os.environ.get(name)
+    if raw is None or not raw.strip():
+        return None
+    try:
+        return float(raw)
+    except ValueError:
+        _log.warning("Ignoring %s=%r: not a float; using the pipeline default.", name, raw)
+        return None
+
+
 app = FastAPI(title="vllm-service diarize", version="1.0")
 
-pipeline = build_pipeline()  # env defaults, no overrides — identical to before
+# Optional clustering-hyperparameter overrides. All unset → stock model defaults
+# (byte-identical to before). DIARIZE_FB is community-1's speaker-granularity knob
+# (lower → more speakers); see src/diarize_pipeline.py::_resolve_param_overrides.
+pipeline = build_pipeline(
+    clustering_threshold=_env_float("DIARIZE_CLUSTERING_THRESHOLD"),
+    segmentation_min_duration_off=_env_float("DIARIZE_SEG_MIN_DURATION_OFF"),
+    fa=_env_float("DIARIZE_FA"),
+    fb=_env_float("DIARIZE_FB"),
+)
 
 # Diarization runs for seconds-to-minutes on the device; serialize requests
 # so concurrent uploads queue instead of contending for GPU memory.

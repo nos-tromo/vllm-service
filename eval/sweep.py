@@ -127,6 +127,8 @@ def run_sweep(
             device=config.device,
             clustering_threshold=config.clustering_threshold,
             segmentation_min_duration_off=config.segmentation_min_duration_off,
+            fa=config.fa,
+            fb=config.fb,
         )
         out_dir = os.path.join(out_root, config.label)
         hyp_paths = run_diarization(pipeline, files, out_dir, config)

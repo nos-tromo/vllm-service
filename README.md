@@ -424,7 +424,20 @@ Override defaults via `.env` — only `DIARIZE_*` knobs apply in this shape:
 DIARIZE_MODEL=pyannote/speaker-diarization-community-1   # default (pyannote.audio 4.x; gated)
 DIARIZE_DEVICE=cpu                               # default in diarize-only
 # DIARIZE_HOST_PORT=8004                          # host publish port for dev
+# DIARIZE_FB=0.4                                  # community-1 clustering: LOWER → MORE speakers; 0.4 validated best
+# DIARIZE_FA=0.07                                 # community-1 PLDA companion weight (leave at stock 0.07)
+# DIARIZE_CLUSTERING_THRESHOLD / DIARIZE_SEG_MIN_DURATION_OFF   # further overrides (threshold inert for community-1)
 ```
+
+`DIARIZE_FB`/`DIARIZE_FA` are community-1's speaker-granularity knobs (unset →
+stock defaults, Fb 0.8 / Fa 0.07). `Fb=0.4` is the deploy value — best
+speaker-attribution accuracy and turn precision on real labeled clips
+(`eval/reports/2026-07-14-fb-realdata-validation.md`; the benchmark sweep's
+provisional 0.2 over-splits real content — see
+`eval/reports/2026-07-14-fa-fb-sweep.md`). Leave `Fa` at stock — both
+directions measured worse. Validate on labelled clips with `eval/` (the
+transcript metric + `--fb` sweep) before deploying a different value; an
+unparseable value warns and is ignored rather than crashing startup.
 
 CPU diarization is the slowest of the standalone shapes — expect roughly
 real-time-to-several-times-real-time per audio minute, dominated by the
