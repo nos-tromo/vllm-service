@@ -76,16 +76,32 @@ class EmbedResponse(BaseModel):
     dimension: int
 
 
-def _embed_image_bytes(image_bytes: bytes) -> list[float]:
-    """Run the CLIP image tower on raw bytes and L2-normalize the output.
+def _decode_image(image_bytes: bytes) -> Image.Image:
+    """Decode raw bytes to an RGB Pillow image.
+
+    Kept separate from the model forward so the endpoint can map decode
+    failures (bad client input → 422) and inference failures (transient
+    backend fault, e.g. cuDNN under GPU memory pressure → 503) to
+    different status codes.
 
     Args:
         image_bytes: Raw image bytes (any format Pillow can decode).
 
     Returns:
+        The decoded image, converted to RGB.
+    """
+    return Image.open(BytesIO(image_bytes)).convert("RGB")
+
+
+def _embed_image(image: Image.Image) -> list[float]:
+    """Run the CLIP image tower on a decoded image and L2-normalize the output.
+
+    Args:
+        image: A decoded RGB Pillow image.
+
+    Returns:
         A list of floats of length ``DIMENSION``, L2-normalized.
     """
-    image = Image.open(BytesIO(image_bytes)).convert("RGB")
     inputs = processor(images=image, return_tensors="pt")
     inputs = {k: v.to(DEVICE) for k, v in inputs.items()}
     with torch.no_grad():
@@ -162,9 +178,13 @@ async def embed_image(request: Request) -> EmbedResponse:
     if not image_bytes:
         raise HTTPException(status_code=400, detail="empty image payload")
     try:
-        embedding = _embed_image_bytes(image_bytes)
+        image = _decode_image(image_bytes)
     except Exception as exc:
-        raise HTTPException(status_code=422, detail=f"failed to decode/embed image: {exc}") from exc
+        raise HTTPException(status_code=422, detail=f"failed to decode image: {exc}") from exc
+    try:
+        embedding = _embed_image(image)
+    except Exception as exc:
+        raise HTTPException(status_code=503, detail=f"image embedding backend failed (transient): {exc}") from exc
     return EmbedResponse(embedding=embedding, dimension=DIMENSION)
 
 
@@ -180,7 +200,10 @@ def embed_text(req: EmbedTextRequest) -> EmbedResponse:
     """
     if not req.text.strip():
         raise HTTPException(status_code=400, detail="text must not be empty")
-    embedding = _embed_text(req.text)
+    try:
+        embedding = _embed_text(req.text)
+    except Exception as exc:
+        raise HTTPException(status_code=503, detail=f"text embedding backend failed (transient): {exc}") from exc
     return EmbedResponse(embedding=embedding, dimension=DIMENSION)
 
 
