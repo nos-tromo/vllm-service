@@ -31,6 +31,10 @@ eval = [
     "pyannote.metrics>=3.2",
     "pyannote.database>=5.0",
     "pytest>=8",
+    # FastAPI TestClient transport + multipart form parsing, for the src/
+    # server unit tests.
+    "httpx>=0.27",
+    "python-multipart",
     "soundfile>=0.12",
     "pyyaml>=6",
     "scipy>=1.17.1",
