@@ -36,7 +36,8 @@ RUN pip install --no-cache-dir --break-system-packages \
     'python-multipart>=0.0.9' \
     'pydantic>=2.0' \
     'pyannote.audio>=4,<5' \
-    'huggingface_hub>=0.30'
+    'huggingface_hub>=0.30' \
+    'requests>=2.31'
 
 # Build-time smoke test — fail the build (not the running container) on a
 # base-image bump that breaks either compatibility shim in diarize_compat.py:
@@ -47,7 +48,8 @@ RUN pip install --no-cache-dir --break-system-packages \
 #     catches a renamed symbol or a broken allowlist here — instead of only on
 #     the first real Pipeline.from_pretrained in production.
 COPY src/diarize_compat.py /app/diarize_compat.py
-RUN PYTHONPATH=/app python -c "import tempfile, os, torch, torchcodec, diarize_compat; from pyannote.audio import Pipeline; import pyannote.audio.pipelines; from pyannote.audio.core.io import Audio; Audio(sample_rate=16000, mono='downmix'); p = tempfile.NamedTemporaryFile(suffix='.ckpt', delete=False).name; torch.save({'g': list(diarize_compat.TRUSTED_CHECKPOINT_GLOBALS), 'w': torch.zeros(1)}, p); torch.load(p, weights_only=True); os.unlink(p); print('diarize build smoke: OK')"
+COPY src/diarize_gate.py /app/diarize_gate.py
+RUN PYTHONPATH=/app python -c "import tempfile, os, torch, torchcodec, diarize_compat; from diarize_gate import crop_turns_to_speech; from pyannote.audio import Pipeline; import pyannote.audio.pipelines; from pyannote.audio.core.io import Audio; Audio(sample_rate=16000, mono='downmix'); p = tempfile.NamedTemporaryFile(suffix='.ckpt', delete=False).name; torch.save({'g': list(diarize_compat.TRUSTED_CHECKPOINT_GLOBALS), 'w': torch.zeros(1)}, p); torch.load(p, weights_only=True); os.unlink(p); print('diarize build smoke: OK')"
 
 COPY src/diarize_audio.py /app/diarize_audio.py
 COPY src/diarize_pipeline.py /app/diarize_pipeline.py
