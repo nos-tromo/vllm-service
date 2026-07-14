@@ -3,7 +3,7 @@
 The diarize server (``src/diarize_server.py``) optionally crops the pyannote
 pipeline's speaker turns to a Silero VAD speech timeline fetched from the
 stack's ``vad`` service, dropping the music/noise the diarizer over-detects
-as speech (measured −35% false alarm / −12.5% DER at threshold 0.4 /
+as speech (measured -35% false alarm / -12.5% DER at threshold 0.4 /
 pad 100 ms — see eval/reports/2026-07-11-false-alarm-vad-gating.md). This
 module holds only the interval intersection: no torch, no HTTP, no env, so
 the torch-free eval test group can exercise it directly.

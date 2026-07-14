@@ -11,6 +11,7 @@ import importlib.util
 import io
 import sys
 import types
+from collections.abc import Iterator
 from pathlib import Path
 
 import numpy as np
@@ -39,7 +40,7 @@ class _FakeAnnotation:
     def __init__(self, turns: list[tuple[float, float, str]]) -> None:
         self._turns = turns
 
-    def itertracks(self, yield_label: bool = True):
+    def itertracks(self, yield_label: bool = True) -> Iterator[tuple[types.SimpleNamespace, None, str]]:
         """Yield (segment, track, label) like pyannote's Annotation."""
         for start, end, speaker in self._turns:
             yield types.SimpleNamespace(start=start, end=end), None, speaker
@@ -79,7 +80,7 @@ _prior_pipeline_module = sys.modules.get("diarize_pipeline")
 sys.modules["diarize_pipeline"] = _pipeline_stub
 
 try:
-    import diarize_server  # noqa: E402 — must come after the sys.modules stubs
+    import diarize_server  # — must come after the sys.modules stubs
 finally:
     if _inserted_torch:
         del sys.modules["torch"]
@@ -96,7 +97,7 @@ _UPLOAD = {"file": ("clip.wav", io.BytesIO(b"fake-bytes"), "audio/wav")}
 
 
 @pytest.fixture(autouse=True)
-def _decoded_audio(monkeypatch: pytest.MonkeyPatch):
+def _decoded_audio(monkeypatch: pytest.MonkeyPatch) -> None:
     """Bypass ffmpeg: every upload decodes to a second of silence."""
     monkeypatch.setattr(diarize_server, "decode_audio", lambda data: np.zeros(16000, dtype=np.float32))
 
