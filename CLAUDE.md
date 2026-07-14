@@ -2,6 +2,16 @@
 
 This file provides guidance to Claude Code (claude.ai/code) when working with code in this repository.
 
+## Data confidentiality — hard rule
+
+**NEVER expose actual production or testing data in any file committed or
+pushed to git.** This covers not only file contents but also metadata that
+references real data: filenames, file descriptions, social-media account
+names or handles, user identifications, sample records, log excerpts, and
+screenshots. It applies everywhere git sees — source code, tests, fixtures,
+docs, examples, configs, commit messages, and CI files. Use fully synthetic,
+invented placeholders instead.
+
 ## What this repo is
 
 A pure infrastructure repo: a Docker Compose stack that fronts several vLLM
