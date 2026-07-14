@@ -739,6 +739,20 @@ Response:
 absolute seconds — consumers (Nextext) assign speakers to their ASR
 segments by maximum overlap client-side.
 
+**VAD gating (full stack: on by default).** Before responding, the service
+crops the pipeline's turns to the Silero speech timeline fetched from the
+stack's `vad` service (`DIARIZE_VAD_URL`, set to `http://vad:8000` by the
+full-stack compose), dropping the music/noise the diarizer over-detects as
+speech — measured −35% false alarm / −12.5% DER at the tuned
+`DIARIZE_VAD_THRESHOLD=0.4` / `DIARIZE_VAD_PAD_MS=100`
+(`eval/reports/2026-07-11-false-alarm-vad-gating.md`). Fail-open: an
+unreachable `vad` logs a warning and returns ungated turns; the response
+shape never changes. `DIARIZE_VAD_GATE=off` disables it. In `diarize-only`
+the URL is unset (gating off) — co-deploy `vad-only` and set
+`DIARIZE_VAD_URL=http://vad-only:8000` to gate there too. Consumers that
+gate client-side (Nextext's `NEXTEXT_DIARIZE_VAD_GATE`) should disable
+their gate once this is live — double-gating is harmless but wasteful.
+
 The pipeline weights are gated on the Hugging Face Hub: accept the
 conditions for both `pyannote/speaker-diarization-3.1` and
 `pyannote/segmentation-3.0`, then run once with `HF_HUB_OFFLINE=0`,

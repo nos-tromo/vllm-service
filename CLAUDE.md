@@ -29,7 +29,8 @@ backends with a single LiteLLM Proxy router. The Docker assets live under
 and `.dockerignore` at the repo root. The only Python sources are
 `src/rerank_server.py`, `src/clip_server.py`,
 `src/diarize_server.py` (and its `src/diarize_audio.py`,
-`src/diarize_pipeline.py`, and `src/diarize_compat.py` helpers),
+`src/diarize_pipeline.py`, `src/diarize_compat.py`, and
+`src/diarize_gate.py` helpers),
 `src/asr_server.py`, and `src/vad_server.py` —
 small FastAPI wrappers around Hugging Face models that ship because there
 is no off-the-shelf server that speaks the Jina-shape `/rerank`, `/clip`,
@@ -550,6 +551,12 @@ volume — the compose env points `PYANNOTE_CACHE` there, since pyannote
 would otherwise download to `~/.cache/torch/pyannote`, outside the
 volume. Consumers (Nextext) do speaker-to-ASR-segment alignment
 client-side by maximum overlap, so the service returns raw turns only.
+When `DIARIZE_VAD_URL` is set (the full-stack compose default,
+`http://vad:8000`), the server VAD-gates its output first — turns are
+cropped to the Silero `/vad` speech timeline (fail-open;
+`DIARIZE_VAD_GATE=off` disables; tuned `DIARIZE_VAD_THRESHOLD=0.4` /
+`DIARIZE_VAD_PAD_MS=100`), so music/noise false alarms are dropped
+server-side for every consumer.
 
 A `diarize-only` standalone CPU shape (`docker/compose.diarize-only.yaml`,
 `make up-diarize-only`) runs the same `src/diarize_server.py` without the
