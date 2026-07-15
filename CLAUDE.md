@@ -551,8 +551,10 @@ volume — the compose env points `PYANNOTE_CACHE` there, since pyannote
 would otherwise download to `~/.cache/torch/pyannote`, outside the
 volume. Consumers (Nextext) do speaker-to-ASR-segment alignment
 client-side by maximum overlap, so the service returns raw turns only.
-When `DIARIZE_VAD_URL` is set (the full-stack compose default,
-`http://vad:8000`), the server VAD-gates its output first — turns are
+When `DIARIZE_VAD_URL` is set (the full-stack compose default is
+`http://vad:8000`; the diarize-only compose hardcodes `http://vad-only:8000`
+so a shared `.env`'s full-stack value can't leak in — gating engages when
+`vad-only` is co-deployed), the server VAD-gates its output first — turns are
 cropped to the Silero `/vad` speech timeline (fail-open;
 `DIARIZE_VAD_GATE=off` disables; tuned `DIARIZE_VAD_THRESHOLD=0.4` /
 `DIARIZE_VAD_PAD_MS=100`), so music/noise false alarms are dropped

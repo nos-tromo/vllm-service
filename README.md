@@ -748,8 +748,10 @@ speech — measured −35% false alarm / −12.5% DER at the tuned
 (`eval/reports/2026-07-11-false-alarm-vad-gating.md`). Fail-open: an
 unreachable `vad` logs a warning and returns ungated turns; the response
 shape never changes. `DIARIZE_VAD_GATE=off` disables it. In `diarize-only`
-the URL is unset (gating off) — co-deploy `vad-only` and set
-`DIARIZE_VAD_URL=http://vad-only:8000` to gate there too. Consumers that
+the compose hardcodes the URL to `http://vad-only:8000` (a shared `.env`'s
+full-stack `http://vad:8000` would not resolve in that shape) — co-deploy
+`vad-only` on `inference-net` and gating engages there too; without it the
+gate fails open, and `DIARIZE_VAD_GATE=off` silences it. Consumers that
 gate client-side (Nextext's `NEXTEXT_DIARIZE_VAD_GATE`) should disable
 their gate once this is live — double-gating is harmless but wasteful.
 

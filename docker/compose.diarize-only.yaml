@@ -59,6 +59,14 @@ services:
       # so it must run on CPU even if a shared .env sets DIARIZE_DEVICE=cuda
       # for the full stack. Mirrors clip-only's CLIP_DEVICE: cpu.
       DIARIZE_DEVICE: cpu
+      # Hardcoded vad-only alias (not interpolated), same rationale as
+      # DIARIZE_DEVICE above: the full-stack alias `vad` does not exist in
+      # this shape, so a shared .env's DIARIZE_VAD_URL=http://vad:8000 must
+      # not leak in via env_file. Gating engages when a vad-only container
+      # is co-deployed on inference-net; without one it fails open (a
+      # warning per request, ungated turns). DIARIZE_VAD_GATE=off in .env
+      # silences it entirely.
+      DIARIZE_VAD_URL: http://vad-only:8000
       HF_HUB_OFFLINE: ${HF_HUB_OFFLINE:-1}
       TRANSFORMERS_OFFLINE: ${TRANSFORMERS_OFFLINE:-1}
       # pyannote defaults its hub downloads to ~/.cache/torch/pyannote
