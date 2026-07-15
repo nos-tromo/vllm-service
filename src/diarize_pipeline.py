@@ -114,7 +114,11 @@ def build_pipeline(
         # pyannote.audio 4.x renamed the auth kwarg to `token`; 3.x uses `use_auth_token`.
         pipeline = Pipeline.from_pretrained(resolved_model, token=token)
     except TypeError:
-        pipeline = Pipeline.from_pretrained(resolved_model, use_auth_token=token)
+        # 3.x-only kwarg, gone from 4.x's signature — pass it via an untyped
+        # dict so the call typechecks whether pyannote's types are installed
+        # (dev eval-run venv, 4.x) or Any (CI lint env).
+        legacy_kwargs: dict[str, Any] = {"use_auth_token": token}
+        pipeline = Pipeline.from_pretrained(resolved_model, **legacy_kwargs)
     if pipeline is None:
         raise RuntimeError(
             f"Pipeline.from_pretrained({resolved_model!r}) returned None — gated-repo access "

@@ -57,14 +57,19 @@ def _unavailable(*_args: object, **_kwargs: object) -> object:
     )
 
 
+# setattr (not plain assignment): these attributes are absent from installed
+# torchaudio's own surface — that's the point of the shim — so direct
+# assignment fails pyrefly wherever torchaudio is actually installed (the
+# dev eval-run venv; CI lints with torchaudio as Any and sees no attributes
+# either way).
 if not hasattr(torchaudio, "AudioMetaData"):
-    torchaudio.AudioMetaData = _AudioMetaData
+    setattr(torchaudio, "AudioMetaData", _AudioMetaData)  # noqa: B010
 
 if not hasattr(torchaudio, "list_audio_backends"):
-    torchaudio.list_audio_backends = lambda: ["soundfile"]
+    setattr(torchaudio, "list_audio_backends", lambda: ["soundfile"])  # noqa: B010
 
 if not hasattr(torchaudio, "info"):
-    torchaudio.info = _unavailable
+    setattr(torchaudio, "info", _unavailable)  # noqa: B010
 
 
 # (2) torch.load weights_only allowlist — see the module docstring. Imported

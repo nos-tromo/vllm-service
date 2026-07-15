@@ -247,7 +247,11 @@ def diarize(
         raise HTTPException(status_code=422, detail=f"failed to decode audio: {exc}") from exc
 
     waveform = torch.from_numpy(audio).unsqueeze(0)  # (channel=1, time)
-    kwargs: dict[str, int] = {}
+    # dict[str, Any], not int: pyannote 4.x's Pipeline.__call__ signature
+    # declares unrelated typed params (e.g. preload: bool), so an int-valued
+    # unpack fails pyrefly wherever pyannote's types are installed (the dev
+    # eval-run venv; CI lints with pyannote as Any).
+    kwargs: dict[str, Any] = {}
     if num_speakers is not None:
         kwargs["num_speakers"] = num_speakers
     if min_speakers is not None:
