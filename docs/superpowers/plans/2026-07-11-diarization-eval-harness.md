@@ -16,7 +16,7 @@
 - **Dev-only, not shipped:** `eval/` and `data/` are excluded from the Docker images and `make bundle`; nothing under `eval/` is imported by a shipped server module. **Airgap:** only `eval/prepare_data.py` fetches data, and only on a networked dev box — never at serve time.
 - **Torch isolation:** unit tests import only the torch-free `eval` dependency group. `pyannote.audio` (the `eval-run` group) is required only for real diarization runs (Task 8).
 - **Commits:** conventional-commit subjects; every commit message ends with the trailer `Co-Authored-By: Claude Opus 4.8 (1M context) <noreply@anthropic.com>` (omitted from the per-step `-m` examples below for brevity — append it to each).
-- **Run commands from the repo root** of this worktree: `/Users/himarc/dev/nos-tromo/infra/.worktrees/vllm-svc-diarization-eval-harness`.
+- **Run commands from the repo root** of this worktree.
 
 ---
 
