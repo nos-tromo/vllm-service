@@ -85,12 +85,14 @@ help:
 	@echo
 	@echo "Development:"
 	@echo "  make pre-commit       run ruff check + ruff format + pyrefly over src/ (no Docker)"
+	@echo "  make verify           pre-push gate: pre-commit (ruff + pyrefly); mirrors CI's lint gate"
 	@echo
 	@echo "Full stack (CUDA):"
 	@echo "  make network          create the external inference-net"
 	@echo "  make volumes          create the huggingface-cache Docker volume"
 	@echo "  make build            build images for the active service set"
-	@echo "  make bundle           ship images as a versioned .tar.gz pair"
+	@echo "  make bundle           ship images as a versioned .tar.gz pair (latest annotated release tag)"
+	@echo "  make bundle-dev       like 'bundle', but from the current working tree (dev/soak)"
 	@echo "  make up               run the active service set (detached, no build; production shape, no host ports)"
 	@echo "  make up-dev           like 'up' (detached, no build), but publishes the router port on the host"
 	@echo "  make dev              build the active service set, then up-dev"
