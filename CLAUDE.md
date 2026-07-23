@@ -346,9 +346,11 @@ annotated tag — `make bundle-dev` or an off-tag build falls back to
 `<date>-<short-sha>`) so the same compose file also produces version-tagged
 tarballs for offline shipping.
 
-All backends listen on internal port 8000 and expose only `vllm-net` — they are
-not reachable from outside the compose project. Only `router` joins the external
-`inference-net` (with alias `vllm-router`) for cross-project consumers.
+All backends listen on internal port 8000 and join both `vllm-net` and the
+external `inference-net` — the latter only so `obs-plane` can scrape their
+metrics endpoints by service name; they are not an app-facing entry point.
+Apps still reach the stack exclusively through `router`, which keeps the
+`vllm-router` alias on `inference-net` for cross-project consumers.
 
 ### Dependency overlay
 

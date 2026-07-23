@@ -88,6 +88,12 @@ services:
           - vllm-router
     restart: unless-stopped
 
+  # Backends below also join inference-net (in addition to vllm-net) so the
+  # obs-plane observability stack can scrape their metrics endpoints by
+  # service name. This does not change the app-facing entry point: apps
+  # still talk to the router (alias vllm-router) exclusively, and any
+  # backend --api-key enforcement (chat/embed/rerank/asr, all native
+  # `vllm serve`) is unaffected.
   chat:
     image: vllm-service-chat:${VLLM_SERVICE_VERSION:-latest}
     build:
@@ -147,6 +153,7 @@ services:
     deploy: *cuda-deploy
     networks:
       - vllm-net
+      - inference-net
 
   embed:
     image: vllm-service-embed:${VLLM_SERVICE_VERSION:-latest}
@@ -184,6 +191,7 @@ services:
     deploy: *cuda-deploy
     networks:
       - vllm-net
+      - inference-net
 
   rerank:
     image: vllm-service-rerank:${VLLM_SERVICE_VERSION:-latest}
@@ -214,6 +222,7 @@ services:
     deploy: *cuda-deploy
     networks:
       - vllm-net
+      - inference-net
 
   clip:
     # CLIP image+text embedding tower. Same image/text encoder docint
@@ -257,6 +266,7 @@ services:
     deploy: *cuda-deploy
     networks:
       - vllm-net
+      - inference-net
 
   asr:
     image: vllm-service-asr:${VLLM_SERVICE_VERSION:-latest}
@@ -287,6 +297,7 @@ services:
     deploy: *cuda-deploy
     networks:
       - vllm-net
+      - inference-net
 
   diarize:
     # Speaker diarization (pyannote/speaker-diarization-3.1). Like clip,
@@ -352,6 +363,7 @@ services:
     deploy: *cuda-deploy
     networks:
       - vllm-net
+      - inference-net
 
   vad:
     # Voice activity detection (Silero VAD) via FastAPI. Like clip and
@@ -389,6 +401,7 @@ services:
       start_period: 120s
     networks:
       - vllm-net
+      - inference-net
 
   gliner:
     # GLiNER zero-shot NER served via Ray Serve. Unlike the other backends,
@@ -453,6 +466,7 @@ services:
     restart: unless-stopped
     networks:
       - vllm-net
+      - inference-net
 
 volumes:
   huggingface-cache:

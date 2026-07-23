@@ -660,11 +660,13 @@ between `load` and `up`.
   router and the worker containers.
 - `inference-net` is an external shared Docker network used for cross-project
   service discovery and reverse-proxy access.
-- Only the `router` service joins `inference-net`; `chat`, `embed`,
-  `rerank`, `gliner`, `clip`, `asr`, `diarize`, and `vad` stay on the private
-  network.
-- The `router` service keeps its `vllm-router` alias on `inference-net` so
-  existing consumers do not need to change their `OPENAI_API_BASE`.
+- `router` joins `inference-net` with the `vllm-router` alias so existing
+  consumers do not need to change their `OPENAI_API_BASE`; it remains the
+  only app-facing entry point.
+- `chat`, `embed`, `rerank`, `gliner`, `clip`, `asr`, `diarize`, and `vad`
+  also join `inference-net` (no additional alias), solely so `obs-plane`
+  can scrape their metrics endpoints by service name — apps should still
+  go through `router`, never call a backend directly.
 
 ## Updating the model catalog
 
