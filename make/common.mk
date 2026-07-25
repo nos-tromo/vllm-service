@@ -33,8 +33,11 @@ COMPOSE_OVERRIDE ?= docker/compose.override.yaml
 BUILD_ENV        ?= DOCKER_BUILDKIT=1
 TESTS            ?= yes
 
-# Versioned image tag. Production: read .<repo>-version (written by bundle.sh).
-# Dev: compute YYYY-MM-DD[-<short-sha>]. Override by exporting <REPO_UC>_VERSION.
+# Versioned image tag. `.$(REPO)-version` names the version currently
+# deployable on this host — written by `build` (fresh date+sha, or an
+# explicit override) and by the bundle path; read first by everything
+# else. Dev fallback when the file is absent: YYYY-MM-DD[-<short-sha>].
+# Override by exporting <REPO_UC>_VERSION.
 # The $(eval) reproduces the original lazy `?=` definition under a per-repo
 # variable name; the $$$$ escaping is what survives eval's single expansion.
 REPO_UC     := $(shell printf '%s' '$(REPO)' | tr 'a-z-' 'A-Z_')
@@ -58,8 +61,18 @@ volumes:
 		printf 'Ensured Docker volume exists: %s\n' "$$v"; \
 	done
 
+# Version to build: an explicit <REPO_UC>_VERSION override (environment or
+# command line) wins; otherwise compute a FRESH date+sha, deliberately
+# ignoring any existing .$(REPO)-version — a stale file must not stamp an
+# old tag name onto new content. `build` persists what it built (#36), so
+# later `up`/`up-dev` (which read the file first) always reference the
+# last tag actually built on this host, immune to date/commit rollover.
+BUILD_VERSION = $(if $(filter environment command,$(firstword $(origin $(VERSION_VAR)))),$($(VERSION_VAR)),$(shell _s=$$(git rev-parse --short HEAD 2>/dev/null); echo "$$(date +%Y-%m-%d)$${_s:+-$$_s}"))
+
 build:
-	$(BUILD_ENV) $(COMPOSE) build
+	@echo ">> building $(REPO) $(BUILD_VERSION)"
+	$(BUILD_ENV) $(VERSION_VAR)="$(BUILD_VERSION)" $(COMPOSE) build
+	@printf '%s\n' "$(BUILD_VERSION)" > .$(REPO)-version
 
 # Airgap release artifact. `bundle` is PRODUCTION: it builds the latest annotated
 # tag reachable from HEAD (checks it out, builds, restores your branch) and
