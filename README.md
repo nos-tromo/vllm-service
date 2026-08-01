@@ -52,7 +52,7 @@ select a backend purely by the `model` field they send; there is no path-based
 dispatch.
 
 For hosts that cannot run the CUDA stack (Mac dev boxes, ROCm or CPU-only
-Linux running Ollama for chat/embed), this repo also ships six standalone
+Linux running Ollama for chat/embed), this repo also ships seven standalone
 CPU deployments:
 
 - **NER-only** (`docker/compose.gliner-only.yaml`) — a single `gliner-only`
@@ -63,6 +63,10 @@ CPU deployments:
 - **CLIP-only** (`docker/compose.clip-only.yaml`) — a single `clip-only`
   container exposing the same `/clip/embed_{image,text}` contract as the
   full stack. See "CLIP-only deployment" below.
+- **Sparse-only** (`docker/compose.sparse-only.yaml`) — a single
+  `sparse-only` container exposing the same `/pooling` (task=token_classify)
+  and `/tokenize` contract the full stack's router passes through to the
+  vLLM `embed` backend. See "Sparse-only deployment" below.
 - **Diarize-only** (`docker/compose.diarize-only.yaml`) — a single
   `diarize-only` container exposing the same multipart `/diarize` contract
   as the full stack. See "Diarize-only deployment" below.
@@ -74,9 +78,10 @@ CPU deployments:
   container exposing the same multipart `/vad` contract as the full stack.
   See "VAD-only deployment" below.
 
-The six can be co-deployed on the same host so the consuming app has all of
-`/gliner`, `/rerank`, `/clip/*`, `/diarize`, `/v1/audio/transcriptions`, and
-`/vad` available without the full CUDA stack.
+The seven can be co-deployed on the same host so the consuming app has all
+of `/gliner`, `/rerank`, `/clip/*`, `/pooling`, `/tokenize`, `/diarize`,
+`/v1/audio/transcriptions`, and `/vad` available without the full CUDA
+stack.
 
 ## Usage
 
@@ -357,6 +362,76 @@ search, not CLIP inference.
 > to give a non-CUDA dev box `/gliner`, `/rerank`, and `/clip/*`
 > against `inference-net`.
 
+## Sparse-only deployment
+
+`docker/compose.sparse-only.yaml` is a standalone compose project for the
+same audience as NER-only / Rerank-only / CLIP-only. It runs one container,
+`sparse-only`, built from `Dockerfile.sparse.cpu` (uv-managed Python 3.11,
+CPU torch, `transformers`). No LiteLLM router, no GPU reservation. The
+container ships a small FastAPI server (`src/sparse_server.py`) that drives
+`BAAI/bge-m3` directly with `transformers` (XLM-R forward, then the model's
+own `sparse_linear.pt` head, then ReLU) rather than `FlagEmbedding` (whose
+`ir-datasets`/`zlib-state` dep tree fails to build on aarch64). It exposes
+the **same `POST /pooling` (with `task: "token_classify"`) and
+`POST /tokenize` routes** the full stack's router already passes through to
+the vLLM `embed` backend, so consumers (docint's sparse encoder) target
+either backend by changing only the base URL — `SPARSE_API_BASE=
+http://sparse-only:8000`.
+
+Bring it up:
+
+```bash
+make network              # if not already created
+make volumes              # if not already created
+make build-sparse-only    # builds vllm-service-sparse-only
+make up-sparse-only       # starts the sparse-only container
+```
+
+On first start the container downloads the `BAAI/bge-m3` weights (encoder
+plus the `sparse_linear.pt` head) to the shared `huggingface-cache` volume —
+same model the GPU stack uses, so scores match. The healthcheck reports
+healthy once FastAPI is accepting requests against `/health`. If your host
+is offline you'll need to pre-populate the cache by temporarily setting
+`HF_HUB_OFFLINE=0` and `TRANSFORMERS_OFFLINE=0` in `.env`.
+
+Consumers on `inference-net` reach it directly — there's no router in this
+shape:
+
+```bash
+curl http://sparse-only:8000/pooling \
+  -H "Content-Type: application/json" \
+  -d '{"task": "token_classify", "input": ["what is RAG?"]}'
+
+curl http://sparse-only:8000/tokenize \
+  -H "Content-Type: application/json" \
+  -d '{"prompt": "what is RAG?"}'
+```
+
+Response shape for `/pooling` (one per-token weight list per input, aligned
+to that input's own non-padding token ids):
+
+```json
+{"model": "BAAI/bge-m3", "data": [{"index": 0, "data": [0.0, 0.31, 0.0, 0.42]}]}
+```
+
+Any `task` other than `token_classify` is rejected with HTTP 400 — this
+server implements no other pooling task.
+
+No `Authorization` header is required (same posture as `gliner-only`,
+`rerank-only`, and `clip-only`).
+
+Override defaults via `.env` — only `SPARSE_*` knobs apply in this shape:
+
+```bash
+SPARSE_MODEL=BAAI/bge-m3   # default
+SPARSE_MAX_LENGTH=8192     # default
+# SPARSE_HOST_PORT=8007    # host publish port for dev
+```
+
+> Pair with the NER-only, Rerank-only, and CLIP-only deployments on the
+> same host to give a non-CUDA dev box `/gliner`, `/rerank`, `/clip/*`,
+> and `/pooling`+`/tokenize` against `inference-net`.
+
 ## Diarize-only deployment
 
 `docker/compose.diarize-only.yaml` is a standalone compose project for the
@@ -609,6 +684,7 @@ make bundle              # full stack (chat, embed, rerank, gliner, clip, asr, d
 make bundle-gliner-only     # NER-only shape (just vllm-service-gliner-cpu)
 make bundle-rerank-only  # Rerank-only shape (just vllm-service-rerank-only)
 make bundle-clip-only    # CLIP-only shape (just vllm-service-clip-cpu)
+make bundle-sparse-only  # Sparse-only shape (just vllm-service-sparse-only)
 make bundle-diarize-only # Diarize-only shape (just vllm-service-diarize-cpu)
 make bundle-asr-only     # ASR-only shape (just vllm-service-asr-cpu)
 make bundle-vad-only     # VAD-only shape (just vllm-service-vad-cpu)

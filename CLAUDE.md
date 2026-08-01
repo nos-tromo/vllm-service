@@ -24,23 +24,26 @@ A pure infrastructure repo: a Docker Compose stack that fronts several vLLM
 backends with a single LiteLLM Proxy router. The Docker assets live under
 `docker/` (`docker/compose.yaml`, `docker/compose.override.yaml`,
 `docker/compose.gliner-only.yaml`, `docker/compose.rerank-only.yaml`,
-`docker/compose.clip-only.yaml`, `docker/compose.diarize-only.yaml`,
+`docker/compose.clip-only.yaml`, `docker/compose.sparse-only.yaml`,
+`docker/compose.diarize-only.yaml`,
 `docker/compose.asr-only.yaml`, `docker/compose.vad-only.yaml`,
 `docker/Dockerfile.vllm`,
 `docker/Dockerfile.gliner.cuda`, `docker/Dockerfile.gliner.cpu`,
 `docker/Dockerfile.rerank.cpu`, `docker/Dockerfile.clip.cuda`,
-`docker/Dockerfile.clip.cpu`, `docker/Dockerfile.diarize.cuda`,
+`docker/Dockerfile.clip.cpu`, `docker/Dockerfile.sparse.cpu`,
+`docker/Dockerfile.diarize.cuda`,
 `docker/Dockerfile.diarize.cpu`, `docker/Dockerfile.asr.cpu`,
 `docker/Dockerfile.vad.cpu`, `docker/litellm.config.yaml`) plus `.env`
 and `.dockerignore` at the repo root. The only Python sources are
-`src/rerank_server.py`, `src/clip_server.py`,
+`src/rerank_server.py`, `src/clip_server.py`, `src/sparse_server.py`,
 `src/diarize_server.py` (and its `src/diarize_audio.py`,
 `src/diarize_pipeline.py`, `src/diarize_compat.py`, and
 `src/diarize_gate.py` helpers),
 `src/asr_server.py`, and `src/vad_server.py` —
 small FastAPI wrappers around Hugging Face models that ship because there
 is no off-the-shelf server that speaks the Jina-shape `/rerank`, `/clip`,
-`/diarize`, or `/vad` contracts the full stack exposes. (`asr_server.py` is
+`/pooling`/`/tokenize`, `/diarize`, or `/vad` contracts the full stack
+exposes. (`asr_server.py` is
 the exception — it speaks the standard OpenAI `/v1/audio/transcriptions`
 contract, but exists to serve Whisper on CPU via openai-whisper where the
 full stack uses vLLM.) (`diarize_compat.py`
@@ -56,7 +59,7 @@ globals so a base-image bump that breaks either shim fails the build.)
 
 ## Deployment shapes
 
-Seven independent compose projects, picked per host:
+Eight independent compose projects, picked per host:
 
 - **Full stack** (`docker/compose.yaml`, CUDA-required) — chat, embed, rerank,
   clip, asr, diarize, vad, gliner, router. The original shape; reached as
@@ -102,11 +105,25 @@ Seven independent compose projects, picked per host:
   the base URL alone. Uses `Dockerfile.clip.cpu` (uv-managed
   Python 3.11, CPU torch, transformers, Pillow) and ships
   `src/clip_server.py`.
+- **Sparse-only** (`docker/compose.sparse-only.yaml`, CPU OK) — a single
+  `sparse-only` container on `inference-net`, no router, no GPU. Same
+  audience as NER-only / Rerank-only / CLIP-only; co-deployable so a
+  non-CUDA host can offer `/gliner`, `/rerank`, `/clip/*`, and
+  `/pooling`+`/tokenize` at once. Reached as `http://sparse-only:8000`.
+  Speaks the same `POST /pooling` (`task: "token_classify"`) and
+  `POST /tokenize` contract the full stack's router already passes
+  through to the vLLM `embed` backend, so consumers (docint's sparse
+  encoder) target either backend by changing the base URL alone. Uses
+  `Dockerfile.sparse.cpu` (uv-managed Python 3.11, CPU torch,
+  transformers) and ships `src/sparse_server.py`, which drives
+  `BAAI/bge-m3` directly rather than through `FlagEmbedding` (same
+  aarch64-build rationale as `rerank-only`).
 - **Diarize-only** (`docker/compose.diarize-only.yaml`, CPU OK) — a single
   `diarize-only` container on `inference-net`, no router, no GPU. Same
-  audience as NER-only / Rerank-only / CLIP-only; co-deployable so a
-  non-CUDA host can offer `/gliner`, `/rerank`, `/clip/*`, and `/diarize`
-  at once. Reached as `http://diarize-only:8000/diarize`. Runs the same
+  audience as NER-only / Rerank-only / CLIP-only / Sparse-only;
+  co-deployable so a non-CUDA host can offer `/gliner`, `/rerank`,
+  `/clip/*`, `/pooling`+`/tokenize`, and `/diarize` at once. Reached as
+  `http://diarize-only:8000/diarize`. Runs the same
   `src/diarize_server.py` the full-stack `diarize` service does, so it
   speaks the identical multipart `/diarize` contract; consumers (Nextext)
   target either backend by changing the base URL alone. Uses
@@ -139,11 +156,11 @@ Seven independent compose projects, picked per host:
 
 The shapes are **not profiles of one compose file** — they have different
 images, different topologies, and (gliner-only, rerank-only, clip-only,
-diarize-only, asr-only, vad-only) no router. Pick one per host. They reuse
-the same external `inference-net` network and `huggingface-cache` volume, so
-the one-time `make network` / `make volumes` prerequisites apply to all of
-them. The six CPU-only shapes can coexist on a single host because they
-target different network aliases and host ports.
+sparse-only, diarize-only, asr-only, vad-only) no router. Pick one per host.
+They reuse the same external `inference-net` network and `huggingface-cache`
+volume, so the one-time `make network` / `make volumes` prerequisites apply
+to all of them. The seven CPU-only shapes can coexist on a single host
+because they target different network aliases and host ports.
 
 ## Common commands
 
@@ -207,8 +224,20 @@ make stop-clip-only
 make bundle-clip-only     # versioned .tar.gz of the clip-cpu image
 ```
 
-Or, for the Diarize-only shape (no CUDA, no router — pairs with Ollama,
+Or, for the Sparse-only shape (no CUDA, no router — pairs with Ollama,
 typically co-deployed with NER-only, Rerank-only, and CLIP-only):
+
+```bash
+make build-sparse-only    # builds vllm-service-sparse-only
+make up-sparse-only       # one sparse-only container on inference-net (no host port)
+make up-dev-sparse-only   # like 'up-sparse-only', but publishes the sparse port on the host
+make stop-sparse-only
+make bundle-sparse-only   # versioned .tar.gz of the sparse-only image
+```
+
+Or, for the Diarize-only shape (no CUDA, no router — pairs with Ollama,
+typically co-deployed with NER-only, Rerank-only, CLIP-only, and
+Sparse-only):
 
 ```bash
 make build-diarize-only   # builds vllm-service-diarize-cpu
@@ -501,6 +530,47 @@ curl -fsS -X POST http://localhost:${CLIP_HOST_PORT:-8002}/clip/embed_image \
 
 # dimension probe
 curl -fsS http://localhost:${CLIP_HOST_PORT:-8002}/clip/dimension
+```
+
+### Sparse-only shape (CPU)
+
+The `sparse-only` compose project runs `src/sparse_server.py` — a small
+FastAPI app that loads `BAAI/bge-m3` with `transformers` directly (not
+`FlagEmbedding`, whose `ir-datasets` → `zlib-state` dep tree fails to build
+on aarch64): an XLM-R forward pass, then the model's own `sparse_linear.pt`
+head (`Linear(hidden_size, 1)`), then ReLU, with padding positions stripped
+via the attention mask. Exposes the **same two routes** the full stack's
+router already passes through to the vLLM `embed` backend:
+
+```
+POST /pooling
+{"task": "token_classify", "input": ["...", ...]}
+→
+{"model": "...", "data": [{"index": 0, "data": [0.0, 0.31, ...]}, ...]}
+
+POST /tokenize
+{"prompt": "..."}
+→
+{"count": int, "max_model_len": int, "tokens": [int, ...]}
+```
+
+`task` must be `token_classify` — any other value returns HTTP 400; this
+server implements no other pooling task. Model identity is fixed at
+container startup via `SPARSE_MODEL` (defaults to `BAAI/bge-m3`, the same
+model the GPU stack's `embed` backend uses under vLLM's
+`BgeM3EmbeddingModel` architecture, so scores match); `SPARSE_MAX_LENGTH`
+(default `8192`) truncates both routes identically so `/tokenize` and
+`/pooling` never disagree on sequence length.
+
+`GET /health` returns `{"status": "ok", "model": "..."}` and is the
+healthcheck target.
+
+Smoke-test:
+
+```bash
+curl -fsS -X POST http://localhost:${SPARSE_HOST_PORT:-8007}/pooling \
+  -H 'Content-Type: application/json' \
+  -d '{"task": "token_classify", "input": ["what is RAG?"]}'
 ```
 
 ### Diarization backend (full stack)
