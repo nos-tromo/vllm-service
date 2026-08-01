@@ -26,7 +26,7 @@ import os
 import torch
 from fastapi import FastAPI, HTTPException
 from huggingface_hub import hf_hub_download
-from pydantic import BaseModel
+from pydantic import BaseModel, Field
 from transformers import AutoModel, AutoTokenizer
 
 MODEL_ID = os.environ.get("SPARSE_MODEL", "BAAI/bge-m3")
@@ -40,7 +40,7 @@ model = AutoModel.from_pretrained(MODEL_ID)
 model.train(False)
 
 
-def _load_sparse_head(hidden_size: int) -> object:
+def _load_sparse_head(hidden_size: int) -> torch.nn.Linear:
     """Load bge-m3's sparse projection head from the local HF cache.
 
     ``weights_only=True`` is load-bearing, not decoration: the default
@@ -118,3 +118,83 @@ def tokenize(req: TokenizeRequest) -> TokenizeResponse:
 def health() -> dict[str, str]:
     """Liveness probe target for the compose healthcheck."""
     return {"status": "ok", "model": MODEL_ID}
+
+
+class PoolingRequest(BaseModel):
+    """vLLM-shape pooling request body."""
+
+    model: str | None = None
+    task: str = "token_classify"
+    input: list[str] = Field(default_factory=list)
+
+
+class PoolingItem(BaseModel):
+    """One input's per-token score list."""
+
+    index: int
+    data: list[float]
+
+
+class PoolingResponse(BaseModel):
+    """vLLM-shape pooling response body."""
+
+    model: str
+    data: list[PoolingItem]
+
+
+def encode_token_weights(texts: list[str]) -> list[list[float]]:
+    """Compute bge-m3 sparse weights for each text.
+
+    Runs the encoder forward, applies the sparse head and ReLU, then
+    strips padding positions using the attention mask so each returned
+    list aligns one-to-one with that text's own token ids.
+
+    Args:
+        texts: Input texts.
+
+    Returns:
+        One list of per-token weights per input, in input order.
+    """
+    encoded = tokenizer(
+        texts,
+        padding=True,
+        truncation=True,
+        max_length=MAX_LENGTH,
+        return_tensors="pt",
+    )
+    with torch.no_grad():
+        hidden = model(**encoded, return_dict=True).last_hidden_state
+        weights = torch.relu(sparse_head(hidden)).squeeze(-1)
+
+    rows: list[list[float]] = []
+    for row, mask in zip(weights.tolist(), encoded["attention_mask"].tolist(), strict=False):
+        rows.append([float(weight) for weight, keep in zip(row, mask, strict=False) if keep == 1])
+    return rows
+
+
+@app.post("/pooling")
+def pooling(req: PoolingRequest) -> PoolingResponse:
+    """Return per-token sparse weights for each input.
+
+    Args:
+        req: Pooling request carrying the task and the input batch.
+
+    Returns:
+        One ``PoolingItem`` per input, in input order.
+
+    Raises:
+        HTTPException: 400 when ``task`` is anything but ``token_classify``.
+    """
+    if req.task != "token_classify":
+        raise HTTPException(
+            status_code=400,
+            detail=f"unsupported task {req.task!r}; this server implements only 'token_classify'",
+        )
+    if not req.input:
+        return PoolingResponse(model=MODEL_ID, data=[])
+
+    rows = encode_token_weights(req.input)
+    return PoolingResponse(
+        model=MODEL_ID,
+        data=[PoolingItem(index=i, data=row) for i, row in enumerate(rows)],
+    )

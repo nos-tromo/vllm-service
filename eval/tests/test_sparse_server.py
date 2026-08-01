@@ -153,3 +153,62 @@ def test_tokenize_rejects_empty_prompt() -> None:
     """An empty prompt is a client error, not an empty-token response."""
     response = client.post("/tokenize", json={"model": "BAAI/bge-m3", "prompt": ""})
     assert response.status_code == 400
+
+
+def test_pooling_rejects_unsupported_task() -> None:
+    """Only token_classify is supported; anything else is a 400, not a silent embed."""
+    response = client.post(
+        "/pooling",
+        json={"model": "BAAI/bge-m3", "task": "embed", "input": ["alpha beta"]},
+    )
+    assert response.status_code == 400
+    assert "token_classify" in response.json()["detail"]
+
+
+def test_pooling_empty_input_returns_empty_data() -> None:
+    """An empty batch is not an error — it returns an empty data list."""
+    response = client.post(
+        "/pooling",
+        json={"model": "BAAI/bge-m3", "task": "token_classify", "input": []},
+    )
+    assert response.status_code == 200
+    assert response.json()["data"] == []
+
+
+def test_pooling_returns_one_score_list_per_input(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Response shape must match docint's _pool_token_scores expectations."""
+    monkeypatch.setattr(
+        sparse_server,
+        "encode_token_weights",
+        lambda texts: [[0.0, 0.5, 0.25, 0.0] for _ in texts],
+    )
+    response = client.post(
+        "/pooling",
+        json={"model": "BAAI/bge-m3", "task": "token_classify", "input": ["alpha beta", "gamma delta"]},
+    )
+    assert response.status_code == 200
+    data = response.json()["data"]
+    assert len(data) == 2
+    assert data[0]["data"] == [0.0, 0.5, 0.25, 0.0]
+    assert [item["index"] for item in data] == [0, 1]
+
+
+def test_pooling_scores_align_with_tokenize_ids(monkeypatch: pytest.MonkeyPatch) -> None:
+    """The two routes must agree on sequence length for the same text.
+
+    docint pairs /tokenize ids with /pooling scores positionally. A
+    length mismatch silently truncates the sparse vector via zip(),
+    so this alignment is the contract that matters most.
+    """
+    monkeypatch.setattr(
+        sparse_server,
+        "encode_token_weights",
+        lambda texts: [[1.0] * len(sparse_server.tokenize_ids(text)) for text in texts],
+    )
+    text = "alpha beta gamma"
+    tokenize_body = client.post("/tokenize", json={"model": "BAAI/bge-m3", "prompt": text}).json()
+    pooling_body = client.post(
+        "/pooling",
+        json={"model": "BAAI/bge-m3", "task": "token_classify", "input": [text]},
+    ).json()
+    assert len(pooling_body["data"][0]["data"]) == len(tokenize_body["tokens"])
