@@ -24,16 +24,84 @@ if importlib.util.find_spec("transformers") is not None:
 
 
 class _FakeTokenizer:
-    """Minimal stand-in for transformers.AutoTokenizer output."""
+    """Stand-in for transformers.AutoTokenizer covering both call shapes.
+
+    ``encode`` (the ``/tokenize`` route, via ``tokenize_ids``) and
+    ``__call__`` (the ``/pooling`` batch route, via
+    ``encode_token_weights``) are deliberately separate implementations
+    — neither delegates to nor derives from the other — so a test can
+    tell the two real tokenization paths apart if they ever drift (e.g.
+    one passing ``add_special_tokens=False`` while the other doesn't).
+    Each records the kwargs it was invoked with for that assertion.
+    """
+
+    def __init__(self) -> None:
+        """Start with empty call logs."""
+        self.encode_calls: list[dict[str, object]] = []
+        self.call_calls: list[dict[str, object]] = []
 
     @staticmethod
     def from_pretrained(*_args: object, **_kwargs: object) -> "_FakeTokenizer":
         """Return the fake instance regardless of arguments."""
         return _FakeTokenizer()
 
-    def encode(self, text: str, **_kwargs: object) -> list[int]:
-        """Return one id per whitespace token, wrapped in BOS/EOS."""
-        return [0, *[100 + len(w) for w in text.split()], 2]
+    def encode(
+        self,
+        text: str,
+        add_special_tokens: bool = True,
+        truncation: bool = False,
+        max_length: int | None = None,
+        **_kwargs: object,
+    ) -> list[int]:
+        """Return one id per whitespace token, wrapped in BOS/EOS.
+
+        Honours ``add_special_tokens``/``truncation``/``max_length`` on
+        its own terms — this method must never be called by
+        ``__call__`` (or vice versa).
+        """
+        self.encode_calls.append(
+            {"add_special_tokens": add_special_tokens, "truncation": truncation, "max_length": max_length}
+        )
+        ids = [100 + len(word) for word in text.split()]
+        if add_special_tokens:
+            ids = [0, *ids, 2]
+        if truncation and max_length is not None:
+            ids = ids[:max_length]
+        return ids
+
+    def __call__(
+        self,
+        texts: list[str],
+        padding: bool = False,
+        truncation: bool = False,
+        max_length: int | None = None,
+        add_special_tokens: bool = True,
+        return_tensors: str | None = None,
+        **_kwargs: object,
+    ) -> dict[str, "_FakeTensor"]:
+        """Batch-tokenize independently of ``encode``, then pad to the batch width.
+
+        Mirrors a real ``BatchEncoding``: right-pads every row to the
+        longest row in the batch and returns a matching attention mask,
+        so tests exercising the real ``encode_token_weights`` per-row
+        mask-stripping logic see genuinely different row lengths.
+        """
+        self.call_calls.append(
+            {"add_special_tokens": add_special_tokens, "truncation": truncation, "max_length": max_length}
+        )
+        rows: list[list[int]] = []
+        for text in texts:
+            ids = [100 + len(word) for word in text.split()]
+            if add_special_tokens:
+                ids = [0, *ids, 2]
+            if truncation and max_length is not None:
+                ids = ids[:max_length]
+            rows.append(ids)
+
+        width = max((len(row) for row in rows), default=0)
+        input_ids = [[*row, *([1] * (width - len(row)))] for row in rows]
+        attention_mask = [[*([1] * len(row)), *([0] * (width - len(row)))] for row in rows]
+        return {"input_ids": _FakeTensor(input_ids), "attention_mask": _FakeTensor(attention_mask)}
 
 
 class _FakeModel:
@@ -74,14 +142,24 @@ class _FakeTensor:
         return self._data
 
 
-def _install_stubs() -> list[str]:
+def _install_stubs() -> dict[str, types.ModuleType | None]:
     """Stub torch + transformers + huggingface_hub in sys.modules.
 
+    All four names are assigned directly, never via ``setdefault``. An
+    import-order-dependent ``setdefault`` is exactly what let this bite
+    us: if some earlier-collected test file already imported
+    ``huggingface_hub`` for real, ``setdefault`` would leave that real
+    module in place, ``sparse_server`` would bind the real
+    ``hf_hub_download``, and importing it would attempt a live network
+    download of ``sparse_linear.pt`` — hanging an airgapped CI runner.
+    Direct assignment guarantees the stub wins regardless of import
+    order.
+
     Returns:
-        The names this call actually inserted, so they can be removed
-        again after import. Leaving them in ``sys.modules`` would poison
-        every test file that runs later — see the same dance in
-        ``test_clip_server.py``.
+        A mapping of each stubbed name to whatever module object (if
+        any) occupied it in ``sys.modules`` beforehand, so the caller
+        can restore that exact prior state after import instead of
+        blindly deleting a module this test didn't actually insert.
     """
     torch_stub = types.ModuleType("torch")
     torch_stub.float32 = "float32"  # type: ignore[attr-defined]
@@ -109,13 +187,10 @@ def _install_stubs() -> list[str]:
 
     nn_stub.Linear = _Linear  # type: ignore[attr-defined]
     torch_stub.nn = nn_stub  # type: ignore[attr-defined]
-    sys.modules["torch"] = torch_stub
-    sys.modules["torch.nn"] = nn_stub
 
     transformers_stub = types.ModuleType("transformers")
     transformers_stub.AutoTokenizer = _FakeTokenizer  # type: ignore[attr-defined]
     transformers_stub.AutoModel = _FakeModel  # type: ignore[attr-defined]
-    sys.modules["transformers"] = transformers_stub
 
     hub_stub = types.ModuleType("huggingface_hub")
     hub_stub.hf_hub_download = lambda *_a, **_k: "/nonexistent/sparse_linear.pt"  # type: ignore[attr-defined]
@@ -126,10 +201,12 @@ def _install_stubs() -> list[str]:
         "transformers": transformers_stub,
         "huggingface_hub": hub_stub,
     }
-    return [name for name, module in stubs.items() if sys.modules.setdefault(name, module) is module]
+    previous = {name: sys.modules.get(name) for name in stubs}
+    sys.modules.update(stubs)
+    return previous
 
 
-_inserted_stubs = _install_stubs()
+_previous_modules = _install_stubs()
 
 # src/ is not a package; make its modules importable for the unit test.
 sys.path.insert(0, str(Path(__file__).resolve().parents[2] / "src"))
@@ -137,11 +214,16 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[2] / "src"))
 try:
     import sparse_server
 finally:
-    # sparse_server holds its own references to the stub modules; drop
-    # them from sys.modules so other test files still get the real
-    # ImportError (and the real torch where it is installed).
-    for _name in _inserted_stubs:
-        del sys.modules[_name]
+    # sparse_server holds its own references to the stub modules; put
+    # sys.modules back exactly as it was (restoring any real module we
+    # displaced, or removing the key if there was none) so other test
+    # files still get the real ImportError (and the real torch where it
+    # is installed).
+    for _name, _previous_module in _previous_modules.items():
+        if _previous_module is None:
+            sys.modules.pop(_name, None)
+        else:
+            sys.modules[_name] = _previous_module
 
 from fastapi.testclient import TestClient  # noqa: E402
 
@@ -217,21 +299,48 @@ def test_pooling_scores_align_with_tokenize_ids(monkeypatch: pytest.MonkeyPatch)
     """The two routes must agree on sequence length for the same text.
 
     docint pairs /tokenize ids with /pooling scores positionally. A
-    length mismatch silently truncates the sparse vector via zip(),
-    so this alignment is the contract that matters most.
+    length mismatch silently truncates the sparse vector via zip(), so
+    this alignment is the contract that matters most.
+
+    This runs the REAL ``tokenize_ids`` and ``encode_token_weights`` —
+    only ``model``/``sparse_head``/``torch.relu`` are faked, and only as
+    shape-preserving identities over the tokenizer's own attention
+    mask, so the response lengths are driven entirely by
+    ``_FakeTokenizer``'s independent ``encode``/``__call__`` paths (see
+    its docstring). A prior version of this test derived the pooling
+    length FROM ``tokenize_ids``'s own output, which made it pass by
+    construction no matter what ``encode_token_weights`` actually did.
+    The batch mixes a 3-word and a 1-word text so a real batch gets
+    padded, exercising the per-row mask strip (a single-item batch
+    never pads, so it couldn't have caught a dropped mask strip). The
+    kwargs assertions below additionally catch the two paths silently
+    diverging on ``add_special_tokens``/``truncation``/``max_length``
+    even in cases where that divergence wouldn't happen to change a
+    length.
     """
     monkeypatch.setattr(
         sparse_server,
-        "encode_token_weights",
-        lambda texts: [[1.0] * len(sparse_server.tokenize_ids(text)) for text in texts],
+        "model",
+        lambda **kwargs: types.SimpleNamespace(last_hidden_state=kwargs["attention_mask"]),
     )
-    text = "alpha beta gamma"
-    tokenize_body = client.post("/tokenize", json={"model": "BAAI/bge-m3", "prompt": text}).json()
+    monkeypatch.setattr(sparse_server, "sparse_head", lambda hidden: hidden)
+    monkeypatch.setattr(sparse_server.torch, "relu", lambda x: x, raising=False)
+
+    texts = ["alpha beta gamma", "delta"]
+    tokenize_bodies = [client.post("/tokenize", json={"model": "BAAI/bge-m3", "prompt": text}).json() for text in texts]
     pooling_body = client.post(
         "/pooling",
-        json={"model": "BAAI/bge-m3", "task": "token_classify", "input": [text]},
+        json={"model": "BAAI/bge-m3", "task": "token_classify", "input": texts},
     ).json()
-    assert len(pooling_body["data"][0]["data"]) == len(tokenize_body["tokens"])
+
+    for index, tokenize_body in enumerate(tokenize_bodies):
+        assert len(pooling_body["data"][index]["data"]) == len(tokenize_body["tokens"])
+
+    encode_kwargs = sparse_server.tokenizer.encode_calls[-1]
+    call_kwargs = sparse_server.tokenizer.call_calls[-1]
+    assert encode_kwargs["add_special_tokens"] == call_kwargs["add_special_tokens"]
+    assert encode_kwargs["truncation"] == call_kwargs["truncation"]
+    assert encode_kwargs["max_length"] == call_kwargs["max_length"]
 
 
 def test_encode_token_weights_strips_padding_per_row(monkeypatch: pytest.MonkeyPatch) -> None:

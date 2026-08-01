@@ -167,8 +167,8 @@ def encode_token_weights(texts: list[str]) -> list[list[float]]:
         weights = torch.relu(sparse_head(hidden)).squeeze(-1)
 
     rows: list[list[float]] = []
-    for row, mask in zip(weights.tolist(), encoded["attention_mask"].tolist(), strict=False):
-        rows.append([float(weight) for weight, keep in zip(row, mask, strict=False) if keep == 1])
+    for row, mask in zip(weights.tolist(), encoded["attention_mask"].tolist(), strict=True):
+        rows.append([float(weight) for weight, keep in zip(row, mask, strict=True) if keep == 1])
     return rows
 
 
