@@ -54,6 +54,26 @@ class _FakeModel:
         return self
 
 
+class _FakeTensor:
+    """Minimal stand-in for a torch.Tensor: only squeeze() and tolist()."""
+
+    def __init__(self, data: list[list[float]] | list[list[int]]) -> None:
+        """Wrap nested list data as a fake tensor.
+
+        Args:
+            data: The values this fake tensor reports via ``tolist()``.
+        """
+        self._data = data
+
+    def squeeze(self, *_args: object, **_kwargs: object) -> "_FakeTensor":
+        """Return self; these fakes never need an actual shape change."""
+        return self
+
+    def tolist(self) -> list[list[float]] | list[list[int]]:
+        """Return the wrapped nested list, mimicking torch.Tensor.tolist()."""
+        return self._data
+
+
 def _install_stubs() -> list[str]:
     """Stub torch + transformers + huggingface_hub in sys.modules.
 
@@ -212,3 +232,33 @@ def test_pooling_scores_align_with_tokenize_ids(monkeypatch: pytest.MonkeyPatch)
         json={"model": "BAAI/bge-m3", "task": "token_classify", "input": [text]},
     ).json()
     assert len(pooling_body["data"][0]["data"]) == len(tokenize_body["tokens"])
+
+
+def test_encode_token_weights_strips_padding_per_row(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Mixed-length batch: each row keeps its OWN token count, not the batch max.
+
+    The other /pooling tests monkeypatch ``encode_token_weights`` itself, so
+    none of them exercise its real per-row attention-mask stripping. This one
+    fakes only the dependencies (tokenizer, model, sparse_head, torch.relu)
+    and runs the real function, so a bug that strips by batch-max instead of
+    per-row mask — or applies the wrong mask — would be caught here. The pad
+    positions carry deliberately large weights (0.9) so a masking bug shows
+    up as a wrong value, not just a wrong length.
+    """
+    fake_mask = [[1, 1, 0, 0], [1, 1, 1, 1]]
+    fake_weights = [[0.1, 0.2, 0.9, 0.9], [0.3, 0.4, 0.5, 0.6]]
+    encoded = {"input_ids": _FakeTensor(fake_mask), "attention_mask": _FakeTensor(fake_mask)}
+
+    def fake_model(**_kwargs: object) -> types.SimpleNamespace:
+        return types.SimpleNamespace(last_hidden_state=_FakeTensor([]))
+
+    monkeypatch.setattr(sparse_server, "tokenizer", lambda *_args, **_kwargs: encoded)
+    monkeypatch.setattr(sparse_server, "model", fake_model)
+    monkeypatch.setattr(sparse_server, "sparse_head", lambda _hidden: _FakeTensor(fake_weights))
+    monkeypatch.setattr(sparse_server.torch, "relu", lambda x: x, raising=False)
+
+    rows = sparse_server.encode_token_weights(["a b", "a b c d"])
+
+    assert len(rows[0]) == 2
+    assert len(rows[1]) == 4
+    assert rows[0] == [0.1, 0.2]
