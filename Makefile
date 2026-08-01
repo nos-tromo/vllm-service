@@ -46,6 +46,14 @@
 #    router, no GPU requirement. Lives in docker/compose.vad-only.yaml.
 #    Same multipart /vad contract as the full-stack `vad` service.
 #    Targets: build-vad-only, up-vad-only, stop-vad-only, bundle-vad-only.
+#
+# 8. Sparse-only (same hosts as the other -only shapes) — a single
+#    FastAPI/transformers bge-m3 sparse-encoder container on inference-net,
+#    no router, no GPU requirement. Lives in docker/compose.sparse-only.yaml.
+#    Serves the same /pooling + /tokenize routes the full stack's router
+#    passes through, so docint only has to repoint SPARSE_API_BASE.
+#    Targets: build-sparse-only, up-sparse-only, stop-sparse-only,
+#             bundle-sparse-only.
 
 .DEFAULT_GOAL := help
 
@@ -55,7 +63,8 @@
         build-clip-only bundle-clip-only up-clip-only up-dev-clip-only stop-clip-only down-clip-only \
         build-diarize-only bundle-diarize-only up-diarize-only up-dev-diarize-only stop-diarize-only down-diarize-only \
         build-asr-only bundle-asr-only up-asr-only up-dev-asr-only stop-asr-only down-asr-only \
-        build-vad-only bundle-vad-only up-vad-only up-dev-vad-only stop-vad-only down-vad-only
+        build-vad-only bundle-vad-only up-vad-only up-dev-vad-only stop-vad-only down-vad-only \
+        build-sparse-only bundle-sparse-only up-sparse-only up-dev-sparse-only stop-sparse-only down-sparse-only
 
 # The full-stack compose lifecycle (network/volumes/build/bundle/up/up-dev/
 # stop/down/pre-commit) + the versioned image tag come from make/common.mk,
@@ -79,6 +88,8 @@ COMPOSE_ASR_ONLY        := docker compose --env-file .env -f docker/compose.asr-
 COMPOSE_ASR_ONLY_DEV    := docker compose --env-file .env -f docker/compose.asr-only.yaml -f docker/compose.asr-only.override.yaml
 COMPOSE_VAD_ONLY        := docker compose --env-file .env -f docker/compose.vad-only.yaml
 COMPOSE_VAD_ONLY_DEV    := docker compose --env-file .env -f docker/compose.vad-only.yaml -f docker/compose.vad-only.override.yaml
+COMPOSE_SPARSE_ONLY     := docker compose --env-file .env -f docker/compose.sparse-only.yaml
+COMPOSE_SPARSE_ONLY_DEV := docker compose --env-file .env -f docker/compose.sparse-only.yaml -f docker/compose.sparse-only.override.yaml
 
 help:
 	@echo "vllm-service — build-host helpers."
@@ -146,6 +157,14 @@ help:
 	@echo "  make up-dev-vad-only      like 'up-vad-only', but publishes the port on the host"
 	@echo "  make stop-vad-only        stop the VAD service"
 	@echo "  make down-vad-only        stop + remove the VAD service"
+	@echo
+	@echo "Sparse-only stack (CPU; pairs with Ollama on non-CUDA hosts):"
+	@echo "  make build-sparse-only    build the sparse-cpu image"
+	@echo "  make bundle-sparse-only   ship the sparse-cpu image as a versioned .tar.gz"
+	@echo "  make up-sparse-only       run the sparse-encoder service on inference-net (detached, no host port)"
+	@echo "  make up-dev-sparse-only   like 'up-sparse-only', but publishes the port on the host"
+	@echo "  make stop-sparse-only     stop the sparse-encoder service"
+	@echo "  make down-sparse-only     stop + remove the sparse-encoder service"
 
 
 # --- NER-only stack -----------------------------------------------------
@@ -306,3 +325,30 @@ stop-vad-only:
 # Stop + remove the VAD service. External huggingface-cache survives.
 down-vad-only:
 	$(COMPOSE_VAD_ONLY) down
+
+# --- Sparse-only stack --------------------------------------------------
+#
+# Uses the same external inference-net + huggingface-cache as the full
+# stack, so `make network` and `make volumes` remain the one-time
+# prerequisites. Serves bge-m3 sparse weights on the same /pooling +
+# /tokenize routes the full stack's router passes through, so docint
+# only has to repoint SPARSE_API_BASE.
+build-sparse-only:
+	DOCKER_BUILDKIT=1 $(COMPOSE_SPARSE_ONLY) build
+
+bundle-sparse-only:
+	./scripts/bundle_images.sh sparse-only
+
+up-sparse-only:
+	$(COMPOSE_SPARSE_ONLY) up -d --no-build
+
+# Like 'up-sparse-only' but publishes the sparse port on the host.
+up-dev-sparse-only:
+	$(COMPOSE_SPARSE_ONLY_DEV) up -d --no-build
+
+stop-sparse-only:
+	$(COMPOSE_SPARSE_ONLY) stop
+
+# Stop + remove the sparse service. External huggingface-cache survives.
+down-sparse-only:
+	$(COMPOSE_SPARSE_ONLY) down

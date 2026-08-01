@@ -16,7 +16,8 @@ case "$PROFILE_ARG" in
   diarize-only) PROFILE_LABEL="diarize-only"; COMPOSE_FILE="docker/compose.diarize-only.yaml" ;;
   asr-only)     PROFILE_LABEL="asr-only";     COMPOSE_FILE="docker/compose.asr-only.yaml" ;;
   vad-only)     PROFILE_LABEL="vad-only";     COMPOSE_FILE="docker/compose.vad-only.yaml" ;;
-  *) echo "Usage: $0 [gliner-only|rerank-only|clip-only|diarize-only|asr-only|vad-only]" >&2; exit 2 ;;
+  sparse-only)  PROFILE_LABEL="sparse-only";  COMPOSE_FILE="docker/compose.sparse-only.yaml" ;;
+  *) echo "Usage: $0 [gliner-only|rerank-only|clip-only|diarize-only|asr-only|vad-only|sparse-only]" >&2; exit 2 ;;
 esac
 
 [[ -n "${BUNDLE_DEV:-}" ]] || bundle_checkout_release vllm-service
