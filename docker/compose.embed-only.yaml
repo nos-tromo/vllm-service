@@ -1,4 +1,4 @@
-name: vllm-service-sparse-only
+name: vllm-service-embed-only
 
 # Standalone CPU sparse-embedding stack. Not a profile of compose.yaml —
 # a separate compose project for hosts that cannot run the full CUDA
@@ -6,11 +6,11 @@ name: vllm-service-sparse-only
 # chat/embed).
 #
 # Topology:
-#   - one container, `sparse-only`, on the external `inference-net`
+#   - one container, `embed-only`, on the external `inference-net`
 #   - no LiteLLM router, no vLLM backends, no GPU reservation
 #   - the full stack's pass-through URLs `http://vllm-router:4000/pooling`
 #     and `/tokenize` are unavailable in this shape; consumers point
-#     SPARSE_API_BASE at `http://sparse-only:8000`
+#     SPARSE_API_BASE at `http://embed-only:8000`
 #
 # Auth: the container has no built-in Bearer-token gate. `inference-net`
 # is a private Docker network shared only between trusted compose
@@ -18,8 +18,8 @@ name: vllm-service-sparse-only
 # expose /rerank and /gliner.
 
 x-no-proxy-env: &no-proxy-env
-  NO_PROXY: "sparse-only,localhost,127.0.0.1,172.16.0.0/12,10.0.0.0/8${EXTRA_NO_PROXY:-}"
-  no_proxy: "sparse-only,localhost,127.0.0.1,172.16.0.0/12,10.0.0.0/8${EXTRA_NO_PROXY:-}"
+  NO_PROXY: "embed-only,localhost,127.0.0.1,172.16.0.0/12,10.0.0.0/8${EXTRA_NO_PROXY:-}"
+  no_proxy: "embed-only,localhost,127.0.0.1,172.16.0.0/12,10.0.0.0/8${EXTRA_NO_PROXY:-}"
 
 x-env-file: &env-file
   - path: ../.env
@@ -35,17 +35,17 @@ x-logging: &default-logging
     compress: "true"
 
 services:
-  sparse-only:
-    image: vllm-service-sparse-only:${VLLM_SERVICE_VERSION:-latest}
+  embed-only:
+    image: vllm-service-embed-only:${VLLM_SERVICE_VERSION:-latest}
     build:
       context: ..
-      dockerfile: docker/Dockerfile.sparse.cpu
+      dockerfile: docker/Dockerfile.embed.cpu
     logging: *default-logging
     env_file: *env-file
     environment:
       <<: *no-proxy-env
-      SPARSE_MODEL: ${SPARSE_MODEL:-BAAI/bge-m3}
-      SPARSE_MAX_LENGTH: ${SPARSE_MAX_LENGTH:-8192}
+      EMBED_MODEL: ${EMBED_MODEL:-BAAI/bge-m3}
+      EMBED_MAX_LENGTH: ${EMBED_MAX_LENGTH:-8192}
       HF_HUB_OFFLINE: ${HF_HUB_OFFLINE:-1}
       TRANSFORMERS_OFFLINE: ${TRANSFORMERS_OFFLINE:-1}
     volumes:
@@ -59,7 +59,7 @@ services:
     networks:
       inference-net:
         aliases:
-          - sparse-only
+          - embed-only
     restart: unless-stopped
 
 volumes:

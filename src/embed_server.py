@@ -1,4 +1,4 @@
-"""CPU sparse-embedding server for the sparse-only deployment shape.
+"""CPU sparse-embedding server for the embed-only deployment shape.
 
 Serves bge-m3's learned sparse (lexical) weights over the same two
 routes the full-stack LiteLLM router passes through to the vLLM
@@ -30,11 +30,11 @@ from huggingface_hub import hf_hub_download
 from pydantic import BaseModel, Field
 from transformers import AutoModel, AutoTokenizer
 
-MODEL_ID = os.environ.get("SPARSE_MODEL", "BAAI/bge-m3")
-MAX_LENGTH = int(os.environ.get("SPARSE_MAX_LENGTH", "8192"))
+MODEL_ID = os.environ.get("EMBED_MODEL", "BAAI/bge-m3")
+MAX_LENGTH = int(os.environ.get("EMBED_MAX_LENGTH", "8192"))
 SPARSE_LINEAR_FILE = os.environ.get("SPARSE_LINEAR_FILE", "sparse_linear.pt")
 
-app = FastAPI(title="vllm-service sparse-only", version="1.0")
+app = FastAPI(title="vllm-service embed-only", version="1.0")
 
 tokenizer = AutoTokenizer.from_pretrained(MODEL_ID)
 model = AutoModel.from_pretrained(MODEL_ID)

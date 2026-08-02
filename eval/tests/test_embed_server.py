@@ -1,11 +1,11 @@
-"""Route-level tests for the sparse-only server.
+"""Route-level tests for the embed-only server.
 
 The heavy ML deps (torch, transformers) are not installed in this env
 (see pyproject: the eval group is torch-free by design), so they are
-stubbed in ``sys.modules`` before ``sparse_server`` is imported; the
+stubbed in ``sys.modules`` before ``embed_server`` is imported; the
 tests then monkeypatch the tokenize/inference seams. If the real
 ``transformers`` is importable (the eval-run env), importing
-``sparse_server`` would try to load the actual checkpoint, so the module
+``embed_server`` would try to load the actual checkpoint, so the module
 is skipped there.
 """
 
@@ -18,7 +18,7 @@ import pytest
 
 if importlib.util.find_spec("transformers") is not None:
     pytest.skip(
-        "sparse_server unit tests need the torch-free env (real transformers would load the checkpoint at import)",
+        "embed_server unit tests need the torch-free env (real transformers would load the checkpoint at import)",
         allow_module_level=True,
     )
 
@@ -149,7 +149,7 @@ def _install_stubs() -> dict[str, types.ModuleType | None]:
     import-order-dependent ``setdefault`` is exactly what let this bite
     us: if some earlier-collected test file already imported
     ``huggingface_hub`` for real, ``setdefault`` would leave that real
-    module in place, ``sparse_server`` would bind the real
+    module in place, ``embed_server`` would bind the real
     ``hf_hub_download``, and importing it would attempt a live network
     download of ``sparse_linear.pt`` — hanging an airgapped CI runner.
     Direct assignment guarantees the stub wins regardless of import
@@ -212,9 +212,9 @@ _previous_modules = _install_stubs()
 sys.path.insert(0, str(Path(__file__).resolve().parents[2] / "src"))
 
 try:
-    import sparse_server
+    import embed_server
 finally:
-    # sparse_server holds its own references to the stub modules; put
+    # embed_server holds its own references to the stub modules; put
     # sys.modules back exactly as it was (restoring any real module we
     # displaced, or removing the key if there was none) so other test
     # files still get the real ImportError (and the real torch where it
@@ -227,7 +227,7 @@ finally:
 
 from fastapi.testclient import TestClient  # noqa: E402
 
-client = TestClient(sparse_server.app, raise_server_exceptions=False)
+client = TestClient(embed_server.app, raise_server_exceptions=False)
 
 
 def test_health_reports_model() -> None:
@@ -280,7 +280,7 @@ def test_pooling_empty_input_returns_empty_data() -> None:
 def test_pooling_returns_one_score_list_per_input(monkeypatch: pytest.MonkeyPatch) -> None:
     """Response shape must match docint's _pool_token_scores expectations."""
     monkeypatch.setattr(
-        sparse_server,
+        embed_server,
         "encode_token_weights",
         lambda texts: [[0.0, 0.5, 0.25, 0.0] for _ in texts],
     )
@@ -319,12 +319,12 @@ def test_pooling_scores_align_with_tokenize_ids(monkeypatch: pytest.MonkeyPatch)
     length.
     """
     monkeypatch.setattr(
-        sparse_server,
+        embed_server,
         "model",
         lambda **kwargs: types.SimpleNamespace(last_hidden_state=kwargs["attention_mask"]),
     )
-    monkeypatch.setattr(sparse_server, "sparse_head", lambda hidden: hidden)
-    monkeypatch.setattr(sparse_server.torch, "relu", lambda x: x, raising=False)
+    monkeypatch.setattr(embed_server, "sparse_head", lambda hidden: hidden)
+    monkeypatch.setattr(embed_server.torch, "relu", lambda x: x, raising=False)
 
     texts = ["alpha beta gamma", "delta"]
     tokenize_bodies = [client.post("/tokenize", json={"model": "BAAI/bge-m3", "prompt": text}).json() for text in texts]
@@ -336,8 +336,8 @@ def test_pooling_scores_align_with_tokenize_ids(monkeypatch: pytest.MonkeyPatch)
     for index, tokenize_body in enumerate(tokenize_bodies):
         assert len(pooling_body["data"][index]["data"]) == len(tokenize_body["tokens"])
 
-    encode_kwargs = sparse_server.tokenizer.encode_calls[-1]
-    call_kwargs = sparse_server.tokenizer.call_calls[-1]
+    encode_kwargs = embed_server.tokenizer.encode_calls[-1]
+    call_kwargs = embed_server.tokenizer.call_calls[-1]
     assert encode_kwargs["add_special_tokens"] == call_kwargs["add_special_tokens"]
     assert encode_kwargs["truncation"] == call_kwargs["truncation"]
     assert encode_kwargs["max_length"] == call_kwargs["max_length"]
@@ -361,12 +361,12 @@ def test_encode_token_weights_strips_padding_per_row(monkeypatch: pytest.MonkeyP
     def fake_model(**_kwargs: object) -> types.SimpleNamespace:
         return types.SimpleNamespace(last_hidden_state=_FakeTensor([]))
 
-    monkeypatch.setattr(sparse_server, "tokenizer", lambda *_args, **_kwargs: encoded)
-    monkeypatch.setattr(sparse_server, "model", fake_model)
-    monkeypatch.setattr(sparse_server, "sparse_head", lambda _hidden: _FakeTensor(fake_weights))
-    monkeypatch.setattr(sparse_server.torch, "relu", lambda x: x, raising=False)
+    monkeypatch.setattr(embed_server, "tokenizer", lambda *_args, **_kwargs: encoded)
+    monkeypatch.setattr(embed_server, "model", fake_model)
+    monkeypatch.setattr(embed_server, "sparse_head", lambda _hidden: _FakeTensor(fake_weights))
+    monkeypatch.setattr(embed_server.torch, "relu", lambda x: x, raising=False)
 
-    rows = sparse_server.encode_token_weights(["a b", "a b c d"])
+    rows = embed_server.encode_token_weights(["a b", "a b c d"])
 
     assert len(rows[0]) == 2
     assert len(rows[1]) == 4
@@ -411,24 +411,24 @@ class _FakeRows:
 
 def test_l2_normalise_returns_unit_vector() -> None:
     """A normalised vector has length 1 and preserves direction."""
-    out = sparse_server.l2_normalise([3.0, 4.0])
+    out = embed_server.l2_normalise([3.0, 4.0])
     assert out == pytest.approx([0.6, 0.8])
     assert sum(v * v for v in out) == pytest.approx(1.0)
 
 
 def test_l2_normalise_handles_zero_vector() -> None:
     """A zero vector must not divide by zero."""
-    assert sparse_server.l2_normalise([0.0, 0.0]) == [0.0, 0.0]
+    assert embed_server.l2_normalise([0.0, 0.0]) == [0.0, 0.0]
 
 
 def test_embeddings_returns_openai_shape(monkeypatch: pytest.MonkeyPatch) -> None:
     """Response must match the OpenAI embeddings contract the SDK expects."""
-    monkeypatch.setattr(sparse_server, "encode_dense", lambda texts: [[1.0, 0.0] for _ in texts])
+    monkeypatch.setattr(embed_server, "encode_dense", lambda texts: [[1.0, 0.0] for _ in texts])
     response = client.post("/v1/embeddings", json={"model": "BAAI/bge-m3", "input": ["alpha", "beta"]})
     assert response.status_code == 200
     body = response.json()
     assert body["object"] == "list"
-    assert body["model"] == sparse_server.MODEL_ID
+    assert body["model"] == embed_server.MODEL_ID
     assert [item["index"] for item in body["data"]] == [0, 1]
     assert body["data"][0]["object"] == "embedding"
     assert body["data"][0]["embedding"] == [1.0, 0.0]
@@ -436,7 +436,7 @@ def test_embeddings_returns_openai_shape(monkeypatch: pytest.MonkeyPatch) -> Non
 
 def test_embeddings_accepts_a_bare_string(monkeypatch: pytest.MonkeyPatch) -> None:
     """The OpenAI contract allows `input` to be a single string."""
-    monkeypatch.setattr(sparse_server, "encode_dense", lambda texts: [[1.0] for _ in texts])
+    monkeypatch.setattr(embed_server, "encode_dense", lambda texts: [[1.0] for _ in texts])
     response = client.post("/v1/embeddings", json={"model": "m", "input": "alpha"})
     assert response.status_code == 200
     assert len(response.json()["data"]) == 1
@@ -444,7 +444,7 @@ def test_embeddings_accepts_a_bare_string(monkeypatch: pytest.MonkeyPatch) -> No
 
 def test_embeddings_empty_input_returns_empty_data(monkeypatch: pytest.MonkeyPatch) -> None:
     """An empty batch is not an error."""
-    monkeypatch.setattr(sparse_server, "encode_dense", lambda texts: [])
+    monkeypatch.setattr(embed_server, "encode_dense", lambda texts: [])
     response = client.post("/v1/embeddings", json={"model": "m", "input": []})
     assert response.status_code == 200
     assert response.json()["data"] == []
@@ -464,10 +464,10 @@ def test_encode_dense_cls_pools_and_normalises(monkeypatch: pytest.MonkeyPatch) 
 
             return _Out()
 
-    monkeypatch.setattr(sparse_server, "tokenizer", lambda *a, **k: encoded)
-    monkeypatch.setattr(sparse_server, "model", _Model())
+    monkeypatch.setattr(embed_server, "tokenizer", lambda *a, **k: encoded)
+    monkeypatch.setattr(embed_server, "model", _Model())
 
-    rows = sparse_server.encode_dense(["a", "b"])
+    rows = embed_server.encode_dense(["a", "b"])
 
     assert rows[0] == pytest.approx([0.6, 0.8])  # fails if CLS pooling or L2 norm is wrong
     assert rows[1] == pytest.approx([0.0, 1.0])

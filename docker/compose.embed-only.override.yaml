@@ -1,0 +1,14 @@
+### Dev override for the embed-only stack — publishes the sparse service
+### on the host.
+###
+### NOT auto-loaded: it lives in docker/ and the Makefile passes explicit
+### -f flags. `make up-dev-embed-only` layers this on top of
+### docker/compose.embed-only.yaml so the service is reachable at
+### localhost:${EMBED_HOST_PORT} for direct testing; `make up-embed-only`
+### runs the base alone (production shape). Sibling containers reach the
+### service as `embed-only:8000` on inference-net regardless of this override.
+
+services:
+  embed-only:
+    ports:
+      - "${EMBED_HOST_PORT:-8007}:8000"
