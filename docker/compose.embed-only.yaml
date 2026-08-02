@@ -1,16 +1,17 @@
 name: vllm-service-embed-only
 
-# Standalone CPU sparse-embedding stack. Not a profile of compose.yaml —
-# a separate compose project for hosts that cannot run the full CUDA
-# stack (macOS, CPU-only Linux, AMD/ROCm boxes running Ollama for
-# chat/embed).
+# Standalone CPU dense+sparse embedding stack. Not a profile of
+# compose.yaml — a separate compose project for hosts that cannot run
+# the full CUDA stack (macOS, CPU-only Linux, AMD/ROCm boxes running
+# Ollama for chat/embed).
 #
 # Topology:
 #   - one container, `embed-only`, on the external `inference-net`
 #   - no LiteLLM router, no vLLM backends, no GPU reservation
-#   - the full stack's pass-through URLs `http://vllm-router:4000/pooling`
-#     and `/tokenize` are unavailable in this shape; consumers point
-#     SPARSE_API_BASE at `http://embed-only:8000`
+#   - the full stack's pass-through URLs `http://vllm-router:4000/v1/embeddings`,
+#     `/pooling`, and `/tokenize` are unavailable in this shape; consumers
+#     point their embedding base and SPARSE_API_BASE at
+#     `http://embed-only:8000`
 #
 # Auth: the container has no built-in Bearer-token gate. `inference-net`
 # is a private Docker network shared only between trusted compose

@@ -1,5 +1,5 @@
-### Dev override for the embed-only stack — publishes the sparse service
-### on the host.
+### Dev override for the embed-only stack — publishes the dense+sparse
+### embedding service on the host.
 ###
 ### NOT auto-loaded: it lives in docker/ and the Makefile passes explicit
 ### -f flags. `make up-dev-embed-only` layers this on top of
