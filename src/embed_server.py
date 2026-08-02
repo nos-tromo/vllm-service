@@ -1,17 +1,21 @@
-"""CPU sparse-embedding server for the embed-only deployment shape.
+"""CPU dense + sparse embedding server for the embed-only deployment shape.
 
-Serves bge-m3's learned sparse (lexical) weights over the same two
-routes the full-stack LiteLLM router passes through to the vLLM
-``embed`` backend — ``POST /pooling`` with ``task: "token_classify"``
-and ``POST /tokenize`` — so docint's ``RemoteSparseEncoder`` targets
-either backend without protocol changes.
+Serves bge-m3 dense embeddings alongside its learned sparse (lexical)
+weights and tokenization — the same three routes the full-stack LiteLLM
+router passes through to the vLLM ``embed`` backend: ``POST
+/v1/embeddings`` (OpenAI-compatible dense), ``POST /pooling`` with
+``task: "token_classify"`` (sparse), and ``POST /tokenize`` — so docint's
+embedding client and its ``RemoteSparseEncoder`` target either backend
+without protocol changes.
 
 The full stack runs bge-m3 under vLLM's ``BgeM3EmbeddingModel``
 architecture (see ``docker/compose.yaml``'s ``--hf-overrides``). This
-server reproduces that model's ``token_classify`` output on CPU with
-``transformers``: XLM-R forward, then the repo's ``sparse_linear.pt``
-head (``Linear(hidden_size, 1)``), then ReLU. Special and padding
-tokens fall out downstream — the consumer drops non-positive scores.
+server reproduces that model's dense and ``token_classify`` output on CPU
+with ``transformers``: each route runs its own XLM-R forward, then either
+CLS pooling + L2 normalisation (dense) or the repo's ``sparse_linear.pt``
+head (``Linear(hidden_size, 1)``) + ReLU (sparse). Special and padding
+tokens fall out downstream for sparse — the consumer drops non-positive
+scores.
 
 Inference uses ``transformers`` directly rather than ``FlagEmbedding``;
 the latter pulls ``ir-datasets`` -> ``zlib-state``, which needs
@@ -79,6 +83,31 @@ class TokenizeResponse(BaseModel):
     count: int
     max_model_len: int
     tokens: list[int]
+
+
+def _encode_batch(texts: list[str]) -> dict[str, torch.Tensor]:
+    """Tokenize a batch of texts for the dense and sparse encoders.
+
+    Both ``encode_token_weights`` and ``encode_dense`` route through this
+    seam so the two encoders can never silently diverge on
+    ``truncation``/``max_length``/special-token handling — the same
+    rationale as ``tokenize_ids`` above (the ``/tokenize`` seam), applied
+    to the batched shape the other two routes share.
+
+    Args:
+        texts: Input texts.
+
+    Returns:
+        The tokenizer's batch encoding (``input_ids``, ``attention_mask``,
+        ...) as padded PyTorch tensors.
+    """
+    return tokenizer(
+        texts,
+        padding=True,
+        truncation=True,
+        max_length=MAX_LENGTH,
+        return_tensors="pt",
+    )
 
 
 def tokenize_ids(text: str) -> list[int]:
@@ -156,13 +185,7 @@ def encode_token_weights(texts: list[str]) -> list[list[float]]:
     Returns:
         One list of per-token weights per input, in input order.
     """
-    encoded = tokenizer(
-        texts,
-        padding=True,
-        truncation=True,
-        max_length=MAX_LENGTH,
-        return_tensors="pt",
-    )
+    encoded = _encode_batch(texts)
     with torch.no_grad():
         hidden = model(**encoded, return_dict=True).last_hidden_state
         weights = torch.relu(sparse_head(hidden)).squeeze(-1)
@@ -265,13 +288,7 @@ def encode_dense(texts: list[str]) -> list[list[float]]:
     Returns:
         One unit-length vector per input, in input order.
     """
-    encoded = tokenizer(
-        texts,
-        padding=True,
-        truncation=True,
-        max_length=MAX_LENGTH,
-        return_tensors="pt",
-    )
+    encoded = _encode_batch(texts)
     with torch.no_grad():
         hidden = model(**encoded, return_dict=True).last_hidden_state
     cls_rows = hidden[:, 0].tolist()

@@ -343,6 +343,50 @@ def test_pooling_scores_align_with_tokenize_ids(monkeypatch: pytest.MonkeyPatch)
     assert encode_kwargs["max_length"] == call_kwargs["max_length"]
 
 
+def test_embeddings_and_pooling_tokenize_identically(monkeypatch: pytest.MonkeyPatch) -> None:
+    """/v1/embeddings and /pooling must batch-tokenize the same text identically.
+
+    ``encode_dense`` and ``encode_token_weights`` used to each carry their
+    own verbatim copy of the tokenizer call before both were routed
+    through the shared ``_encode_batch`` seam; a divergence there (e.g.
+    one copy silently dropping ``add_special_tokens`` or shrinking
+    ``max_length``) produces vectors that are still unit-length and the
+    right dimension — silently wrong, not loudly broken. This drives
+    both routes for the same text and compares the raw kwargs
+    ``_FakeTokenizer.__call__`` was invoked with, so a reintroduced
+    per-route copy that drifts on any of them fails here immediately.
+
+    The two routes need different fake forward passes — ``encode_dense``
+    indexes ``hidden[:, 0]`` (CLS) while ``encode_token_weights`` feeds
+    the whole hidden state through the sparse head — so each is
+    monkeypatched separately; only the captured tokenizer kwargs are
+    compared.
+    """
+    text = "alpha beta gamma"
+
+    monkeypatch.setattr(
+        embed_server,
+        "model",
+        lambda **kwargs: types.SimpleNamespace(last_hidden_state=kwargs["attention_mask"]),
+    )
+    monkeypatch.setattr(embed_server, "sparse_head", lambda hidden: hidden)
+    monkeypatch.setattr(embed_server.torch, "relu", lambda x: x, raising=False)
+    client.post("/pooling", json={"model": "BAAI/bge-m3", "task": "token_classify", "input": [text]})
+    pooling_kwargs = embed_server.tokenizer.call_calls[-1]
+
+    monkeypatch.setattr(
+        embed_server,
+        "model",
+        lambda **_kwargs: types.SimpleNamespace(last_hidden_state=_FakeHidden([[[0.0, 0.0]]])),
+    )
+    client.post("/v1/embeddings", json={"model": "BAAI/bge-m3", "input": [text]})
+    dense_kwargs = embed_server.tokenizer.call_calls[-1]
+
+    assert dense_kwargs["add_special_tokens"] == pooling_kwargs["add_special_tokens"]
+    assert dense_kwargs["truncation"] == pooling_kwargs["truncation"]
+    assert dense_kwargs["max_length"] == pooling_kwargs["max_length"]
+
+
 def test_encode_token_weights_strips_padding_per_row(monkeypatch: pytest.MonkeyPatch) -> None:
     """Mixed-length batch: each row keeps its OWN token count, not the batch max.
 
