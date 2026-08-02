@@ -21,6 +21,7 @@ inference-only deployments.
 
 from __future__ import annotations
 
+import math
 import os
 
 import torch
@@ -197,4 +198,108 @@ def pooling(req: PoolingRequest) -> PoolingResponse:
     return PoolingResponse(
         model=MODEL_ID,
         data=[PoolingItem(index=i, data=row) for i, row in enumerate(rows)],
+    )
+
+
+class EmbeddingsRequest(BaseModel):
+    """OpenAI-compatible embeddings request body."""
+
+    model: str | None = None
+    input: str | list[str]
+
+
+class EmbeddingItem(BaseModel):
+    """One embedding in an OpenAI-shape response."""
+
+    object: str = "embedding"
+    index: int
+    embedding: list[float]
+
+
+class EmbeddingsUsage(BaseModel):
+    """Token accounting for an embeddings response."""
+
+    prompt_tokens: int
+    total_tokens: int
+
+
+class EmbeddingsResponse(BaseModel):
+    """OpenAI-compatible embeddings response body."""
+
+    object: str = "list"
+    data: list[EmbeddingItem]
+    model: str
+    usage: EmbeddingsUsage
+
+
+def l2_normalise(vec: list[float]) -> list[float]:
+    """Scale a vector to unit length.
+
+    Done in plain Python rather than torch so the arithmetic stays
+    testable in the torch-free eval group; the cost is negligible
+    beside the encoder forward pass.
+
+    Args:
+        vec: Raw vector components.
+
+    Returns:
+        The unit-length vector, or the input unchanged when its norm is
+        zero (a zero vector has no direction to preserve).
+    """
+    norm = math.sqrt(sum(component * component for component in vec))
+    if norm == 0.0:
+        return list(vec)
+    return [component / norm for component in vec]
+
+
+def encode_dense(texts: list[str]) -> list[list[float]]:
+    """Compute bge-m3 dense embeddings for each text.
+
+    Dense is CLS pooling — the first token of ``last_hidden_state`` —
+    followed by L2 normalisation, matching FlagEmbedding's ``cls``
+    sentence-pooling method for this model.
+
+    Args:
+        texts: Input texts.
+
+    Returns:
+        One unit-length vector per input, in input order.
+    """
+    encoded = tokenizer(
+        texts,
+        padding=True,
+        truncation=True,
+        max_length=MAX_LENGTH,
+        return_tensors="pt",
+    )
+    with torch.no_grad():
+        hidden = model(**encoded, return_dict=True).last_hidden_state
+    cls_rows = hidden[:, 0].tolist()
+    return [l2_normalise([float(component) for component in row]) for row in cls_rows]
+
+
+@app.post("/v1/embeddings")
+def embeddings(req: EmbeddingsRequest) -> EmbeddingsResponse:
+    """Return dense embeddings in the OpenAI response shape.
+
+    The request's ``model`` field is ignored and the configured model is
+    echoed back, matching ``/pooling`` and ``/tokenize``: this container
+    serves exactly one model.
+
+    Args:
+        req: Embeddings request carrying one or more input texts.
+
+    Returns:
+        One embedding per input, in input order.
+    """
+    texts = [req.input] if isinstance(req.input, str) else list(req.input)
+    if not texts:
+        return EmbeddingsResponse(data=[], model=MODEL_ID, usage=EmbeddingsUsage(prompt_tokens=0, total_tokens=0))
+
+    vectors = encode_dense(texts)
+    token_total = sum(len(tokenize_ids(text)) for text in texts)
+    return EmbeddingsResponse(
+        data=[EmbeddingItem(index=i, embedding=vector) for i, vector in enumerate(vectors)],
+        model=MODEL_ID,
+        usage=EmbeddingsUsage(prompt_tokens=token_total, total_tokens=token_total),
     )

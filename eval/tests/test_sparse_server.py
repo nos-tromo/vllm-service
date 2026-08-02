@@ -371,3 +371,103 @@ def test_encode_token_weights_strips_padding_per_row(monkeypatch: pytest.MonkeyP
     assert len(rows[0]) == 2
     assert len(rows[1]) == 4
     assert rows[0] == [0.1, 0.2]
+
+
+class _FakeHidden:
+    """Stands in for last_hidden_state; supports [:, k] -> per-item position k.
+
+    Holds one sequence of position-vectors per batch item (mirroring the
+    real ``(batch, seq_len, hidden)`` shape) so indexing genuinely
+    depends on the requested position — a fake that ignored the index
+    and always returned the same rows would let a wrong-position bug
+    (e.g. reading position 1 instead of the CLS position 0) pass
+    unnoticed.
+    """
+
+    def __init__(self, sequences: list[list[list[float]]]) -> None:
+        self._sequences = sequences
+
+    def __getitem__(self, key: tuple[slice, int]) -> "_FakeRows":
+        """Return each batch item's vector at the requested position.
+
+        Args:
+            key: A ``(slice(None), position)`` tuple, matching the real
+                ``hidden[:, position]`` indexing this fake stands in for.
+        """
+        _, position = key
+        return _FakeRows([sequence[position] for sequence in self._sequences])
+
+
+class _FakeRows:
+    """The object `hidden[:, 0]` yields; only .tolist() is used."""
+
+    def __init__(self, rows: list[list[float]]) -> None:
+        self._rows = rows
+
+    def tolist(self) -> list[list[float]]:
+        """Return the raw CLS rows."""
+        return self._rows
+
+
+def test_l2_normalise_returns_unit_vector() -> None:
+    """A normalised vector has length 1 and preserves direction."""
+    out = sparse_server.l2_normalise([3.0, 4.0])
+    assert out == pytest.approx([0.6, 0.8])
+    assert sum(v * v for v in out) == pytest.approx(1.0)
+
+
+def test_l2_normalise_handles_zero_vector() -> None:
+    """A zero vector must not divide by zero."""
+    assert sparse_server.l2_normalise([0.0, 0.0]) == [0.0, 0.0]
+
+
+def test_embeddings_returns_openai_shape(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Response must match the OpenAI embeddings contract the SDK expects."""
+    monkeypatch.setattr(sparse_server, "encode_dense", lambda texts: [[1.0, 0.0] for _ in texts])
+    response = client.post("/v1/embeddings", json={"model": "BAAI/bge-m3", "input": ["alpha", "beta"]})
+    assert response.status_code == 200
+    body = response.json()
+    assert body["object"] == "list"
+    assert body["model"] == sparse_server.MODEL_ID
+    assert [item["index"] for item in body["data"]] == [0, 1]
+    assert body["data"][0]["object"] == "embedding"
+    assert body["data"][0]["embedding"] == [1.0, 0.0]
+
+
+def test_embeddings_accepts_a_bare_string(monkeypatch: pytest.MonkeyPatch) -> None:
+    """The OpenAI contract allows `input` to be a single string."""
+    monkeypatch.setattr(sparse_server, "encode_dense", lambda texts: [[1.0] for _ in texts])
+    response = client.post("/v1/embeddings", json={"model": "m", "input": "alpha"})
+    assert response.status_code == 200
+    assert len(response.json()["data"]) == 1
+
+
+def test_embeddings_empty_input_returns_empty_data(monkeypatch: pytest.MonkeyPatch) -> None:
+    """An empty batch is not an error."""
+    monkeypatch.setattr(sparse_server, "encode_dense", lambda texts: [])
+    response = client.post("/v1/embeddings", json={"model": "m", "input": []})
+    assert response.status_code == 200
+    assert response.json()["data"] == []
+
+
+def test_encode_dense_cls_pools_and_normalises(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Runs the REAL encode_dense: CLS row is taken and unit-normalised."""
+    encoded = {"attention_mask": _FakeTensor([[1, 1], [1, 1]])}
+
+    class _Model:
+        def __call__(self, **_kwargs: object) -> object:
+            class _Out:
+                # Position 0 (CLS) holds the real vectors; position 1 holds
+                # deliberately different values so reading the wrong
+                # position produces a wrong, detectable result.
+                last_hidden_state = _FakeHidden([[[3.0, 4.0], [99.0, 99.0]], [[0.0, 5.0], [88.0, 88.0]]])
+
+            return _Out()
+
+    monkeypatch.setattr(sparse_server, "tokenizer", lambda *a, **k: encoded)
+    monkeypatch.setattr(sparse_server, "model", _Model())
+
+    rows = sparse_server.encode_dense(["a", "b"])
+
+    assert rows[0] == pytest.approx([0.6, 0.8])  # fails if CLS pooling or L2 norm is wrong
+    assert rows[1] == pytest.approx([0.0, 1.0])
