@@ -393,7 +393,11 @@ make up-embed-only        # starts the embed-only container
 
 On first start the container downloads the `BAAI/bge-m3` weights (encoder
 plus the `sparse_linear.pt` head) to the shared `huggingface-cache` volume —
-same model the GPU stack uses, so scores match. The healthcheck reports
+the same model and pooling definition the GPU stack uses, so scores are
+equivalent up to dtype: this server runs float32, while vLLM's
+`dtype="auto"` casts bge-m3's float32 checkpoint to float16, so the two
+diverge by roughly 1e-3. Exact side-by-side parity is unverified pending
+#75 (no CUDA host to run the comparison against). The healthcheck reports
 healthy once FastAPI is accepting requests against `/health`. If your host
 is offline you'll need to pre-populate the cache by temporarily setting
 `HF_HUB_OFFLINE=0` and `TRANSFORMERS_OFFLINE=0` in `.env`.

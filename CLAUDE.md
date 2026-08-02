@@ -546,10 +546,13 @@ The `embed-only` compose project runs `src/embed_server.py` — a small
 FastAPI app that loads `BAAI/bge-m3` with `transformers` directly (not
 `FlagEmbedding`, whose `ir-datasets` → `zlib-state` dep tree fails to build
 on aarch64) and serves **all three** of the full stack's `embed`-backend
-contracts from that one loaded model: an XLM-R forward pass feeds both CLS
-pooling + L2 normalization (dense) and the model's own `sparse_linear.pt`
-head + ReLU (sparse), with padding positions stripped via the attention
-mask for the sparse route.
+contracts from that one loaded model: each route runs its own XLM-R
+forward pass over the shared loaded model; dense takes CLS pooling + L2
+normalization, sparse the model's own `sparse_linear.pt` head + ReLU,
+with padding positions stripped via the attention mask for the sparse
+route. The win is one model load shared across routes, not one forward
+pass — each route still runs its own full forward, and a consumer wanting
+both makes two independent HTTP calls.
 
 ```
 POST /v1/embeddings
@@ -574,11 +577,15 @@ POST /tokenize
 echoes its configured name back). `/pooling`'s `task` must be
 `token_classify` — any other value returns HTTP 400; this server
 implements no other pooling task. Model identity is fixed at container
-startup via `EMBED_MODEL` (defaults to `BAAI/bge-m3`, the same model the
-GPU stack's `embed` backend uses under vLLM's `BgeM3EmbeddingModel`
-architecture, so scores match); `EMBED_MAX_LENGTH` (default `8192`)
-truncates all three routes identically so `/tokenize`, `/pooling`, and
-`/v1/embeddings` never disagree on sequence length.
+startup via `EMBED_MODEL` (defaults to `BAAI/bge-m3`, the same model and
+pooling definition the GPU stack's `embed` backend uses under vLLM's
+`BgeM3EmbeddingModel` architecture, so scores are equivalent up to dtype:
+this server runs float32, while vLLM's `dtype="auto"` casts bge-m3's
+float32 checkpoint to float16, diverging by roughly 1e-3. Exact
+side-by-side parity against the CUDA stack is unverified pending #75);
+`EMBED_MAX_LENGTH` (default `8192`) truncates all three routes identically
+so `/tokenize`, `/pooling`, and `/v1/embeddings` never disagree on
+sequence length.
 
 `GET /health` returns `{"status": "ok", "model": "..."}` and is the
 healthcheck target.
