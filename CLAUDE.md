@@ -433,6 +433,13 @@ follow that same pattern rather than hard-coding it in `command:`. The `gliner`
 shell builder invokes `python -m gliner.serve` instead of `vllm serve`, but the
 structure is identical.
 
+`CHAT_KV_CACHE_DTYPE` / `CHAT_CALCULATE_KV_SCALES` follow this pattern:
+when set they append `--kv-cache-dtype` / `--calculate-kv-scales` to the
+chat backend, enabling vLLM's FP8 quantized KV cache (~half the KV memory;
+chat is the only backend where this matters — embed/rerank are pooling
+runners and Whisper's decode is tiny). Unset means full-precision KV
+cache, the prior behavior.
+
 `OPENAI_API_KEY` serves double duty: it is both the upstream API key passed to
 each vLLM `--api-key` and the LiteLLM `master_key` that gates the router.
 
