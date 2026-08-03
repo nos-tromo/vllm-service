@@ -282,7 +282,7 @@ Other useful operations use the raw compose form, pointed at the compose file:
 ```bash
 docker compose --env-file .env -f docker/compose.yaml logs -f router    # follow LiteLLM proxy logs
 docker compose --env-file .env -f docker/compose.yaml logs -f chat      # follow a single backend
-docker compose --env-file .env -f docker/compose.yaml restart chat      # reload one backend after .env change
+docker compose --env-file .env -f docker/compose.yaml up -d chat        # recreate one backend to apply .env changes (restart does not re-read env)
 docker compose --env-file .env -f docker/compose.yaml ps                # health status of each service
 make stop                                                               # stop the active service set
 ```
