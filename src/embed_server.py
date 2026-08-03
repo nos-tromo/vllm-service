@@ -27,6 +27,7 @@ from __future__ import annotations
 
 import math
 import os
+from collections.abc import Iterator
 
 import torch
 from fastapi import FastAPI, HTTPException
@@ -34,8 +35,36 @@ from huggingface_hub import hf_hub_download
 from pydantic import BaseModel, Field
 from transformers import AutoModel, AutoTokenizer
 
+
+def _positive_int_env(name: str, default: int) -> int:
+    """Read an integer env var that must be at least 1.
+
+    A zero or negative value for either knob would not crash anything —
+    ``MAX_BATCH_TOKENS < 1`` silently degrades to one-text-per-forward
+    batching, ``MAX_LENGTH < 1`` to empty truncation — so the
+    misconfiguration would be invisible until someone profiled a slow
+    container. Failing at startup puts it in the logs instead.
+
+    Args:
+        name: Environment variable name.
+        default: Value used when the variable is unset.
+
+    Returns:
+        The parsed value.
+
+    Raises:
+        ValueError: When the value parses below 1 (or not as an integer,
+            via ``int()`` itself).
+    """
+    value = int(os.environ.get(name, str(default)))
+    if value < 1:
+        raise ValueError(f"{name} must be a positive integer, got {value}")
+    return value
+
+
 MODEL_ID = os.environ.get("EMBED_MODEL", "BAAI/bge-m3")
-MAX_LENGTH = int(os.environ.get("EMBED_MAX_LENGTH", "8192"))
+MAX_LENGTH = _positive_int_env("EMBED_MAX_LENGTH", 8192)
+MAX_BATCH_TOKENS = _positive_int_env("EMBED_MAX_BATCH_TOKENS", 16384)
 SPARSE_LINEAR_FILE = os.environ.get("SPARSE_LINEAR_FILE", "sparse_linear.pt")
 
 app = FastAPI(title="vllm-service embed-only", version="1.0")
@@ -110,6 +139,72 @@ def _encode_batch(texts: list[str]) -> dict[str, torch.Tensor]:
     )
 
 
+def plan_batches(lengths: list[int], budget: int) -> list[tuple[int, int]]:
+    """Split token lengths into contiguous spans within a padded-token budget.
+
+    ``_encode_batch`` pads with ``padding=True``, so a batch's real cost
+    is ``rows x longest row``, not the sum of its rows: one 4k-token
+    chunk among 63 short ones pads all 64 to 4k. Cost is therefore
+    charged against the padded rectangle, which is what bounds both peak
+    activation memory and wall-clock per forward pass.
+
+    Greedy and order-preserving: inputs are never reordered to pack
+    batches more tightly, because both routes return one row per input
+    positionally.
+
+    Args:
+        lengths: Token count of each input, in input order.
+        budget: Maximum padded tokens (rows x longest row) per batch.
+
+    Returns:
+        ``(start, end)`` half-open index spans covering every input
+        exactly once, in order. A single input longer than *budget*
+        occupies its own span rather than being dropped or split — it is
+        already capped at ``MAX_LENGTH`` by truncation.
+    """
+    spans: list[tuple[int, int]] = []
+    start = 0
+    widest = 0
+    for index, length in enumerate(lengths):
+        candidate = max(widest, length)
+        if index > start and candidate * (index - start + 1) > budget:
+            spans.append((start, index))
+            start = index
+            widest = length
+        else:
+            widest = candidate
+    if start < len(lengths):
+        spans.append((start, len(lengths)))
+    return spans
+
+
+def _iter_batches(texts: list[str]) -> Iterator[tuple[list[str], list[int]]]:
+    """Yield *texts* in sub-batches bounded by ``MAX_BATCH_TOKENS``.
+
+    The single bounding seam for both encoders: ``/pooling`` and
+    ``/v1/embeddings`` pad identically, so they must split identically.
+    Two copies of this logic could drift, and the symptom of the drift
+    would be a timeout under load rather than a wrong answer — invisible
+    until an ingest job failed.
+
+    Lengths come from ``tokenize_ids``, the same seam ``/tokenize``
+    reports, so the budget is charged against the token counts a client
+    can actually observe. Each batch's lengths are yielded alongside it
+    so callers that need token accounting (``/v1/embeddings``'s
+    ``usage``) reuse them instead of tokenizing a second time.
+
+    Args:
+        texts: Input texts, in input order.
+
+    Yields:
+        ``(batch, lengths)`` pairs — consecutive non-empty slices of
+        *texts* in input order, each with its texts' token counts.
+    """
+    lengths = [len(tokenize_ids(text)) for text in texts]
+    for start, end in plan_batches(lengths, MAX_BATCH_TOKENS):
+        yield texts[start:end], lengths[start:end]
+
+
 def tokenize_ids(text: str) -> list[int]:
     """Encode *text* to token ids including special tokens.
 
@@ -179,20 +274,25 @@ def encode_token_weights(texts: list[str]) -> list[list[float]]:
     strips padding positions using the attention mask so each returned
     list aligns one-to-one with that text's own token ids.
 
+    The input is encoded in ``MAX_BATCH_TOKENS``-bounded sub-batches
+    (see ``_iter_batches``) and the results concatenated, so a caller's
+    batch size does not decide how much work one forward pass does.
+
     Args:
         texts: Input texts.
 
     Returns:
         One list of per-token weights per input, in input order.
     """
-    encoded = _encode_batch(texts)
-    with torch.no_grad():
-        hidden = model(**encoded, return_dict=True).last_hidden_state
-        weights = torch.relu(sparse_head(hidden)).squeeze(-1)
-
     rows: list[list[float]] = []
-    for row, mask in zip(weights.tolist(), encoded["attention_mask"].tolist(), strict=True):
-        rows.append([float(weight) for weight, keep in zip(row, mask, strict=True) if keep == 1])
+    for batch, _lengths in _iter_batches(texts):
+        encoded = _encode_batch(batch)
+        with torch.no_grad():
+            hidden = model(**encoded, return_dict=True).last_hidden_state
+            weights = torch.relu(sparse_head(hidden)).squeeze(-1)
+
+        for row, mask in zip(weights.tolist(), encoded["attention_mask"].tolist(), strict=True):
+            rows.append([float(weight) for weight, keep in zip(row, mask, strict=True) if keep == 1])
     return rows
 
 
@@ -275,24 +375,37 @@ def l2_normalise(vec: list[float]) -> list[float]:
     return [component / norm for component in vec]
 
 
-def encode_dense(texts: list[str]) -> list[list[float]]:
+def encode_dense(texts: list[str]) -> tuple[list[list[float]], int]:
     """Compute bge-m3 dense embeddings for each text.
 
     Dense is CLS pooling — the first token of ``last_hidden_state`` —
     followed by L2 normalisation, matching FlagEmbedding's ``cls``
     sentence-pooling method for this model.
 
+    Bounded in ``MAX_BATCH_TOKENS``-sized sub-batches on the same seam as
+    the sparse route (see ``_iter_batches``); the dense route pads
+    identically, so it inflates identically. The token total rides along
+    from that seam's own counts, so the route's ``usage`` field never
+    tokenizes a second time — and can never disagree with the lengths
+    the budget was charged against.
+
     Args:
         texts: Input texts.
 
     Returns:
-        One unit-length vector per input, in input order.
+        One unit-length vector per input, in input order, plus the total
+        token count across all inputs.
     """
-    encoded = _encode_batch(texts)
-    with torch.no_grad():
-        hidden = model(**encoded, return_dict=True).last_hidden_state
-    cls_rows = hidden[:, 0].tolist()
-    return [l2_normalise([float(component) for component in row]) for row in cls_rows]
+    vectors: list[list[float]] = []
+    token_total = 0
+    for batch, lengths in _iter_batches(texts):
+        token_total += sum(lengths)
+        encoded = _encode_batch(batch)
+        with torch.no_grad():
+            hidden = model(**encoded, return_dict=True).last_hidden_state
+        for row in hidden[:, 0].tolist():
+            vectors.append(l2_normalise([float(component) for component in row]))
+    return vectors, token_total
 
 
 @app.post("/v1/embeddings")
@@ -313,8 +426,7 @@ def embeddings(req: EmbeddingsRequest) -> EmbeddingsResponse:
     if not texts:
         return EmbeddingsResponse(data=[], model=MODEL_ID, usage=EmbeddingsUsage(prompt_tokens=0, total_tokens=0))
 
-    vectors = encode_dense(texts)
-    token_total = sum(len(tokenize_ids(text)) for text in texts)
+    vectors, token_total = encode_dense(texts)
     return EmbeddingsResponse(
         data=[EmbeddingItem(index=i, embedding=vector) for i, vector in enumerate(vectors)],
         model=MODEL_ID,
