@@ -446,12 +446,24 @@ Any `/pooling` `task` other than `token_classify` is rejected with HTTP
 No `Authorization` header is required (same posture as `gliner-only`,
 `rerank-only`, and `clip-only`).
 
+Both batch routes bound how much work one forward pass does. Because a
+batch pads to its longest text, a single long chunk inflates the whole
+batch — 64 short texts alongside one 4k-token chunk pad to ~262k tokens.
+`/v1/embeddings` and `/pooling` therefore split their input into
+sub-batches of at most `EMBED_MAX_BATCH_TOKENS` padded tokens (rows ×
+longest row) and concatenate the results, so a client's batch size does
+not decide the cost of a pass. Responses are unaffected: one entry per
+input, in input order. A single text over the budget still gets its own
+pass rather than being dropped — `EMBED_MAX_LENGTH` truncation is the
+only cap that drops content.
+
 Override defaults via `.env` — only `EMBED_*` knobs apply in this shape:
 
 ```bash
-EMBED_MODEL=BAAI/bge-m3   # default
-EMBED_MAX_LENGTH=8192     # default
-# EMBED_HOST_PORT=8007    # host publish port for dev
+EMBED_MODEL=BAAI/bge-m3        # default
+EMBED_MAX_LENGTH=8192          # default
+EMBED_MAX_BATCH_TOKENS=16384   # default; padded tokens per forward pass
+# EMBED_HOST_PORT=8007         # host publish port for dev
 ```
 
 > Pair with the NER-only, Rerank-only, and CLIP-only deployments on the

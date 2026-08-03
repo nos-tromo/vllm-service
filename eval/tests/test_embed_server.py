@@ -87,7 +87,12 @@ class _FakeTokenizer:
         mask-stripping logic see genuinely different row lengths.
         """
         self.call_calls.append(
-            {"add_special_tokens": add_special_tokens, "truncation": truncation, "max_length": max_length}
+            {
+                "texts": list(texts),
+                "add_special_tokens": add_special_tokens,
+                "truncation": truncation,
+                "max_length": max_length,
+            }
         )
         rows: list[list[int]] = []
         for text in texts:
@@ -140,6 +145,35 @@ class _FakeTensor:
     def tolist(self) -> list[list[float]] | list[list[int]]:
         """Return the wrapped nested list, mimicking torch.Tensor.tolist()."""
         return self._data
+
+
+class _StubTokenizer:
+    """Tokenizer fake whose batch call returns one fixed encoding.
+
+    For tests that drive a real encoder against a hand-built attention
+    mask. It covers BOTH tokenizer entry points the encoders use —
+    ``encode`` (via ``tokenize_ids``, which ``_iter_batches`` calls to
+    size sub-batches) and ``__call__`` (via ``_encode_batch``) — because
+    a fake covering only one of them fails on the fixture rather than on
+    the behaviour under test.
+    """
+
+    def __init__(self, encoded: dict[str, _FakeTensor]) -> None:
+        """Wrap the batch encoding this fake always returns.
+
+        Args:
+            encoded: The ``input_ids``/``attention_mask`` mapping handed
+                back for every batch call.
+        """
+        self._encoded = encoded
+
+    def encode(self, text: str, **_kwargs: object) -> list[int]:
+        """Return one id per whitespace token, wrapped in BOS/EOS."""
+        return [0, *(100 + len(word) for word in text.split()), 2]
+
+    def __call__(self, *_args: object, **_kwargs: object) -> dict[str, _FakeTensor]:
+        """Return the fixed encoding regardless of the batch."""
+        return self._encoded
 
 
 def _install_stubs() -> dict[str, types.ModuleType | None]:
@@ -405,7 +439,7 @@ def test_encode_token_weights_strips_padding_per_row(monkeypatch: pytest.MonkeyP
     def fake_model(**_kwargs: object) -> types.SimpleNamespace:
         return types.SimpleNamespace(last_hidden_state=_FakeTensor([]))
 
-    monkeypatch.setattr(embed_server, "tokenizer", lambda *_args, **_kwargs: encoded)
+    monkeypatch.setattr(embed_server, "tokenizer", _StubTokenizer(encoded))
     monkeypatch.setattr(embed_server, "model", fake_model)
     monkeypatch.setattr(embed_server, "sparse_head", lambda _hidden: _FakeTensor(fake_weights))
     monkeypatch.setattr(embed_server.torch, "relu", lambda x: x, raising=False)
@@ -508,10 +542,118 @@ def test_encode_dense_cls_pools_and_normalises(monkeypatch: pytest.MonkeyPatch) 
 
             return _Out()
 
-    monkeypatch.setattr(embed_server, "tokenizer", lambda *a, **k: encoded)
+    monkeypatch.setattr(embed_server, "tokenizer", _StubTokenizer(encoded))
     monkeypatch.setattr(embed_server, "model", _Model())
 
     rows = embed_server.encode_dense(["a", "b"])
 
     assert rows[0] == pytest.approx([0.6, 0.8])  # fails if CLS pooling or L2 norm is wrong
     assert rows[1] == pytest.approx([0.0, 1.0])
+
+
+def test_plan_batches_keeps_one_batch_when_within_budget() -> None:
+    """A batch whose padded cost fits the budget is not split."""
+    assert embed_server.plan_batches([3, 3, 2], budget=9) == [(0, 3)]
+
+
+def test_plan_batches_charges_padding_not_the_raw_token_sum() -> None:
+    """Cost is rows x longest row, because padding=True pads to the batch max.
+
+    This is the whole defect: the raw token sum of [5, 1, 1, 1] is 8 and
+    fits a budget of 8, but batching them together pads all four rows to
+    5 and actually pushes 20 tokens through the encoder. An implementation
+    that budgeted against the raw sum would return a single span here and
+    still blow the bound it claims to enforce.
+    """
+    assert embed_server.plan_batches([5, 1, 1, 1], budget=8) == [(0, 1), (1, 4)]
+
+
+def test_plan_batches_isolates_a_text_that_alone_exceeds_the_budget() -> None:
+    """An over-budget text gets its own batch rather than an empty one.
+
+    ``EMBED_MAX_BATCH_TOKENS`` can be configured below ``EMBED_MAX_LENGTH``,
+    so a single text can exceed the budget on its own. It must still be
+    encoded (truncation to ``MAX_LENGTH`` is the only cap that drops
+    content) — never dropped, and never emitted as a zero-width span that
+    would tokenize an empty list.
+    """
+    assert embed_server.plan_batches([20, 1], budget=8) == [(0, 1), (1, 2)]
+
+
+def test_plan_batches_covers_every_input_exactly_once_in_order() -> None:
+    """Spans must be contiguous, non-empty, and cover the whole input.
+
+    Both routes return one row per input positionally, so a gap, an
+    overlap, or a reordering here corrupts the response alignment.
+    """
+    lengths = [4, 1, 9, 2, 2, 7, 1]
+    spans = embed_server.plan_batches(lengths, budget=10)
+
+    assert [index for start, end in spans for index in range(start, end)] == list(range(len(lengths)))
+    assert all(start < end for start, end in spans)
+
+
+def test_plan_batches_handles_empty_input() -> None:
+    """No inputs means no forward passes."""
+    assert embed_server.plan_batches([], budget=8) == []
+
+
+def test_encode_token_weights_bounds_sub_batches_and_preserves_order(monkeypatch: pytest.MonkeyPatch) -> None:
+    """/pooling runs several bounded forwards, concatenated in input order.
+
+    Runs the REAL ``encode_token_weights`` over a budget small enough to
+    force three sub-batches. Asserting only on row lengths would not
+    catch a missing split — the per-row mask strip yields the same
+    lengths whether the texts went through one padded forward or three —
+    so this asserts the actual partition handed to the tokenizer (i.e.
+    what each forward pass really cost) as well as the concatenated
+    output order.
+    """
+    monkeypatch.setattr(embed_server, "MAX_BATCH_TOKENS", 6)
+    monkeypatch.setattr(
+        embed_server,
+        "model",
+        lambda **kwargs: types.SimpleNamespace(last_hidden_state=kwargs["attention_mask"]),
+    )
+    monkeypatch.setattr(embed_server, "sparse_head", lambda hidden: hidden)
+    monkeypatch.setattr(embed_server.torch, "relu", lambda x: x, raising=False)
+
+    # _FakeTokenizer: 1 id per word + BOS/EOS -> lengths 5, 3, 4.
+    texts = ["alpha beta gamma", "delta", "epsilon zeta"]
+    before = len(embed_server.tokenizer.call_calls)
+    rows = embed_server.encode_token_weights(texts)
+    batched = [call["texts"] for call in embed_server.tokenizer.call_calls[before:]]
+
+    assert batched == [["alpha beta gamma"], ["delta"], ["epsilon zeta"]]
+    assert [len(row) for row in rows] == [5, 3, 4]
+
+
+def test_encode_dense_bounds_sub_batches_and_preserves_order(monkeypatch: pytest.MonkeyPatch) -> None:
+    """/v1/embeddings splits on the same budget and keeps input order.
+
+    The dense route pads identically, so it needs the same bound. Each
+    sub-batch's fake CLS rows are distinct, so a concatenation that lost
+    order (or dropped a sub-batch) changes the returned vectors, not just
+    their count.
+    """
+    monkeypatch.setattr(embed_server, "MAX_BATCH_TOKENS", 6)
+
+    cls_by_text = {"alpha beta gamma": [3.0, 4.0], "delta": [0.0, 5.0], "epsilon zeta": [5.0, 0.0]}
+
+    def fake_model(**_kwargs: object) -> types.SimpleNamespace:
+        batch = embed_server.tokenizer.call_calls[-1]["texts"]
+        return types.SimpleNamespace(
+            last_hidden_state=_FakeHidden([[cls_by_text[text], [99.0, 99.0]] for text in batch])
+        )
+
+    monkeypatch.setattr(embed_server, "model", fake_model)
+
+    texts = ["alpha beta gamma", "delta", "epsilon zeta"]
+    before = len(embed_server.tokenizer.call_calls)
+    rows = embed_server.encode_dense(texts)
+    batched = [call["texts"] for call in embed_server.tokenizer.call_calls[before:]]
+
+    assert batched == [["alpha beta gamma"], ["delta"], ["epsilon zeta"]]
+    assert rows[0] == pytest.approx([0.6, 0.8])
+    assert rows[1] == pytest.approx([0.0, 1.0])
+    assert rows[2] == pytest.approx([1.0, 0.0])

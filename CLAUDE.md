@@ -587,6 +587,22 @@ side-by-side parity against the CUDA stack is unverified pending #75);
 so `/tokenize`, `/pooling`, and `/v1/embeddings` never disagree on
 sequence length.
 
+`EMBED_MAX_BATCH_TOKENS` (default `16384`) bounds one forward pass.
+`_encode_batch` pads with `padding=True`, so a batch's real cost is
+**rows × longest row**, not the sum of its rows — one 4k-token chunk
+among 63 short ones pads all 64 to 4k (~262k tokens). Both batch routes
+run their input through `_iter_batches`, the single bounding seam:
+`plan_batches` greedily splits the per-text token counts (taken from
+`tokenize_ids`, the same seam `/tokenize` reports) into contiguous spans
+under that padded budget, and each encoder concatenates its sub-batch
+results. Both routes share the one seam deliberately — two copies could
+drift, and the symptom of drift is a timeout under load, not a wrong
+answer. Order and arity are preserved (one entry per input, in input
+order), and a text that alone exceeds the budget gets its own pass
+rather than being dropped or split. When adding a fourth batch route,
+route it through `_iter_batches` too rather than calling `_encode_batch`
+directly.
+
 `GET /health` returns `{"status": "ok", "model": "..."}` and is the
 healthcheck target.
 
