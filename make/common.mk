@@ -107,18 +107,23 @@ logs:
 	$(COMPOSE) logs -f --tail=100
 
 pre-commit:
-	uv run pre-commit run --all-files
+	uv run --locked pre-commit run --all-files
 
 # Local pre-push gate: backend lint/type-check (pre-commit = ruff + pyrefly) plus,
 # when a frontend/ exists, its eslint + build. `make verify` green => CI's lint/build
 # gate is green for TRACKED files. Like pre-commit it checks tracked files only, so
 # `git add` brand-new files first. CI stays the full safety net (tests + docker image
-# build). Assumes frontend deps are installed (does not run `pnpm install`).
+# build). Syncs frontend deps first (`pnpm install --frozen-lockfile`) so a stale
+# node_modules after a dependency bump can't fail the build with phantom type
+# errors; it also fails fast when package.json and pnpm-lock.yaml disagree
+# (regenerate with `pnpm install` and commit the lockfile). Backend deps are
+# auto-synced by `uv run` itself; `--locked` makes pyproject/uv.lock drift
+# fail fast the same way (regenerate with `uv lock` and commit).
 .PHONY: verify
 verify: pre-commit
 	@if [ -d frontend ]; then \
-		echo ">> frontend: eslint + build"; \
-		cd frontend && pnpm lint && pnpm build; \
+		echo ">> frontend: install (frozen) + eslint + build"; \
+		cd frontend && pnpm install --frozen-lockfile && pnpm lint && pnpm build; \
 	else \
 		echo ">> no frontend/ — backend checks only"; \
 	fi
@@ -126,5 +131,5 @@ verify: pre-commit
 ifeq ($(TESTS),yes)
 .PHONY: test
 test:
-	uv run pytest -q
+	uv run --locked pytest -q
 endif
