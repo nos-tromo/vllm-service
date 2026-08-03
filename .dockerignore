@@ -2,6 +2,9 @@
 *.tar.gz
 # VCS, local scratch, caches
 .git/
+.claire/
+.claude/
+.remember/
 .superpowers/
 .mypy_cache/
 *.code-workspace
