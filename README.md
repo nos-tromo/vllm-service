@@ -52,7 +52,7 @@ select a backend purely by the `model` field they send; there is no path-based
 dispatch.
 
 For hosts that cannot run the CUDA stack (Mac dev boxes, ROCm or CPU-only
-Linux running Ollama for chat/embed), this repo also ships six standalone
+Linux running Ollama for chat/embed), this repo also ships seven standalone
 CPU deployments:
 
 - **NER-only** (`docker/compose.gliner-only.yaml`) — a single `gliner-only`
@@ -63,6 +63,12 @@ CPU deployments:
 - **CLIP-only** (`docker/compose.clip-only.yaml`) — a single `clip-only`
   container exposing the same `/clip/embed_{image,text}` contract as the
   full stack. See "CLIP-only deployment" below.
+- **Embed-only** (`docker/compose.embed-only.yaml`) — a single
+  `embed-only` container serving dense embeddings (`/v1/embeddings`) and
+  the same sparse `/pooling` (task=token_classify) and `/tokenize`
+  contract the full stack's router passes through to the vLLM `embed`
+  backend — all three from one loaded `BAAI/bge-m3`. See "Embed-only
+  deployment" below.
 - **Diarize-only** (`docker/compose.diarize-only.yaml`) — a single
   `diarize-only` container exposing the same multipart `/diarize` contract
   as the full stack. See "Diarize-only deployment" below.
@@ -74,9 +80,10 @@ CPU deployments:
   container exposing the same multipart `/vad` contract as the full stack.
   See "VAD-only deployment" below.
 
-The six can be co-deployed on the same host so the consuming app has all of
-`/gliner`, `/rerank`, `/clip/*`, `/diarize`, `/v1/audio/transcriptions`, and
-`/vad` available without the full CUDA stack.
+The seven can be co-deployed on the same host so the consuming app has all
+of `/gliner`, `/rerank`, `/clip/*`, `/v1/embeddings`, `/pooling`,
+`/tokenize`, `/diarize`, `/v1/audio/transcriptions`, and `/vad` available
+without the full CUDA stack.
 
 ## Usage
 
@@ -357,6 +364,100 @@ search, not CLIP inference.
 > to give a non-CUDA dev box `/gliner`, `/rerank`, and `/clip/*`
 > against `inference-net`.
 
+## Embed-only deployment
+
+`docker/compose.embed-only.yaml` is a standalone compose project for the
+same audience as NER-only / Rerank-only / CLIP-only. It runs one container,
+`embed-only`, built from `Dockerfile.embed.cpu` (uv-managed Python 3.11,
+CPU torch, `transformers`). No LiteLLM router, no GPU reservation. The
+container ships a small FastAPI server (`src/embed_server.py`) that drives
+`BAAI/bge-m3` directly with `transformers` rather than `FlagEmbedding`
+(whose `ir-datasets`/`zlib-state` dep tree fails to build on aarch64), and
+serves **both** dense and sparse embeddings from that one loaded model:
+CLS pooling + L2 normalization for dense, and the model's own
+`sparse_linear.pt` head + ReLU for sparse. It exposes the **same
+`POST /v1/embeddings` (OpenAI-compatible dense), `POST /pooling` (with
+`task: "token_classify"`, sparse) and `POST /tokenize` routes** the full
+stack's router already passes through to the vLLM `embed` backend, so a
+consumer points both its embedding base and its sparse base at the same
+`http://embed-only:8000` — no separate deployment needed for each.
+
+Bring it up:
+
+```bash
+make network              # if not already created
+make volumes              # if not already created
+make build-embed-only     # builds vllm-service-embed-only
+make up-embed-only        # starts the embed-only container
+```
+
+On first start the container downloads the `BAAI/bge-m3` weights (encoder
+plus the `sparse_linear.pt` head) to the shared `huggingface-cache` volume —
+the same model and pooling definition the GPU stack uses, so scores are
+equivalent up to dtype: this server runs float32, while vLLM's
+`dtype="auto"` casts bge-m3's float32 checkpoint to float16, so the two
+diverge by roughly 1e-3. Exact side-by-side parity is unverified pending
+#75 (no CUDA host to run the comparison against). The healthcheck reports
+healthy once FastAPI is accepting requests against `/health`. If your host
+is offline you'll need to pre-populate the cache by temporarily setting
+`HF_HUB_OFFLINE=0` and `TRANSFORMERS_OFFLINE=0` in `.env`.
+
+On a dev host running Ollama for chat/embed, this shape **replaces**
+Ollama's `bge-m3` rather than sitting alongside it: point the embedding
+consumer at `embed-only` instead, and Ollama then serves chat only — the
+model is loaded once (here) instead of twice (once in Ollama, once in this
+container).
+
+Consumers on `inference-net` reach it directly — there's no router in this
+shape:
+
+```bash
+curl http://embed-only:8000/v1/embeddings \
+  -H "Content-Type: application/json" \
+  -d '{"input": "what is RAG?"}'
+
+curl http://embed-only:8000/pooling \
+  -H "Content-Type: application/json" \
+  -d '{"task": "token_classify", "input": ["what is RAG?"]}'
+
+curl http://embed-only:8000/tokenize \
+  -H "Content-Type: application/json" \
+  -d '{"prompt": "what is RAG?"}'
+```
+
+Response shape for `/v1/embeddings` (OpenAI-compatible; the request's
+`model` field is ignored, and the configured model is echoed back):
+
+```json
+{"object": "list", "data": [{"object": "embedding", "index": 0, "embedding": [0.01, -0.02, 0.03]}],
+ "model": "BAAI/bge-m3", "usage": {"prompt_tokens": 6, "total_tokens": 6}}
+```
+
+Response shape for `/pooling` (one per-token weight list per input, aligned
+to that input's own non-padding token ids):
+
+```json
+{"model": "BAAI/bge-m3", "data": [{"index": 0, "data": [0.0, 0.31, 0.0, 0.42]}]}
+```
+
+Any `/pooling` `task` other than `token_classify` is rejected with HTTP
+400 — this server implements no other pooling task.
+
+No `Authorization` header is required (same posture as `gliner-only`,
+`rerank-only`, and `clip-only`).
+
+Override defaults via `.env` — only `EMBED_*` knobs apply in this shape:
+
+```bash
+EMBED_MODEL=BAAI/bge-m3   # default
+EMBED_MAX_LENGTH=8192     # default
+# EMBED_HOST_PORT=8007    # host publish port for dev
+```
+
+> Pair with the NER-only, Rerank-only, and CLIP-only deployments on the
+> same host to give a non-CUDA dev box `/gliner`, `/rerank`, `/clip/*`,
+> and `/v1/embeddings`+`/pooling`+`/tokenize` against `inference-net`.
+
 ## Diarize-only deployment
 
 `docker/compose.diarize-only.yaml` is a standalone compose project for the
@@ -609,6 +710,7 @@ make bundle              # full stack (chat, embed, rerank, gliner, clip, asr, d
 make bundle-gliner-only     # NER-only shape (just vllm-service-gliner-cpu)
 make bundle-rerank-only  # Rerank-only shape (just vllm-service-rerank-only)
 make bundle-clip-only    # CLIP-only shape (just vllm-service-clip-cpu)
+make bundle-embed-only   # Embed-only shape (just vllm-service-embed-only)
 make bundle-diarize-only # Diarize-only shape (just vllm-service-diarize-cpu)
 make bundle-asr-only     # ASR-only shape (just vllm-service-asr-cpu)
 make bundle-vad-only     # VAD-only shape (just vllm-service-vad-cpu)

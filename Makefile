@@ -46,6 +46,16 @@
 #    router, no GPU requirement. Lives in docker/compose.vad-only.yaml.
 #    Same multipart /vad contract as the full-stack `vad` service.
 #    Targets: build-vad-only, up-vad-only, stop-vad-only, bundle-vad-only.
+#
+# 8. Embed-only (same hosts as the other -only shapes) — a single
+#    FastAPI/transformers bge-m3 container on inference-net, no router, no
+#    GPU requirement. Lives in docker/compose.embed-only.yaml. Serves
+#    dense embeddings (/v1/embeddings), sparse weights (/pooling), and
+#    tokenization (/tokenize) — the same routes the full stack's router
+#    passes through — from one loaded model, so docint only has to
+#    repoint its embedding base and SPARSE_API_BASE.
+#    Targets: build-embed-only, up-embed-only, stop-embed-only,
+#             bundle-embed-only.
 
 .DEFAULT_GOAL := help
 
@@ -55,7 +65,8 @@
         build-clip-only bundle-clip-only up-clip-only up-dev-clip-only stop-clip-only down-clip-only \
         build-diarize-only bundle-diarize-only up-diarize-only up-dev-diarize-only stop-diarize-only down-diarize-only \
         build-asr-only bundle-asr-only up-asr-only up-dev-asr-only stop-asr-only down-asr-only \
-        build-vad-only bundle-vad-only up-vad-only up-dev-vad-only stop-vad-only down-vad-only
+        build-vad-only bundle-vad-only up-vad-only up-dev-vad-only stop-vad-only down-vad-only \
+        build-embed-only bundle-embed-only up-embed-only up-dev-embed-only stop-embed-only down-embed-only
 
 # The full-stack compose lifecycle (network/volumes/build/bundle/up/up-dev/
 # stop/down/pre-commit) + the versioned image tag come from make/common.mk,
@@ -79,6 +90,8 @@ COMPOSE_ASR_ONLY        := docker compose --env-file .env -f docker/compose.asr-
 COMPOSE_ASR_ONLY_DEV    := docker compose --env-file .env -f docker/compose.asr-only.yaml -f docker/compose.asr-only.override.yaml
 COMPOSE_VAD_ONLY        := docker compose --env-file .env -f docker/compose.vad-only.yaml
 COMPOSE_VAD_ONLY_DEV    := docker compose --env-file .env -f docker/compose.vad-only.yaml -f docker/compose.vad-only.override.yaml
+COMPOSE_EMBED_ONLY      := docker compose --env-file .env -f docker/compose.embed-only.yaml
+COMPOSE_EMBED_ONLY_DEV  := docker compose --env-file .env -f docker/compose.embed-only.yaml -f docker/compose.embed-only.override.yaml
 
 help:
 	@echo "vllm-service — build-host helpers."
@@ -146,6 +159,14 @@ help:
 	@echo "  make up-dev-vad-only      like 'up-vad-only', but publishes the port on the host"
 	@echo "  make stop-vad-only        stop the VAD service"
 	@echo "  make down-vad-only        stop + remove the VAD service"
+	@echo
+	@echo "Embed-only stack (CPU; pairs with Ollama on non-CUDA hosts):"
+	@echo "  make build-embed-only     build the embed-cpu image"
+	@echo "  make bundle-embed-only    ship the embed-cpu image as a versioned .tar.gz"
+	@echo "  make up-embed-only        run the dense+sparse embedding service on inference-net (detached, no host port)"
+	@echo "  make up-dev-embed-only    like 'up-embed-only', but publishes the port on the host"
+	@echo "  make stop-embed-only      stop the dense+sparse embedding service"
+	@echo "  make down-embed-only      stop + remove the dense+sparse embedding service"
 
 
 # --- NER-only stack -----------------------------------------------------
@@ -306,3 +327,31 @@ stop-vad-only:
 # Stop + remove the VAD service. External huggingface-cache survives.
 down-vad-only:
 	$(COMPOSE_VAD_ONLY) down
+
+# --- Embed-only stack --------------------------------------------------
+#
+# Uses the same external inference-net + huggingface-cache as the full
+# stack, so `make network` and `make volumes` remain the one-time
+# prerequisites. Serves bge-m3 dense embeddings (/v1/embeddings), sparse
+# weights (/pooling), and tokenization (/tokenize) — the same routes the
+# full stack's router passes through — from one loaded model, so docint
+# only has to repoint its embedding base and SPARSE_API_BASE.
+build-embed-only:
+	DOCKER_BUILDKIT=1 $(COMPOSE_EMBED_ONLY) build
+
+bundle-embed-only:
+	./scripts/bundle_images.sh embed-only
+
+up-embed-only:
+	$(COMPOSE_EMBED_ONLY) up -d --no-build
+
+# Like 'up-embed-only' but publishes the embed port on the host.
+up-dev-embed-only:
+	$(COMPOSE_EMBED_ONLY_DEV) up -d --no-build
+
+stop-embed-only:
+	$(COMPOSE_EMBED_ONLY) stop
+
+# Stop + remove the embed service. External huggingface-cache survives.
+down-embed-only:
+	$(COMPOSE_EMBED_ONLY) down

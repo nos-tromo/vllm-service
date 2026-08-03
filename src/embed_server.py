@@ -1,0 +1,322 @@
+"""CPU dense + sparse embedding server for the embed-only deployment shape.
+
+Serves bge-m3 dense embeddings alongside its learned sparse (lexical)
+weights and tokenization — the same three routes the full-stack LiteLLM
+router passes through to the vLLM ``embed`` backend: ``POST
+/v1/embeddings`` (OpenAI-compatible dense), ``POST /pooling`` with
+``task: "token_classify"`` (sparse), and ``POST /tokenize`` — so docint's
+embedding client and its ``RemoteSparseEncoder`` target either backend
+without protocol changes.
+
+The full stack runs bge-m3 under vLLM's ``BgeM3EmbeddingModel``
+architecture (see ``docker/compose.yaml``'s ``--hf-overrides``). This
+server reproduces that model's dense and ``token_classify`` output on CPU
+with ``transformers``: each route runs its own XLM-R forward, then either
+CLS pooling + L2 normalisation (dense) or the repo's ``sparse_linear.pt``
+head (``Linear(hidden_size, 1)``) + ReLU (sparse). Special and padding
+tokens fall out downstream for sparse — the consumer drops non-positive
+scores.
+
+Inference uses ``transformers`` directly rather than ``FlagEmbedding``;
+the latter pulls ``ir-datasets`` -> ``zlib-state``, which needs
+``zlib.h`` to build from source on aarch64 and is irrelevant to
+inference-only deployments.
+"""
+
+from __future__ import annotations
+
+import math
+import os
+
+import torch
+from fastapi import FastAPI, HTTPException
+from huggingface_hub import hf_hub_download
+from pydantic import BaseModel, Field
+from transformers import AutoModel, AutoTokenizer
+
+MODEL_ID = os.environ.get("EMBED_MODEL", "BAAI/bge-m3")
+MAX_LENGTH = int(os.environ.get("EMBED_MAX_LENGTH", "8192"))
+SPARSE_LINEAR_FILE = os.environ.get("SPARSE_LINEAR_FILE", "sparse_linear.pt")
+
+app = FastAPI(title="vllm-service embed-only", version="1.0")
+
+tokenizer = AutoTokenizer.from_pretrained(MODEL_ID)
+model = AutoModel.from_pretrained(MODEL_ID)
+model.train(False)
+
+
+def _load_sparse_head(hidden_size: int) -> torch.nn.Linear:
+    """Load bge-m3's sparse projection head from the local HF cache.
+
+    ``weights_only=True`` is load-bearing, not decoration: the default
+    (``False``) unpickles arbitrary Python objects, so a tampered
+    checkpoint in the shared cache volume would execute code at server
+    start. The file holds nothing but tensors, so the restricted loader
+    is sufficient.
+
+    Args:
+        hidden_size: Encoder hidden width, the head's input dimension.
+
+    Returns:
+        A ``Linear(hidden_size, 1)`` module in eval mode.
+    """
+    weights_path = hf_hub_download(repo_id=MODEL_ID, filename=SPARSE_LINEAR_FILE)
+    head = torch.nn.Linear(hidden_size, 1)
+    head.load_state_dict(torch.load(weights_path, map_location="cpu", weights_only=True))
+    head.train(False)
+    return head
+
+
+sparse_head = _load_sparse_head(model.config.hidden_size)
+
+
+class TokenizeRequest(BaseModel):
+    """vLLM-shape tokenize request body."""
+
+    model: str | None = None
+    prompt: str
+
+
+class TokenizeResponse(BaseModel):
+    """vLLM-shape tokenize response body."""
+
+    count: int
+    max_model_len: int
+    tokens: list[int]
+
+
+def _encode_batch(texts: list[str]) -> dict[str, torch.Tensor]:
+    """Tokenize a batch of texts for the dense and sparse encoders.
+
+    Both ``encode_token_weights`` and ``encode_dense`` route through this
+    seam so the two encoders can never silently diverge on
+    ``truncation``/``max_length``/special-token handling — the same
+    rationale as ``tokenize_ids`` above (the ``/tokenize`` seam), applied
+    to the batched shape the other two routes share.
+
+    Args:
+        texts: Input texts.
+
+    Returns:
+        The tokenizer's batch encoding (``input_ids``, ``attention_mask``,
+        ...) as padded PyTorch tensors.
+    """
+    return tokenizer(
+        texts,
+        padding=True,
+        truncation=True,
+        max_length=MAX_LENGTH,
+        return_tensors="pt",
+    )
+
+
+def tokenize_ids(text: str) -> list[int]:
+    """Encode *text* to token ids including special tokens.
+
+    Both routes go through this seam so ``/tokenize`` and ``/pooling``
+    can never disagree on sequence length.
+
+    Args:
+        text: Input text.
+
+    Returns:
+        Token ids, truncated to ``MAX_LENGTH``.
+    """
+    return list(tokenizer.encode(text, add_special_tokens=True, truncation=True, max_length=MAX_LENGTH))
+
+
+@app.post("/tokenize")
+def tokenize(req: TokenizeRequest) -> TokenizeResponse:
+    """Tokenize a single prompt.
+
+    Args:
+        req: Request carrying the prompt.
+
+    Returns:
+        The token ids under a ``tokens`` key.
+
+    Raises:
+        HTTPException: 400 when the prompt is empty.
+    """
+    if not req.prompt:
+        raise HTTPException(status_code=400, detail="prompt must be a non-empty string")
+    token_ids = tokenize_ids(req.prompt)
+    return TokenizeResponse(count=len(token_ids), max_model_len=MAX_LENGTH, tokens=token_ids)
+
+
+@app.get("/health")
+def health() -> dict[str, str]:
+    """Liveness probe target for the compose healthcheck."""
+    return {"status": "ok", "model": MODEL_ID}
+
+
+class PoolingRequest(BaseModel):
+    """vLLM-shape pooling request body."""
+
+    model: str | None = None
+    task: str = "token_classify"
+    input: list[str] = Field(default_factory=list)
+
+
+class PoolingItem(BaseModel):
+    """One input's per-token score list."""
+
+    index: int
+    data: list[float]
+
+
+class PoolingResponse(BaseModel):
+    """vLLM-shape pooling response body."""
+
+    model: str
+    data: list[PoolingItem]
+
+
+def encode_token_weights(texts: list[str]) -> list[list[float]]:
+    """Compute bge-m3 sparse weights for each text.
+
+    Runs the encoder forward, applies the sparse head and ReLU, then
+    strips padding positions using the attention mask so each returned
+    list aligns one-to-one with that text's own token ids.
+
+    Args:
+        texts: Input texts.
+
+    Returns:
+        One list of per-token weights per input, in input order.
+    """
+    encoded = _encode_batch(texts)
+    with torch.no_grad():
+        hidden = model(**encoded, return_dict=True).last_hidden_state
+        weights = torch.relu(sparse_head(hidden)).squeeze(-1)
+
+    rows: list[list[float]] = []
+    for row, mask in zip(weights.tolist(), encoded["attention_mask"].tolist(), strict=True):
+        rows.append([float(weight) for weight, keep in zip(row, mask, strict=True) if keep == 1])
+    return rows
+
+
+@app.post("/pooling")
+def pooling(req: PoolingRequest) -> PoolingResponse:
+    """Return per-token sparse weights for each input.
+
+    Args:
+        req: Pooling request carrying the task and the input batch.
+
+    Returns:
+        One ``PoolingItem`` per input, in input order.
+
+    Raises:
+        HTTPException: 400 when ``task`` is anything but ``token_classify``.
+    """
+    if req.task != "token_classify":
+        raise HTTPException(
+            status_code=400,
+            detail=f"unsupported task {req.task!r}; this server implements only 'token_classify'",
+        )
+    if not req.input:
+        return PoolingResponse(model=MODEL_ID, data=[])
+
+    rows = encode_token_weights(req.input)
+    return PoolingResponse(
+        model=MODEL_ID,
+        data=[PoolingItem(index=i, data=row) for i, row in enumerate(rows)],
+    )
+
+
+class EmbeddingsRequest(BaseModel):
+    """OpenAI-compatible embeddings request body."""
+
+    model: str | None = None
+    input: str | list[str]
+
+
+class EmbeddingItem(BaseModel):
+    """One embedding in an OpenAI-shape response."""
+
+    object: str = "embedding"
+    index: int
+    embedding: list[float]
+
+
+class EmbeddingsUsage(BaseModel):
+    """Token accounting for an embeddings response."""
+
+    prompt_tokens: int
+    total_tokens: int
+
+
+class EmbeddingsResponse(BaseModel):
+    """OpenAI-compatible embeddings response body."""
+
+    object: str = "list"
+    data: list[EmbeddingItem]
+    model: str
+    usage: EmbeddingsUsage
+
+
+def l2_normalise(vec: list[float]) -> list[float]:
+    """Scale a vector to unit length.
+
+    Done in plain Python rather than torch so the arithmetic stays
+    testable in the torch-free eval group; the cost is negligible
+    beside the encoder forward pass.
+
+    Args:
+        vec: Raw vector components.
+
+    Returns:
+        The unit-length vector, or the input unchanged when its norm is
+        zero (a zero vector has no direction to preserve).
+    """
+    norm = math.sqrt(sum(component * component for component in vec))
+    if norm == 0.0:
+        return list(vec)
+    return [component / norm for component in vec]
+
+
+def encode_dense(texts: list[str]) -> list[list[float]]:
+    """Compute bge-m3 dense embeddings for each text.
+
+    Dense is CLS pooling — the first token of ``last_hidden_state`` —
+    followed by L2 normalisation, matching FlagEmbedding's ``cls``
+    sentence-pooling method for this model.
+
+    Args:
+        texts: Input texts.
+
+    Returns:
+        One unit-length vector per input, in input order.
+    """
+    encoded = _encode_batch(texts)
+    with torch.no_grad():
+        hidden = model(**encoded, return_dict=True).last_hidden_state
+    cls_rows = hidden[:, 0].tolist()
+    return [l2_normalise([float(component) for component in row]) for row in cls_rows]
+
+
+@app.post("/v1/embeddings")
+def embeddings(req: EmbeddingsRequest) -> EmbeddingsResponse:
+    """Return dense embeddings in the OpenAI response shape.
+
+    The request's ``model`` field is ignored and the configured model is
+    echoed back, matching ``/pooling`` and ``/tokenize``: this container
+    serves exactly one model.
+
+    Args:
+        req: Embeddings request carrying one or more input texts.
+
+    Returns:
+        One embedding per input, in input order.
+    """
+    texts = [req.input] if isinstance(req.input, str) else list(req.input)
+    if not texts:
+        return EmbeddingsResponse(data=[], model=MODEL_ID, usage=EmbeddingsUsage(prompt_tokens=0, total_tokens=0))
+
+    vectors = encode_dense(texts)
+    token_total = sum(len(tokenize_ids(text)) for text in texts)
+    return EmbeddingsResponse(
+        data=[EmbeddingItem(index=i, embedding=vector) for i, vector in enumerate(vectors)],
+        model=MODEL_ID,
+        usage=EmbeddingsUsage(prompt_tokens=token_total, total_tokens=token_total),
+    )
