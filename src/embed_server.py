@@ -35,9 +35,36 @@ from huggingface_hub import hf_hub_download
 from pydantic import BaseModel, Field
 from transformers import AutoModel, AutoTokenizer
 
+
+def _positive_int_env(name: str, default: int) -> int:
+    """Read an integer env var that must be at least 1.
+
+    A zero or negative value for either knob would not crash anything —
+    ``MAX_BATCH_TOKENS < 1`` silently degrades to one-text-per-forward
+    batching, ``MAX_LENGTH < 1`` to empty truncation — so the
+    misconfiguration would be invisible until someone profiled a slow
+    container. Failing at startup puts it in the logs instead.
+
+    Args:
+        name: Environment variable name.
+        default: Value used when the variable is unset.
+
+    Returns:
+        The parsed value.
+
+    Raises:
+        ValueError: When the value parses below 1 (or not as an integer,
+            via ``int()`` itself).
+    """
+    value = int(os.environ.get(name, str(default)))
+    if value < 1:
+        raise ValueError(f"{name} must be a positive integer, got {value}")
+    return value
+
+
 MODEL_ID = os.environ.get("EMBED_MODEL", "BAAI/bge-m3")
-MAX_LENGTH = int(os.environ.get("EMBED_MAX_LENGTH", "8192"))
-MAX_BATCH_TOKENS = int(os.environ.get("EMBED_MAX_BATCH_TOKENS", "16384"))
+MAX_LENGTH = _positive_int_env("EMBED_MAX_LENGTH", 8192)
+MAX_BATCH_TOKENS = _positive_int_env("EMBED_MAX_BATCH_TOKENS", 16384)
 SPARSE_LINEAR_FILE = os.environ.get("SPARSE_LINEAR_FILE", "sparse_linear.pt")
 
 app = FastAPI(title="vllm-service embed-only", version="1.0")
@@ -151,7 +178,7 @@ def plan_batches(lengths: list[int], budget: int) -> list[tuple[int, int]]:
     return spans
 
 
-def _iter_batches(texts: list[str]) -> Iterator[list[str]]:
+def _iter_batches(texts: list[str]) -> Iterator[tuple[list[str], list[int]]]:
     """Yield *texts* in sub-batches bounded by ``MAX_BATCH_TOKENS``.
 
     The single bounding seam for both encoders: ``/pooling`` and
@@ -162,17 +189,20 @@ def _iter_batches(texts: list[str]) -> Iterator[list[str]]:
 
     Lengths come from ``tokenize_ids``, the same seam ``/tokenize``
     reports, so the budget is charged against the token counts a client
-    can actually observe.
+    can actually observe. Each batch's lengths are yielded alongside it
+    so callers that need token accounting (``/v1/embeddings``'s
+    ``usage``) reuse them instead of tokenizing a second time.
 
     Args:
         texts: Input texts, in input order.
 
     Yields:
-        Consecutive non-empty slices of *texts*, in input order.
+        ``(batch, lengths)`` pairs — consecutive non-empty slices of
+        *texts* in input order, each with its texts' token counts.
     """
     lengths = [len(tokenize_ids(text)) for text in texts]
     for start, end in plan_batches(lengths, MAX_BATCH_TOKENS):
-        yield texts[start:end]
+        yield texts[start:end], lengths[start:end]
 
 
 def tokenize_ids(text: str) -> list[int]:
@@ -255,7 +285,7 @@ def encode_token_weights(texts: list[str]) -> list[list[float]]:
         One list of per-token weights per input, in input order.
     """
     rows: list[list[float]] = []
-    for batch in _iter_batches(texts):
+    for batch, _lengths in _iter_batches(texts):
         encoded = _encode_batch(batch)
         with torch.no_grad():
             hidden = model(**encoded, return_dict=True).last_hidden_state
@@ -345,7 +375,7 @@ def l2_normalise(vec: list[float]) -> list[float]:
     return [component / norm for component in vec]
 
 
-def encode_dense(texts: list[str]) -> list[list[float]]:
+def encode_dense(texts: list[str]) -> tuple[list[list[float]], int]:
     """Compute bge-m3 dense embeddings for each text.
 
     Dense is CLS pooling — the first token of ``last_hidden_state`` —
@@ -354,22 +384,28 @@ def encode_dense(texts: list[str]) -> list[list[float]]:
 
     Bounded in ``MAX_BATCH_TOKENS``-sized sub-batches on the same seam as
     the sparse route (see ``_iter_batches``); the dense route pads
-    identically, so it inflates identically.
+    identically, so it inflates identically. The token total rides along
+    from that seam's own counts, so the route's ``usage`` field never
+    tokenizes a second time — and can never disagree with the lengths
+    the budget was charged against.
 
     Args:
         texts: Input texts.
 
     Returns:
-        One unit-length vector per input, in input order.
+        One unit-length vector per input, in input order, plus the total
+        token count across all inputs.
     """
     vectors: list[list[float]] = []
-    for batch in _iter_batches(texts):
+    token_total = 0
+    for batch, lengths in _iter_batches(texts):
+        token_total += sum(lengths)
         encoded = _encode_batch(batch)
         with torch.no_grad():
             hidden = model(**encoded, return_dict=True).last_hidden_state
         for row in hidden[:, 0].tolist():
             vectors.append(l2_normalise([float(component) for component in row]))
-    return vectors
+    return vectors, token_total
 
 
 @app.post("/v1/embeddings")
@@ -390,8 +426,7 @@ def embeddings(req: EmbeddingsRequest) -> EmbeddingsResponse:
     if not texts:
         return EmbeddingsResponse(data=[], model=MODEL_ID, usage=EmbeddingsUsage(prompt_tokens=0, total_tokens=0))
 
-    vectors = encode_dense(texts)
-    token_total = sum(len(tokenize_ids(text)) for text in texts)
+    vectors, token_total = encode_dense(texts)
     return EmbeddingsResponse(
         data=[EmbeddingItem(index=i, embedding=vector) for i, vector in enumerate(vectors)],
         model=MODEL_ID,

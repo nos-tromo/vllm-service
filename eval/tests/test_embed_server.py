@@ -501,7 +501,7 @@ def test_l2_normalise_handles_zero_vector() -> None:
 
 def test_embeddings_returns_openai_shape(monkeypatch: pytest.MonkeyPatch) -> None:
     """Response must match the OpenAI embeddings contract the SDK expects."""
-    monkeypatch.setattr(embed_server, "encode_dense", lambda texts: [[1.0, 0.0] for _ in texts])
+    monkeypatch.setattr(embed_server, "encode_dense", lambda texts: ([[1.0, 0.0] for _ in texts], 0))
     response = client.post("/v1/embeddings", json={"model": "BAAI/bge-m3", "input": ["alpha", "beta"]})
     assert response.status_code == 200
     body = response.json()
@@ -514,7 +514,7 @@ def test_embeddings_returns_openai_shape(monkeypatch: pytest.MonkeyPatch) -> Non
 
 def test_embeddings_accepts_a_bare_string(monkeypatch: pytest.MonkeyPatch) -> None:
     """The OpenAI contract allows `input` to be a single string."""
-    monkeypatch.setattr(embed_server, "encode_dense", lambda texts: [[1.0] for _ in texts])
+    monkeypatch.setattr(embed_server, "encode_dense", lambda texts: ([[1.0] for _ in texts], 0))
     response = client.post("/v1/embeddings", json={"model": "m", "input": "alpha"})
     assert response.status_code == 200
     assert len(response.json()["data"]) == 1
@@ -522,7 +522,7 @@ def test_embeddings_accepts_a_bare_string(monkeypatch: pytest.MonkeyPatch) -> No
 
 def test_embeddings_empty_input_returns_empty_data(monkeypatch: pytest.MonkeyPatch) -> None:
     """An empty batch is not an error."""
-    monkeypatch.setattr(embed_server, "encode_dense", lambda texts: [])
+    monkeypatch.setattr(embed_server, "encode_dense", lambda texts: ([], 0))
     response = client.post("/v1/embeddings", json={"model": "m", "input": []})
     assert response.status_code == 200
     assert response.json()["data"] == []
@@ -545,10 +545,63 @@ def test_encode_dense_cls_pools_and_normalises(monkeypatch: pytest.MonkeyPatch) 
     monkeypatch.setattr(embed_server, "tokenizer", _StubTokenizer(encoded))
     monkeypatch.setattr(embed_server, "model", _Model())
 
-    rows = embed_server.encode_dense(["a", "b"])
+    rows, token_total = embed_server.encode_dense(["a", "b"])
 
     assert rows[0] == pytest.approx([0.6, 0.8])  # fails if CLS pooling or L2 norm is wrong
     assert rows[1] == pytest.approx([0.0, 1.0])
+    assert token_total == 6  # BOS + 1 word + EOS, per text
+
+
+def test_positive_int_env_rejects_non_positive(monkeypatch: pytest.MonkeyPatch) -> None:
+    """A zero or negative knob is a misconfiguration, not a silent slow mode.
+
+    ``EMBED_MAX_BATCH_TOKENS=0`` would degrade to one-text-per-forward
+    batching — safe but slow, and invisible until someone profiles it.
+    Failing at startup surfaces it in the container logs instead.
+    """
+    monkeypatch.setenv("EMBED_MAX_BATCH_TOKENS", "0")
+    with pytest.raises(ValueError, match="EMBED_MAX_BATCH_TOKENS"):
+        embed_server._positive_int_env("EMBED_MAX_BATCH_TOKENS", 16384)
+
+    monkeypatch.setenv("EMBED_MAX_BATCH_TOKENS", "-5")
+    with pytest.raises(ValueError, match="EMBED_MAX_BATCH_TOKENS"):
+        embed_server._positive_int_env("EMBED_MAX_BATCH_TOKENS", 16384)
+
+
+def test_positive_int_env_reads_value_and_default(monkeypatch: pytest.MonkeyPatch) -> None:
+    """A set variable wins; an unset one falls back to the default."""
+    monkeypatch.setenv("EMBED_MAX_BATCH_TOKENS", "512")
+    assert embed_server._positive_int_env("EMBED_MAX_BATCH_TOKENS", 16384) == 512
+
+    monkeypatch.delenv("EMBED_MAX_BATCH_TOKENS", raising=False)
+    assert embed_server._positive_int_env("EMBED_MAX_BATCH_TOKENS", 16384) == 16384
+
+
+def test_embeddings_tokenizes_each_text_exactly_once(monkeypatch: pytest.MonkeyPatch) -> None:
+    """/v1/embeddings must not re-tokenize for the usage count.
+
+    ``_iter_batches`` already tokenizes every text to size the
+    sub-batches; the route's ``usage`` sum must reuse those lengths
+    rather than running ``tokenize_ids`` a second time per text. This
+    drives the real route + ``encode_dense`` + ``_iter_batches`` chain
+    and counts ``tokenize_ids``-path calls on the fake tokenizer, so a
+    reintroduced second pass fails on the call count; the usage
+    assertion pins that the reused lengths are the same ones
+    ``/tokenize`` would report (BOS + words + EOS per text: 4 + 3).
+    """
+
+    def fake_model(**_kwargs: object) -> types.SimpleNamespace:
+        batch = embed_server.tokenizer.call_calls[-1]["texts"]
+        return types.SimpleNamespace(last_hidden_state=_FakeHidden([[[1.0, 0.0]] for _ in batch]))
+
+    monkeypatch.setattr(embed_server, "model", fake_model)
+
+    before = len(embed_server.tokenizer.encode_calls)
+    response = client.post("/v1/embeddings", json={"model": "BAAI/bge-m3", "input": ["alpha beta", "gamma"]})
+
+    assert response.status_code == 200
+    assert len(embed_server.tokenizer.encode_calls) - before == 2
+    assert response.json()["usage"] == {"prompt_tokens": 7, "total_tokens": 7}
 
 
 def test_plan_batches_keeps_one_batch_when_within_budget() -> None:
@@ -650,10 +703,11 @@ def test_encode_dense_bounds_sub_batches_and_preserves_order(monkeypatch: pytest
 
     texts = ["alpha beta gamma", "delta", "epsilon zeta"]
     before = len(embed_server.tokenizer.call_calls)
-    rows = embed_server.encode_dense(texts)
+    rows, token_total = embed_server.encode_dense(texts)
     batched = [call["texts"] for call in embed_server.tokenizer.call_calls[before:]]
 
     assert batched == [["alpha beta gamma"], ["delta"], ["epsilon zeta"]]
     assert rows[0] == pytest.approx([0.6, 0.8])
     assert rows[1] == pytest.approx([0.0, 1.0])
     assert rows[2] == pytest.approx([1.0, 0.0])
+    assert token_total == 12  # 5 + 3 + 4, summed across sub-batches
