@@ -282,7 +282,7 @@ Other useful operations use the raw compose form, pointed at the compose file:
 ```bash
 docker compose --env-file .env -f docker/compose.yaml logs -f router    # follow LiteLLM proxy logs
 docker compose --env-file .env -f docker/compose.yaml logs -f chat      # follow a single backend
-docker compose --env-file .env -f docker/compose.yaml restart chat      # reload one backend after .env change
+docker compose --env-file .env -f docker/compose.yaml up -d chat        # recreate one backend to apply .env changes (restart does not re-read env)
 docker compose --env-file .env -f docker/compose.yaml ps                # health status of each service
 make stop                                                               # stop the active service set
 ```
@@ -432,6 +432,13 @@ passed when the corresponding env var is set — when adding a new optional flag
 follow that same pattern rather than hard-coding it in `command:`. The `gliner`
 shell builder invokes `python -m gliner.serve` instead of `vllm serve`, but the
 structure is identical.
+
+`CHAT_KV_CACHE_DTYPE` / `CHAT_CALCULATE_KV_SCALES` follow this pattern:
+when set they append `--kv-cache-dtype` / `--calculate-kv-scales` to the
+chat backend, enabling vLLM's FP8 quantized KV cache (~half the KV memory;
+chat is the only backend where this matters — embed/rerank are pooling
+runners and Whisper's decode is tiny). Unset means full-precision KV
+cache, the prior behavior.
 
 `OPENAI_API_KEY` serves double duty: it is both the upstream API key passed to
 each vLLM `--api-key` and the LiteLLM `master_key` that gates the router.
