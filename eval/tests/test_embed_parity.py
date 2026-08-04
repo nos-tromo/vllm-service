@@ -57,7 +57,7 @@ CASE_IDS = [case["name"] for case in CASES]
 def client() -> Iterator[httpx.Client]:
     """One connection-reusing client for the whole module."""
     key = os.environ.get("EMBED_PARITY_API_KEY", "")
-    headers = {"Authorization": f"Bearer {key}"} if key else {}
+    headers: dict[str, str] = {"Authorization": f"Bearer {key}"} if key else {}
     with httpx.Client(base_url=BASE_URL, headers=headers, timeout=600.0) as live:
         yield live
 
