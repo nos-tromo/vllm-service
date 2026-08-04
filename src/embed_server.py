@@ -70,7 +70,9 @@ SPARSE_LINEAR_FILE = os.environ.get("SPARSE_LINEAR_FILE", "sparse_linear.pt")
 app = FastAPI(title="vllm-service embed-only", version="1.0")
 
 tokenizer = AutoTokenizer.from_pretrained(MODEL_ID)
-model = AutoModel.from_pretrained(MODEL_ID)
+# Explicit dtype: the float32 default is exactly what a transformers
+# major bump changes, and dense CLS+L2 vectors drift silently if it moves.
+model = AutoModel.from_pretrained(MODEL_ID, torch_dtype=torch.float32)
 model.train(False)
 
 

@@ -23,11 +23,14 @@ RUN uv pip install --system --no-cache --compile-bytecode \
 # build from source on aarch64 and is irrelevant to inference-only
 # deployments. huggingface_hub is needed to resolve sparse_linear.pt
 # out of the mounted cache.
+# transformers<5 because a major bump can move load-time defaults the
+# server relies on (dtype above all); dense CLS+L2 vectors and the
+# ReLU'd sparse weights would drift silently. Matches Dockerfile.clip.cpu.
 RUN uv pip install --system --no-cache --compile-bytecode \
     'fastapi>=0.115.0' \
     'uvicorn[standard]>=0.32.0' \
     'pydantic>=2.0' \
-    'transformers>=4.44.2' \
+    'transformers>=4.44.2,<5.0' \
     'huggingface_hub>=0.26.0' \
     'sentencepiece>=0.2.0'
 
