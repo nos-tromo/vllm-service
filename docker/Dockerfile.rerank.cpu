@@ -24,11 +24,13 @@ RUN uv pip install --system --no-cache --compile-bytecode \
 # build from source on aarch64 and is irrelevant to inference-only
 # deployments. For bge-reranker-style cross-encoders the scores are
 # identical (FlagEmbedding wraps the same forward pass).
+# transformers<5 because a major bump can move load-time defaults and
+# shift scores across the sigmoid silently. Matches Dockerfile.clip.cpu.
 RUN uv pip install --system --no-cache --compile-bytecode \
     'fastapi>=0.115.0' \
     'uvicorn[standard]>=0.32.0' \
     'pydantic>=2.0' \
-    'transformers>=4.44.2' \
+    'transformers>=4.44.2,<5.0' \
     'sentencepiece>=0.2.0'
 
 COPY src/rerank_server.py /app/rerank_server.py

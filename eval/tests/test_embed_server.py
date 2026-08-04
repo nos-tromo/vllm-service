@@ -13,6 +13,7 @@ import importlib.util
 import sys
 import types
 from pathlib import Path
+from typing import ClassVar
 
 import pytest
 
@@ -117,9 +118,12 @@ class _FakeModel:
 
     config = _Config()
 
+    load_calls: ClassVar[list[dict[str, object]]] = []
+
     @staticmethod
     def from_pretrained(*_args: object, **_kwargs: object) -> "_FakeModel":
-        """Return the fake instance regardless of arguments."""
+        """Return the fake instance, recording the kwargs for assertions."""
+        _FakeModel.load_calls.append(dict(_kwargs))
         return _FakeModel()
 
     def train(self, mode: bool = True) -> "_FakeModel":
@@ -262,6 +266,18 @@ finally:
 from fastapi.testclient import TestClient  # noqa: E402
 
 client = TestClient(embed_server.app, raise_server_exceptions=False)
+
+
+def test_model_loaded_with_explicit_float32_dtype() -> None:
+    """The checkpoint load must state torch_dtype rather than inherit it.
+
+    transformers' float32 default is exactly what a major version bump
+    changes (see issue #76); dense CLS+L2 vectors drift silently across
+    all 1024 dims if the dtype moves. The stub records the kwargs of the
+    import-time ``AutoModel.from_pretrained`` call.
+    """
+    assert len(_FakeModel.load_calls) == 1
+    assert _FakeModel.load_calls[0].get("torch_dtype") == embed_server.torch.float32
 
 
 def test_health_reports_model() -> None:
