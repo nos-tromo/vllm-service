@@ -36,6 +36,9 @@ class _FakeTokenizer:
     Each records the kwargs it was invoked with for that assertion.
     """
 
+    bos_token_id = 0
+    eos_token_id = 2
+
     def __init__(self) -> None:
         """Start with empty call logs."""
         self.encode_calls: list[dict[str, object]] = []
@@ -161,6 +164,9 @@ class _StubTokenizer:
     a fake covering only one of them fails on the fixture rather than on
     the behaviour under test.
     """
+
+    bos_token_id = 0
+    eos_token_id = 2
 
     def __init__(self, encoded: dict[str, _FakeTensor]) -> None:
         """Wrap the batch encoding this fake always returns.
@@ -346,11 +352,13 @@ def test_pooling_returns_one_score_list_per_input(monkeypatch: pytest.MonkeyPatc
 
 
 def test_pooling_scores_align_with_tokenize_ids(monkeypatch: pytest.MonkeyPatch) -> None:
-    """The two routes must agree on sequence length for the same text.
+    """/pooling returns exactly len(/tokenize) - 2 scores per text.
 
-    docint pairs /tokenize ids with /pooling scores positionally. A
-    length mismatch silently truncates the sparse vector via zip(), so
-    this alignment is the contract that matters most.
+    vLLM's ``BgeM3EmbeddingModel`` wraps its ``token_classify`` pooler in
+    ``BOSEOSFilter`` (verified on the CUDA stack for issue #75), so its
+    sparse rows exclude the BOS and EOS positions. This server must match
+    that arity or a consumer switching backends by base URL alone gets a
+    different pairing of ids to scores.
 
     This runs the REAL ``tokenize_ids`` and ``encode_token_weights`` —
     only ``model``/``sparse_head``/``torch.relu`` are faked, and only as
@@ -384,7 +392,7 @@ def test_pooling_scores_align_with_tokenize_ids(monkeypatch: pytest.MonkeyPatch)
     ).json()
 
     for index, tokenize_body in enumerate(tokenize_bodies):
-        assert len(pooling_body["data"][index]["data"]) == len(tokenize_body["tokens"])
+        assert len(pooling_body["data"][index]["data"]) == len(tokenize_body["tokens"]) - 2
 
     encode_kwargs = embed_server.tokenizer.encode_calls[-1]
     call_kwargs = embed_server.tokenizer.call_calls[-1]
@@ -465,6 +473,35 @@ def test_encode_token_weights_strips_padding_per_row(monkeypatch: pytest.MonkeyP
     assert len(rows[0]) == 2
     assert len(rows[1]) == 4
     assert rows[0] == [0.1, 0.2]
+
+
+def test_encode_token_weights_strips_bos_eos_conditionally(monkeypatch: pytest.MonkeyPatch) -> None:
+    """BOS/EOS positions are dropped only when the boundary ids actually match.
+
+    Mirrors vLLM's ``BOSEOSFilter`` exactly: the first position goes iff
+    its id is the BOS id, the last iff its id is the EOS id — not an
+    unconditional slice. Row 0 carries both specials, row 1 neither, so
+    an implementation that always slices ``[1:-1]`` fails on row 1 and
+    one that never strips fails on row 0. The boundary weights are
+    deliberately large: ReLU does NOT zero them (measured 0.11-0.24 on
+    the real model), which is why the strip must be positional.
+    """
+    input_ids = [[0, 7, 8, 2], [5, 6, 7, 9]]
+    mask = [[1, 1, 1, 1], [1, 1, 1, 1]]
+    fake_weights = [[0.9, 0.1, 0.2, 0.8], [0.3, 0.4, 0.5, 0.6]]
+    encoded = {"input_ids": _FakeTensor(input_ids), "attention_mask": _FakeTensor(mask)}
+
+    monkeypatch.setattr(embed_server, "tokenizer", _StubTokenizer(encoded))
+    monkeypatch.setattr(
+        embed_server, "model", lambda **_kwargs: types.SimpleNamespace(last_hidden_state=_FakeTensor([]))
+    )
+    monkeypatch.setattr(embed_server, "sparse_head", lambda _hidden: _FakeTensor(fake_weights))
+    monkeypatch.setattr(embed_server.torch, "relu", lambda x: x, raising=False)
+
+    rows = embed_server.encode_token_weights(["a b c d", "e f g h"])
+
+    assert rows[0] == [0.1, 0.2]
+    assert rows[1] == [0.3, 0.4, 0.5, 0.6]
 
 
 class _FakeHidden:
@@ -694,7 +731,7 @@ def test_encode_token_weights_bounds_sub_batches_and_preserves_order(monkeypatch
     batched = [call["texts"] for call in embed_server.tokenizer.call_calls[before:]]
 
     assert batched == [["alpha beta gamma"], ["delta"], ["epsilon zeta"]]
-    assert [len(row) for row in rows] == [5, 3, 4]
+    assert [len(row) for row in rows] == [3, 1, 2]  # word count: BOS/EOS are stripped
 
 
 def test_encode_dense_bounds_sub_batches_and_preserves_order(monkeypatch: pytest.MonkeyPatch) -> None:

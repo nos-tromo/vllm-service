@@ -557,7 +557,10 @@ contracts from that one loaded model: each route runs its own XLM-R
 forward pass over the shared loaded model; dense takes CLS pooling + L2
 normalization, sparse the model's own `sparse_linear.pt` head + ReLU,
 with padding positions stripped via the attention mask for the sparse
-route. The win is one model load shared across routes, not one forward
+route, then the BOS/EOS positions dropped the way vLLM's `BOSEOSFilter`
+drops them (each sparse row has `len(/tokenize) - 2` entries; the
+boundary weights do *not* ReLU to zero, so keeping them would diverge
+from the CUDA backend). The win is one model load shared across routes, not one forward
 pass — each route still runs its own full forward, and a consumer wanting
 both makes two independent HTTP calls.
 
@@ -588,8 +591,11 @@ startup via `EMBED_MODEL` (defaults to `BAAI/bge-m3`, the same model and
 pooling definition the GPU stack's `embed` backend uses under vLLM's
 `BgeM3EmbeddingModel` architecture, so scores are equivalent up to dtype:
 this server runs float32, while vLLM's `dtype="auto"` casts bge-m3's
-float32 checkpoint to float16, diverging by roughly 1e-3. Exact
-side-by-side parity against the CUDA stack is unverified pending #75);
+float32 checkpoint to float16, diverging by roughly 1e-3. Parity against
+the CUDA stack was verified side-by-side on 2026-08-04 — see
+`docs/2026-08-04-embed-parity-checklist.md`, the golden fixtures in
+`eval/fixtures/embed_parity/`, and `eval/tests/test_embed_parity.py`,
+which re-runs the four comparisons against any live backend);
 `EMBED_MAX_LENGTH` (default `8192`) truncates all three routes identically
 so `/tokenize`, `/pooling`, and `/v1/embeddings` never disagree on
 sequence length.
