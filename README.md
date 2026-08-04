@@ -173,11 +173,13 @@ make build-gliner-only     # builds vllm-service-gliner-cpu
 make up-gliner-only        # starts the gliner-only container
 ```
 
-On first start the container downloads the GLiNER weights to the shared
-`huggingface-cache` volume (~1.2 GB for the medium variant). The
-healthcheck reports healthy once Ray Serve is accepting requests. If your
-host is offline you'll need to pre-populate the cache by temporarily
-setting `HF_HUB_OFFLINE=0` and `TRANSFORMERS_OFFLINE=0` in `.env`.
+The container expects the GLiNER weights to already be present in the
+shared `huggingface-cache` volume — `.env.example` ships
+`HF_HUB_OFFLINE=1`, so nothing is downloaded at start. To populate the
+cache on a networked host, temporarily set `HF_HUB_OFFLINE=0` and
+`TRANSFORMERS_OFFLINE=0` in `.env` for the first start (~1.2 GB for the
+medium variant), then flip both back. The healthcheck reports healthy
+once Ray Serve is accepting requests.
 
 Consumers on `inference-net` reach it directly — there's no router in this
 shape:
@@ -235,12 +237,14 @@ make build-rerank-only    # builds vllm-service-rerank-only
 make up-rerank-only       # starts the rerank-only container
 ```
 
-On first start the container downloads the reranker weights to the
-shared `huggingface-cache` volume (~570 MB for `BAAI/bge-reranker-v2-m3`,
-the default — same model the GPU stack uses, so scores match). The
-healthcheck reports healthy once FastAPI is accepting requests. If your
-host is offline you'll need to pre-populate the cache by temporarily
-setting `HF_HUB_OFFLINE=0` and `TRANSFORMERS_OFFLINE=0` in `.env`.
+The container expects the reranker weights to already be present in the
+shared `huggingface-cache` volume — `.env.example` ships
+`HF_HUB_OFFLINE=1`, so nothing is downloaded at start. To populate the
+cache on a networked host, temporarily set `HF_HUB_OFFLINE=0` and
+`TRANSFORMERS_OFFLINE=0` in `.env` for the first start (~570 MB for
+`BAAI/bge-reranker-v2-m3`, the default — same model the GPU stack uses,
+so scores match), then flip both back. The healthcheck reports healthy
+once FastAPI is accepting requests.
 
 Consumers on `inference-net` reach it directly — there's no router in
 this shape:
@@ -315,11 +319,13 @@ make build-clip-only    # builds vllm-service-clip-cpu
 make up-clip-only       # starts the clip-only container
 ```
 
-On first start the container downloads the CLIP weights to the shared
-`huggingface-cache` volume (~600 MB for the base patch32 variant). The
-healthcheck reports healthy once FastAPI is accepting requests. If your
-host is offline you'll need to pre-populate the cache by temporarily
-setting `HF_HUB_OFFLINE=0` and `TRANSFORMERS_OFFLINE=0` in `.env`.
+The container expects the CLIP weights to already be present in the
+shared `huggingface-cache` volume — `.env.example` ships
+`HF_HUB_OFFLINE=1`, so nothing is downloaded at start. To populate the
+cache on a networked host, temporarily set `HF_HUB_OFFLINE=0` and
+`TRANSFORMERS_OFFLINE=0` in `.env` for the first start (~600 MB for the
+base patch32 variant), then flip both back. The healthcheck reports
+healthy once FastAPI is accepting requests.
 
 Consumers on `inference-net` reach it directly — there's no router in
 this shape:
@@ -391,16 +397,18 @@ make build-embed-only     # builds vllm-service-embed-only
 make up-embed-only        # starts the embed-only container
 ```
 
-On first start the container downloads the `BAAI/bge-m3` weights (encoder
-plus the `sparse_linear.pt` head) to the shared `huggingface-cache` volume —
-the same model and pooling definition the GPU stack uses, so scores are
-equivalent up to dtype: this server runs float32, while vLLM's
-`dtype="auto"` casts bge-m3's float32 checkpoint to float16, so the two
-diverge by roughly 1e-3. Exact side-by-side parity is unverified pending
-#75 (no CUDA host to run the comparison against). The healthcheck reports
-healthy once FastAPI is accepting requests against `/health`. If your host
-is offline you'll need to pre-populate the cache by temporarily setting
-`HF_HUB_OFFLINE=0` and `TRANSFORMERS_OFFLINE=0` in `.env`.
+The container expects the `BAAI/bge-m3` weights (encoder plus the
+`sparse_linear.pt` head) to already be present in the shared
+`huggingface-cache` volume — `.env.example` ships `HF_HUB_OFFLINE=1`, so
+nothing is downloaded at start. To populate the cache on a networked
+host, temporarily set `HF_HUB_OFFLINE=0` and `TRANSFORMERS_OFFLINE=0` in
+`.env` for the first start, then flip both back. It is the same model
+and pooling definition the GPU stack uses, so scores are equivalent up
+to dtype: this server runs float32, while vLLM's `dtype="auto"` casts
+bge-m3's float32 checkpoint to float16, so the two diverge by roughly
+1e-3. Exact side-by-side parity is unverified pending #75 (no CUDA host
+to run the comparison against). The healthcheck reports healthy once
+FastAPI is accepting requests against `/health`.
 
 On a dev host running Ollama for chat/embed, this shape **replaces**
 Ollama's `bge-m3` rather than sitting alongside it: point the embedding
