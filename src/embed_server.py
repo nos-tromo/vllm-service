@@ -13,9 +13,13 @@ architecture (see ``docker/compose.yaml``'s ``--hf-overrides``). This
 server reproduces that model's dense and ``token_classify`` output on CPU
 with ``transformers``: each route runs its own XLM-R forward, then either
 CLS pooling + L2 normalisation (dense) or the repo's ``sparse_linear.pt``
-head (``Linear(hidden_size, 1)``) + ReLU (sparse). Special and padding
-tokens fall out downstream for sparse — the consumer drops non-positive
-scores.
+head (``Linear(hidden_size, 1)``) + ReLU (sparse). Padding positions are
+stripped via the attention mask, and the BOS/EOS positions are dropped
+the same way vLLM's ``BOSEOSFilter`` drops them — they do NOT relu to
+zero (measured 0.11-0.24 on the real model), so leaving them in would
+both change the row arity and inject a spurious ``<s>`` term that the
+consumer's drop-non-positive filter cannot remove (verified against the
+CUDA stack; issue #75).
 
 Inference uses ``transformers`` directly rather than ``FlagEmbedding``;
 the latter pulls ``ir-datasets`` -> ``zlib-state``, which needs
@@ -74,6 +78,11 @@ tokenizer = AutoTokenizer.from_pretrained(MODEL_ID)
 # major bump changes, and dense CLS+L2 vectors drift silently if it moves.
 model = AutoModel.from_pretrained(MODEL_ID, torch_dtype=torch.float32)
 model.train(False)
+
+# vLLM's BOSEOSFilter semantics: -1 disables the boundary strip when the
+# tokenizer defines no such special token.
+BOS_TOKEN_ID = -1 if tokenizer.bos_token_id is None else int(tokenizer.bos_token_id)
+EOS_TOKEN_ID = -1 if tokenizer.eos_token_id is None else int(tokenizer.eos_token_id)
 
 
 def _load_sparse_head(hidden_size: int) -> torch.nn.Linear:
@@ -272,9 +281,13 @@ class PoolingResponse(BaseModel):
 def encode_token_weights(texts: list[str]) -> list[list[float]]:
     """Compute bge-m3 sparse weights for each text.
 
-    Runs the encoder forward, applies the sparse head and ReLU, then
-    strips padding positions using the attention mask so each returned
-    list aligns one-to-one with that text's own token ids.
+    Runs the encoder forward, applies the sparse head and ReLU, strips
+    padding positions using the attention mask, then drops the BOS/EOS
+    boundary positions with vLLM's ``BOSEOSFilter`` semantics — first
+    position iff its id is the BOS id, last iff its id is the EOS id —
+    so each returned list aligns one-to-one with that text's token ids
+    minus the specials, exactly as the full-stack vLLM backend returns
+    them (verified element-wise on the CUDA stack; issue #75).
 
     The input is encoded in ``MAX_BATCH_TOKENS``-bounded sub-batches
     (see ``_iter_batches``) and the results concatenated, so a caller's
@@ -293,8 +306,17 @@ def encode_token_weights(texts: list[str]) -> list[list[float]]:
             hidden = model(**encoded, return_dict=True).last_hidden_state
             weights = torch.relu(sparse_head(hidden)).squeeze(-1)
 
-        for row, mask in zip(weights.tolist(), encoded["attention_mask"].tolist(), strict=True):
-            rows.append([float(weight) for weight, keep in zip(row, mask, strict=True) if keep == 1])
+        for row, mask, ids in zip(
+            weights.tolist(), encoded["attention_mask"].tolist(), encoded["input_ids"].tolist(), strict=True
+        ):
+            kept_weights = [float(weight) for weight, keep in zip(row, mask, strict=True) if keep == 1]
+            kept_ids = [int(token_id) for token_id, keep in zip(ids, mask, strict=True) if keep == 1]
+            if kept_ids and kept_ids[0] == BOS_TOKEN_ID:
+                kept_weights = kept_weights[1:]
+                kept_ids = kept_ids[1:]
+            if kept_ids and kept_ids[-1] == EOS_TOKEN_ID:
+                kept_weights = kept_weights[:-1]
+            rows.append(kept_weights)
     return rows
 
 
