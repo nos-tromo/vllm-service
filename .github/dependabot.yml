@@ -8,14 +8,6 @@ updates:
     directory: "/"
     schedule:
       interval: weekly
-    # actions/checkout and astral-sh/setup-uv are centrally pinned in
-    # nos-tromo/.github's reusable workflows (currently @v2.6); this repo's
-    # hand-rolled python-lint job in ci.yml mirrors those pins. They move only
-    # when the canonical workflows move (manual re-mirror on a new @vX.Y tag),
-    # never via an automated bump here — same policy as pyrefly/ruff below.
-    ignore:
-      - dependency-name: "actions/checkout"
-      - dependency-name: "astral-sh/setup-uv"
   - package-ecosystem: uv
     directory: "/"
     schedule:
