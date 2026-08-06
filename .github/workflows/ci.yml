@@ -34,3 +34,11 @@ jobs:
     with:
       python-versions: '["3.11"]'
       run-tests: false
+      # --locked rather than the shared workflow's '--frozen --group dev'
+      # default: --frozen installs uv.lock as-is and exits 0 even when it
+      # disagrees with pyproject.toml, which is how this repo's lock silently
+      # sat at 0.2.0 through the v0.2.1 release. --locked fails the job
+      # instead. Set explicitly because the workflow ref is SHA-pinned, so
+      # nos-tromo/.github#44 (flipping that default) only lands here on a ref
+      # bump. --group dev pulls pre-commit and the pinned pyrefly for lint.
+      uv-sync-args: '--locked --group dev'
