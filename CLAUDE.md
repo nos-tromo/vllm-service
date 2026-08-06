@@ -391,7 +391,7 @@ Apps still reach the stack exclusively through `router`, which keeps the
 
 ### Dependency overlay
 
-The vLLM base image (`vllm/vllm-openai:v0.20.1`, pinned by digest) ships with
+The vLLM base image (`vllm/vllm-openai:v0.26.0`, pinned by digest) ships with
 plain vLLM and its full CUDA runtime preinstalled in the system Python prefix.
 The Dockerfile adds vLLM's `[audio]` extras (`av`, `scipy`, `soundfile`,
 `mistral_common[audio]`) so the `asr` (Whisper) service has what it needs,
@@ -407,7 +407,8 @@ ergonomics aren't worth it.
 ### Service startup ordering
 
 `depends_on … condition: service_healthy` chains the backends serially:
-`chat → embed → rerank → clip → asr → diarize → vad → gliner → router`. This
+`chat → embed → embed-sparse → rerank → clip → asr → diarize → vad → gliner
+→ router`. This
 is intentional — backends compete for GPU memory at startup, so they are
 brought up one at a time. `gliner` is deliberately **last**: it runs on Ray
 Serve with `--target-memory-fraction` (a share of whatever GPU memory is still

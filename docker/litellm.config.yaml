@@ -71,11 +71,11 @@ general_settings:
   # map natively. Forwards the request body unchanged to the upstream.
   pass_through_endpoints:
     - path: "/pooling"
-      target: "http://embed:8000/pooling"
+      target: "http://embed-sparse:8000/pooling"
       headers:
         content-type: "application/json"
     - path: "/tokenize"
-      target: "http://embed:8000/tokenize"
+      target: "http://embed-sparse:8000/tokenize"
       headers:
         content-type: "application/json"
     # GLiNER zero-shot NER. Not OpenAI-compatible — clients POST
