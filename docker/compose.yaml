@@ -152,6 +152,9 @@ services:
         if [ "$${CHAT_CALCULATE_KV_SCALES:-false}" = "true" ]; then
           set -- "$@" --calculate-kv-scales;
         fi;
+        if [ -n "$${CHAT_SPECULATIVE_CONFIG:-}" ]; then
+          set -- "$@" --speculative-config "$${CHAT_SPECULATIVE_CONFIG}";
+        fi;
         exec "$@"
     environment: *vllm-env
     volumes: *vllm-volumes
