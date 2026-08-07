@@ -344,6 +344,10 @@ services:
     environment:
       <<: *vllm-env
       VLLM_MAX_AUDIO_CLIP_FILESIZE_MB: ${VLLM_MAX_AUDIO_CLIP_FILESIZE_MB:-200}
+      # vLLM >=0.26 rejects audio longer than this many decoded seconds
+      # (upstream default 600). 0 disables the check; keep it bounded so a
+      # small compressed upload can't expand into tens of GB of PCM.
+      VLLM_MAX_AUDIO_DECODE_DURATION_S: ${VLLM_MAX_AUDIO_DECODE_DURATION_S:-14400}
     volumes: *vllm-volumes
     healthcheck: *vllm-healthcheck
     deploy: *cuda-deploy
