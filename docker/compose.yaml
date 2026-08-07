@@ -149,8 +149,8 @@ services:
         if [ -n "$${CHAT_KV_CACHE_DTYPE:-}" ]; then
           set -- "$@" --kv-cache-dtype "$${CHAT_KV_CACHE_DTYPE}";
         fi;
-        if [ "$${CHAT_CALCULATE_KV_SCALES:-false}" = "true" ]; then
-          set -- "$@" --calculate-kv-scales;
+        if [ -n "$${CHAT_SPECULATIVE_CONFIG:-}" ]; then
+          set -- "$@" --speculative-config "$${CHAT_SPECULATIVE_CONFIG}";
         fi;
         exec "$@"
     environment: *vllm-env
@@ -199,6 +199,46 @@ services:
       - vllm-net
       - inference-net
 
+  embed-sparse:
+    # Sparse/lexical (token_classify) twin of `embed`. vLLM 0.25 binds one
+    # pooling task per server and rejects per-request `task` switching, so
+    # the /pooling (and /tokenize) contract moved here while `embed` keeps
+    # /v1/embeddings. Same image, same model — only the pooler task differs;
+    # the router still presents all three routes on one base URL.
+    image: vllm-service-embed:${VLLM_SERVICE_VERSION:-latest}
+    logging: *default-logging
+    gpus: all
+    env_file: *env-file
+    ipc: host
+    depends_on:
+      embed:
+        condition: service_healthy
+    entrypoint: ["/bin/sh", "-lc"]
+    command:
+      - >-
+        export CUDA_VISIBLE_DEVICES="$${EMBED_CUDA_VISIBLE_DEVICES:-0}";
+        set -- vllm serve "$${EMBED_MODEL:-BAAI/bge-m3}"
+        --api-key "$${OPENAI_API_KEY:-sk-no-key-required}"
+        --host 0.0.0.0
+        --port 8000
+        --runner "$${EMBED_RUNNER:-pooling}"
+        --convert "$${EMBED_CONVERT:-embed}"
+        --pooler-config.task token_classify
+        --gpu-memory-utilization "$${EMBED_SPARSE_GPU_MEMORY_UTILIZATION:-0.10}";
+        if [ -n "$${EMBED_HF_OVERRIDES:-}" ]; then
+          set -- "$@" --hf-overrides "$${EMBED_HF_OVERRIDES}";
+        elif [ "$${EMBED_MODEL:-BAAI/bge-m3}" = "BAAI/bge-m3" ]; then
+          set -- "$@" --hf-overrides '{"architectures":["BgeM3EmbeddingModel"]}';
+        fi;
+        exec "$@"
+    environment: *vllm-env
+    volumes: *vllm-volumes
+    healthcheck: *vllm-healthcheck
+    deploy: *cuda-deploy
+    networks:
+      - vllm-net
+      - inference-net
+
   rerank:
     image: vllm-service-rerank:${VLLM_SERVICE_VERSION:-latest}
     build:
@@ -209,7 +249,7 @@ services:
     env_file: *env-file
     ipc: host
     depends_on:
-      embed:
+      embed-sparse:
         condition: service_healthy
     entrypoint: ["/bin/sh", "-lc"]
     command:

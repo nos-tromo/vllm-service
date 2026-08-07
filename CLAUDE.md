@@ -391,7 +391,7 @@ Apps still reach the stack exclusively through `router`, which keeps the
 
 ### Dependency overlay
 
-The vLLM base image (`vllm/vllm-openai:v0.20.1`, pinned by digest) ships with
+The vLLM base image (`vllm/vllm-openai:v0.26.0`, pinned by digest) ships with
 plain vLLM and its full CUDA runtime preinstalled in the system Python prefix.
 The Dockerfile adds vLLM's `[audio]` extras (`av`, `scipy`, `soundfile`,
 `mistral_common[audio]`) so the `asr` (Whisper) service has what it needs,
@@ -407,7 +407,8 @@ ergonomics aren't worth it.
 ### Service startup ordering
 
 `depends_on … condition: service_healthy` chains the backends serially:
-`chat → embed → rerank → clip → asr → diarize → vad → gliner → router`. This
+`chat → embed → embed-sparse → rerank → clip → asr → diarize → vad → gliner
+→ router`. This
 is intentional — backends compete for GPU memory at startup, so they are
 brought up one at a time. `gliner` is deliberately **last**: it runs on Ray
 Serve with `--target-memory-fraction` (a share of whatever GPU memory is still
@@ -433,12 +434,15 @@ follow that same pattern rather than hard-coding it in `command:`. The `gliner`
 shell builder invokes `python -m gliner.serve` instead of `vllm serve`, but the
 structure is identical.
 
-`CHAT_KV_CACHE_DTYPE` / `CHAT_CALCULATE_KV_SCALES` follow this pattern:
-when set they append `--kv-cache-dtype` / `--calculate-kv-scales` to the
+`CHAT_KV_CACHE_DTYPE` and `CHAT_SPECULATIVE_CONFIG` follow this pattern:
+when set they append `--kv-cache-dtype` / `--speculative-config` to the
 chat backend, enabling vLLM's FP8 quantized KV cache (~half the KV memory;
 chat is the only backend where this matters — embed/rerank are pooling
-runners and Whisper's decode is tiny). Unset means full-precision KV
-cache, the prior behavior.
+runners and Whisper's decode is tiny) and speculative decoding (native MTP
+drafting on MTP-native checkpoints). Unset means full-precision KV cache
+and no speculation, the prior behavior. (K/V scales for fp8 load from the
+checkpoint when present, else 1.0 — vLLM removed the startup calibration
+flag `--calculate-kv-scales` upstream, so the repo no longer exposes it.)
 
 `OPENAI_API_KEY` serves double duty: it is both the upstream API key passed to
 each vLLM `--api-key` and the LiteLLM `master_key` that gates the router.

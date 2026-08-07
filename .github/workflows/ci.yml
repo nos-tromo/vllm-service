@@ -15,9 +15,9 @@ concurrency:
 
 jobs:
   validate:
-    # Pinned to an immutable commit SHA (v3.11): infra checks + make/common.mk
+    # Pinned to an immutable commit SHA (v3.12): infra checks + make/common.mk
     # and bundle-lib drift-checks.
-    uses: nos-tromo/.github/.github/workflows/infra-validation.yml@589ea4656ecba00c278ea02b4dbf754727b18062 # v3.11
+    uses: nos-tromo/.github/.github/workflows/infra-validation.yml@862094798ffb1a50433db7fa8759cca1f54c4dc4 # v3.12
     with:
       compose-files: '-f docker/compose.yaml -f docker/compose.override.yaml'
       dockerfiles-glob: 'docker/Dockerfile.*'
@@ -30,7 +30,14 @@ jobs:
   # inlining a copy keeps the canonical ref in lockstep — no hardcoded ref to
   # drift.
   python-lint:
-    uses: nos-tromo/.github/.github/workflows/python-app-ci.yml@589ea4656ecba00c278ea02b4dbf754727b18062 # v3.11
+    uses: nos-tromo/.github/.github/workflows/python-app-ci.yml@862094798ffb1a50433db7fa8759cca1f54c4dc4 # v3.12
     with:
       python-versions: '["3.11"]'
       run-tests: false
+      # --locked so a uv.lock that disagrees with pyproject.toml fails the
+      # job (--frozen installs the lock as-is and exits 0 on drift, which is
+      # how this repo's lock silently sat at 0.2.0 through the v0.2.1
+      # release). Since v3.12 this matches the shared workflow's default
+      # (nos-tromo/.github#44); kept explicit so the intent survives future
+      # ref bumps. --group dev pulls pre-commit and the pinned pyrefly.
+      uv-sync-args: '--locked --group dev'
