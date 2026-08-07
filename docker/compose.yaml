@@ -205,7 +205,13 @@ services:
     # the /pooling (and /tokenize) contract moved here while `embed` keeps
     # /v1/embeddings. Same image, same model — only the pooler task differs;
     # the router still presents all three routes on one base URL.
+    # The build: stanza duplicates `embed`'s on purpose: bake dedupes the
+    # identical build, and without it `compose pull --ignore-buildable`
+    # treats this service as pullable and fails on the local-only image.
     image: vllm-service-embed:${VLLM_SERVICE_VERSION:-latest}
+    build:
+      context: ..
+      dockerfile: docker/Dockerfile.vllm
     logging: *default-logging
     gpus: all
     env_file: *env-file
