@@ -511,6 +511,13 @@ services:
       NVIDIA_VISIBLE_DEVICES: all
       HF_HUB_OFFLINE: ${HF_HUB_OFFLINE:-1}
       TRANSFORMERS_OFFLINE: ${TRANSFORMERS_OFFLINE:-1}
+      # Ray's node-memory monitor OOM-kills Serve workers when host RAM
+      # usage crosses this fraction (Ray default 0.95). On RAM-tight hosts
+      # the kill loop prevents gliner from ever finishing a model load —
+      # raise toward 0.98 there. (Full disable would be
+      # RAY_memory_monitor_refresh_ms=0, which hands the decision to the
+      # kernel OOM killer; not exposed.)
+      RAY_memory_usage_threshold: ${NER_RAY_MEMORY_THRESHOLD:-0.95}
     volumes: *vllm-volumes
     healthcheck:
       test: ["CMD-SHELL", "curl -sf -m 10 -X POST -H 'content-type: application/json' -d '{\"text\":\"ping\",\"labels\":[\"person\"],\"threshold\":0.5}' http://localhost:8000/gliner || exit 1"]
