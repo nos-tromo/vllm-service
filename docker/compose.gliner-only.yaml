@@ -31,8 +31,19 @@ x-logging: &default-logging
     max-file: "5"
     compress: "true"
 
+# Shared hardening (deploy ADR 0001) — no privilege escalation, no
+# capabilities; the image runs as the non-root app user (uid 10001).
+x-hardened: &hardened
+  security_opt:
+    - no-new-privileges:true
+  cap_drop:
+    - ALL
+
 services:
   gliner-only:
+    <<: *hardened
+    # read_only deferred (deploy ADR 0001): Ray needs writable
+    # session dirs under /tmp/ray.
     image: vllm-service-gliner-cpu:${VLLM_SERVICE_VERSION:-latest}
     build:
       context: ..
@@ -74,7 +85,7 @@ services:
     # use unconditionally on developer laptops, so we bump shm_size instead.
     shm_size: "${NER_SHM_SIZE:-3gb}"
     volumes:
-      - huggingface-cache:/root/.cache/huggingface/hub
+      - huggingface-cache:/home/app/.cache/huggingface/hub
     healthcheck:
       test: ["CMD-SHELL", "curl -sf -m 10 -X POST -H 'content-type: application/json' -d '{\"text\":\"ping\",\"labels\":[\"person\"],\"threshold\":0.5}' http://localhost:8000/gliner || exit 1"]
       interval: 30s

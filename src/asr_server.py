@@ -62,8 +62,9 @@ SAMPLE_RATE = 16_000
 MODEL_ID = os.environ.get("WHISPER_MODEL", "openai/whisper-large-v3")
 DEVICE = os.environ.get("ASR_DEVICE", "cpu")
 # Subdirectory of the mounted huggingface-cache volume (mounted at
-# /root/.cache/huggingface/hub) so downloaded Whisper weights persist there.
-DOWNLOAD_ROOT = os.environ.get("ASR_DOWNLOAD_ROOT", "/root/.cache/huggingface/hub/whisper")
+# /home/app/.cache/huggingface/hub — the container runs as the non-root
+# `app` user, deploy ADR 0001) so downloaded Whisper weights persist there.
+DOWNLOAD_ROOT = os.environ.get("ASR_DOWNLOAD_ROOT", "/home/app/.cache/huggingface/hub/whisper")
 
 
 def _whisper_name(model_id: str) -> str:

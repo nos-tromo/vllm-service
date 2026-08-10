@@ -57,6 +57,26 @@ so PyTorch 2.6+'s `weights_only=True` `torch.load` can load the gated
 weights. Both diarize Dockerfiles' build smoke tests round-trip those
 globals so a base-image bump that breaks either shim fails the build.)
 
+## Container hardening (deploy ADR 0001)
+
+Every first-party image runs as the non-root `app` user (uid `10001`,
+`HOME=/home/app`); the router uses upstream's `litellm-non_root` image
+variant. The shared `huggingface-cache` volume is therefore mounted at
+**`/home/app/.cache/huggingface/hub`** (was `/root/...`) — `HF_HUB_CACHE`
+is baked into every image and set in `x-vllm-env` as belt-and-braces, and
+`ASR_DOWNLOAD_ROOT`/`PYANNOTE_CACHE` follow the same path. Compose applies
+`no-new-privileges` + `cap_drop: ALL` everywhere; most services also run
+`read_only` with a `/tmp` tmpfs (2g on the audio services — they stage
+uploads in temp files). Two documented deferrals keep a writable rootfs:
+`chat` (vLLM's torch-compile cache under `~/.cache/vllm`) and `gliner`
+(Ray session dirs under `/tmp/ray`).
+
+**Migration (destructive if skipped):** on existing hosts the
+`huggingface-cache` volume holds root-owned model weights — a one-time
+`chown -R 10001:10001` is required before the first hardened start, with a
+snapshot first on airgapped hosts (runbook in the `deploy` repo). The same
+uid is shared with docint's mounts of this volume, so one chown serves both.
+
 ## Deployment shapes
 
 Eight independent compose projects, picked per host:

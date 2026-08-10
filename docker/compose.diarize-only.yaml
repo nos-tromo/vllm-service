@@ -44,8 +44,20 @@ x-logging: &default-logging
     max-file: "5"
     compress: "true"
 
+# Shared hardening (deploy ADR 0001) — no privilege escalation, no
+# capabilities; the image runs as the non-root app user (uid 10001).
+x-hardened: &hardened
+  security_opt:
+    - no-new-privileges:true
+  cap_drop:
+    - ALL
+
 services:
   diarize-only:
+    <<: *hardened
+    read_only: true
+    tmpfs:
+      - /tmp:size=2g
     image: vllm-service-diarize-cpu:${VLLM_SERVICE_VERSION:-latest}
     build:
       context: ..
@@ -74,9 +86,9 @@ services:
       # shared volume so the gated weights persist and offline mode finds
       # them; it writes the hub-standard models--org--name layout, so the
       # two caches coexist cleanly.
-      PYANNOTE_CACHE: /root/.cache/huggingface/hub
+      PYANNOTE_CACHE: /home/app/.cache/huggingface/hub
     volumes:
-      - huggingface-cache:/root/.cache/huggingface/hub
+      - huggingface-cache:/home/app/.cache/huggingface/hub
     healthcheck:
       test: ["CMD-SHELL", "curl -sf http://localhost:8000/health || exit 1"]
       interval: 10s

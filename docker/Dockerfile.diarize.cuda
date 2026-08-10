@@ -55,6 +55,18 @@ COPY src/diarize_audio.py /app/diarize_audio.py
 COPY src/diarize_pipeline.py /app/diarize_pipeline.py
 COPY src/diarize_server.py /app/diarize_server.py
 
+# Non-root runtime user (deploy ADR 0001). The HF model cache volume is
+# mounted under /home/app/.cache (see compose); /app stays root-owned and
+# read-only to the app user. HOME matters: HF cache resolution derives
+# from it, and HF_HUB_CACHE pins it explicitly as belt-and-braces.
+RUN groupadd --gid 10001 app \
+    && useradd --uid 10001 --gid app --create-home --home-dir /home/app \
+       --shell /usr/sbin/nologin app
+ENV HOME=/home/app \
+    HF_HUB_CACHE=/home/app/.cache/huggingface/hub
+
+USER 10001:10001
+
 EXPOSE 8000
 
 CMD ["uvicorn", "--app-dir", "/app", "diarize_server:app", "--host", "0.0.0.0", "--port", "8000"]

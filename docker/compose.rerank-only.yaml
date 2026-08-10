@@ -33,8 +33,20 @@ x-logging: &default-logging
     max-file: "5"
     compress: "true"
 
+# Shared hardening (deploy ADR 0001) — no privilege escalation, no
+# capabilities; the image runs as the non-root app user (uid 10001).
+x-hardened: &hardened
+  security_opt:
+    - no-new-privileges:true
+  cap_drop:
+    - ALL
+
 services:
   rerank-only:
+    <<: *hardened
+    read_only: true
+    tmpfs:
+      - /tmp:size=64m
     image: vllm-service-rerank-only:${VLLM_SERVICE_VERSION:-latest}
     build:
       context: ..
@@ -48,7 +60,7 @@ services:
       HF_HUB_OFFLINE: ${HF_HUB_OFFLINE:-1}
       TRANSFORMERS_OFFLINE: ${TRANSFORMERS_OFFLINE:-1}
     volumes:
-      - huggingface-cache:/root/.cache/huggingface/hub
+      - huggingface-cache:/home/app/.cache/huggingface/hub
     healthcheck:
       test: ["CMD-SHELL", "curl -sf http://localhost:8000/health || exit 1"]
       interval: 10s
