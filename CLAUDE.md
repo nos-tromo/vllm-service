@@ -71,15 +71,15 @@ uploads in temp files). Two documented deferrals keep a writable rootfs:
 `chat` (vLLM's torch-compile cache under `~/.cache/vllm`) and `gliner`
 (Ray session dirs under `/tmp/ray`).
 
-**Migration (destructive if skipped):** on existing hosts the
-`huggingface-cache` volume holds root-owned model weights — a one-time
-`chown -R 10001:10001` is required before the first hardened start, with a
-snapshot first on airgapped hosts: `make migrate-cache` does snapshot +
-chown + verify (runbook: `docs/hardening-migration.md` in the `deploy`
-repo). The tell-tale of a skipped migration is vLLM starting but spamming
-"Ignoring corrupted tree cache file ... Permission denied", then the
-pooling backends dying in EngineCore — not a clear ownership error. The same
-uid is shared with docint's mounts of this volume, so one chown serves both.
+**Ownership is self-healing:** the `volume-permissions` one-shot present in
+every compose shape (full stack and all seven `-only` shapes) chowns any
+wrong-owner entries under the huggingface-cache mountpoint to `10001:10001`
+before any backend starts, at every `up` — so a fresh, root-owned volume and
+an already-owned multi-GB cache both boot cleanly with no separate migration
+step. Cautious operators on airgapped hosts may still want to snapshot the
+hf-cache mountpoint manually before the first hardened start (runbook:
+`docs/hardening-migration.md` in the `deploy` repo). The same uid is shared
+with docint's mounts of this volume, so the fix applies uniformly there too.
 
 ## Deployment shapes
 

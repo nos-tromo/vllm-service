@@ -66,7 +66,43 @@ x-hardened: &hardened
   cap_drop:
     - ALL
 
+x-volume-permissions-dep: &volume-permissions-dep
+  volume-permissions:
+    condition: service_completed_successfully
+
 services:
+  ##########################################################
+  # Volume ownership (deploy ADR 0001, self-healing)
+  #
+  # Backends run as uid 10001, but external volumes keep whatever
+  # ownership they were created with (root, on a fresh `docker volume
+  # create`) — image-build chowns cannot help, since the volume mount
+  # shadows the image path at runtime. This one-shot root container
+  # fixes ownership before any backend starts; it reuses the vad image
+  # so the airgap bundle needs no extra image. The find form only
+  # touches wrong-owner entries, so a boot over an already-owned
+  # multi-GB huggingface-cache writes nothing. Canonical shape:
+  # docint/docker/compose.yaml.
+  ##########################################################
+  volume-permissions:
+    image: vllm-service-vad:${VLLM_SERVICE_VERSION:-latest}
+    logging: *default-logging
+    user: "0:0"
+    read_only: true
+    security_opt:
+      - no-new-privileges:true
+    network_mode: none
+    # Root is the mountpoint itself — its parent dirs live on the
+    # read-only image rootfs and must not (and cannot) be chowned.
+    entrypoint:
+      - /bin/sh
+      - -c
+      - >-
+        find /home/app/.cache/huggingface/hub
+        -xdev ! -user 10001 -exec chown -h 10001:10001 {} +
+    volumes: *vllm-volumes
+    restart: "no"
+
   router:
     <<: *hardened
     read_only: true
@@ -130,6 +166,8 @@ services:
     gpus: all
     env_file: *env-file
     ipc: host
+    depends_on:
+      <<: *volume-permissions-dep
     entrypoint: ["/bin/sh", "-lc"]
     command:
       - >-
@@ -206,6 +244,7 @@ services:
     env_file: *env-file
     ipc: host
     depends_on:
+      <<: *volume-permissions-dep
       chat:
         condition: service_healthy
     entrypoint: ["/bin/sh", "-lc"]
@@ -258,6 +297,7 @@ services:
     env_file: *env-file
     ipc: host
     depends_on:
+      <<: *volume-permissions-dep
       embed:
         condition: service_healthy
     entrypoint: ["/bin/sh", "-lc"]
@@ -304,6 +344,7 @@ services:
     env_file: *env-file
     ipc: host
     depends_on:
+      <<: *volume-permissions-dep
       embed-sparse:
         condition: service_healthy
     entrypoint: ["/bin/sh", "-lc"]
@@ -345,6 +386,7 @@ services:
     env_file: *env-file
     ipc: host
     depends_on:
+      <<: *volume-permissions-dep
       rerank:
         condition: service_healthy
     entrypoint: ["/bin/sh", "-lc"]
@@ -389,6 +431,7 @@ services:
     env_file: *env-file
     ipc: host
     depends_on:
+      <<: *volume-permissions-dep
       clip:
         condition: service_healthy
     entrypoint: ["/bin/sh", "-lc"]
@@ -439,6 +482,7 @@ services:
     env_file: *env-file
     ipc: host
     depends_on:
+      <<: *volume-permissions-dep
       asr:
         condition: service_healthy
     entrypoint: ["/bin/sh", "-lc"]
@@ -506,6 +550,7 @@ services:
     logging: *default-logging
     env_file: *env-file
     depends_on:
+      <<: *volume-permissions-dep
       diarize:
         condition: service_healthy
     environment:
@@ -547,6 +592,7 @@ services:
     env_file: *env-file
     ipc: host
     depends_on:
+      <<: *volume-permissions-dep
       vad:
         condition: service_healthy
     entrypoint: ["/bin/sh", "-lc"]
