@@ -59,9 +59,15 @@ COPY src/diarize_server.py /app/diarize_server.py
 # mounted under /home/app/.cache (see compose); /app stays root-owned and
 # read-only to the app user. HOME matters: HF cache resolution derives
 # from it, and HF_HUB_CACHE pins it explicitly as belt-and-braces.
+# Pre-create the cache tree app-owned: the volume mounts at
+# /home/app/.cache/huggingface/hub, and if the parents are missing the
+# daemon creates them root:root, leaving ~/.cache unwritable to app
+# (e.g. flashinfer's import-time mkdir ~/.cache/flashinfer fails).
 RUN groupadd --gid 10001 app \
     && useradd --uid 10001 --gid app --create-home --home-dir /home/app \
-       --shell /usr/sbin/nologin app
+       --shell /usr/sbin/nologin app \
+    && mkdir -p /home/app/.cache/huggingface/hub \
+    && chown -R app:app /home/app/.cache
 ENV HOME=/home/app \
     HF_HUB_CACHE=/home/app/.cache/huggingface/hub
 
