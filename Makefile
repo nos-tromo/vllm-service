@@ -59,7 +59,7 @@
 
 .DEFAULT_GOAL := help
 
-.PHONY: help \
+.PHONY: help migrate-cache \
         build-gliner-only bundle-gliner-only up-gliner-only up-dev-gliner-only stop-gliner-only down-gliner-only \
         build-rerank-only bundle-rerank-only up-rerank-only up-dev-rerank-only stop-rerank-only down-rerank-only \
         build-clip-only bundle-clip-only up-clip-only up-dev-clip-only stop-clip-only down-clip-only \
@@ -103,6 +103,7 @@ help:
 	@echo "Full stack (CUDA):"
 	@echo "  make network          create the external inference-net"
 	@echo "  make volumes          create the huggingface-cache Docker volume"
+	@echo "  make migrate-cache    one-time ADR 0001 migration: chown the huggingface-cache volume to uid 10001 (SNAPSHOT=no skips the tar backup)"
 	@echo "  make build            build images for the active service set"
 	@echo "  make bundle           ship images as a versioned .tar.gz pair (latest annotated release tag)"
 	@echo "  make bundle-dev       like 'bundle', but from the current working tree (dev/soak)"
@@ -355,3 +356,36 @@ stop-embed-only:
 # Stop + remove the embed service. External huggingface-cache survives.
 down-embed-only:
 	$(COMPOSE_EMBED_ONLY) down
+
+# One-time hardening migration (deploy ADR 0001): hand the populated
+# huggingface-cache volume to the non-root app user (uid 10001) before the
+# first hardened start. Ownership metadata only — no data moves. Run with
+# every stack that mounts the volume stopped (this repo's and docint's; the
+# uid is shared, so one chown serves both). Snapshots to a plain tar in the
+# current directory first (mandatory on airgap hosts — SNAPSHOT=no skips).
+# Fails, listing offenders, if any path is left wrongly owned. Symptom of
+# skipping this migration: vLLM starts but spams "Ignoring corrupted tree
+# cache file ... Permission denied", and pooling backends die in EngineCore.
+migrate-cache:
+	@set -e; \
+	HUB=$$(docker volume inspect huggingface-cache -f '{{.Mountpoint}}'); \
+	echo "volume mountpoint: $$HUB"; \
+	if [ "$(SNAPSHOT)" != "no" ]; then \
+		need=$$(sudo du -sk "$$HUB" | cut -f1); \
+		avail=$$(df -Pk . | awk 'NR==2 {print $$4}'); \
+		if [ "$$avail" -lt "$$need" ]; then \
+			echo "ERROR: snapshot needs $${need}K but only $${avail}K free here; free space or run from another directory"; \
+			exit 1; \
+		fi; \
+		echo "snapshotting to ./huggingface-cache-pre-hardening.tar ..."; \
+		sudo tar -C "$$HUB" -cf ./huggingface-cache-pre-hardening.tar .; \
+	else \
+		echo "SNAPSHOT=no — skipping backup"; \
+	fi; \
+	echo "chown -R 10001:10001 ..."; \
+	sudo chown -R 10001:10001 "$$HUB"; \
+	left=$$(sudo find "$$HUB" \( ! -uid 10001 -o ! -gid 10001 \) | head -5); \
+	if [ -n "$$left" ]; then \
+		echo "MIGRATION INCOMPLETE — still wrongly owned:"; echo "$$left"; exit 1; \
+	fi; \
+	echo "OK: huggingface-cache fully owned by 10001:10001"

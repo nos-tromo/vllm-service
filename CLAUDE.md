@@ -74,7 +74,11 @@ uploads in temp files). Two documented deferrals keep a writable rootfs:
 **Migration (destructive if skipped):** on existing hosts the
 `huggingface-cache` volume holds root-owned model weights — a one-time
 `chown -R 10001:10001` is required before the first hardened start, with a
-snapshot first on airgapped hosts (runbook in the `deploy` repo). The same
+snapshot first on airgapped hosts: `make migrate-cache` does snapshot +
+chown + verify (runbook: `docs/hardening-migration.md` in the `deploy`
+repo). The tell-tale of a skipped migration is vLLM starting but spamming
+"Ignoring corrupted tree cache file ... Permission denied", then the
+pooling backends dying in EngineCore — not a clear ownership error. The same
 uid is shared with docint's mounts of this volume, so one chown serves both.
 
 ## Deployment shapes
