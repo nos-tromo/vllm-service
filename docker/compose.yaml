@@ -56,6 +56,9 @@ x-logging: &default-logging
 # image). read_only where the service tolerates it — chat
 # (torch-compile cache) and gliner (Ray session dirs)
 # keep a writable rootfs for now, documented deferrals.
+# read_only vLLM backends additionally carry a tmpfs at
+# ~/.cache/vllm: vLLM 0.26 writes runtime caches there
+# (modelinfos, flashinfer autotune) even on pooling runners.
 ##########################################################
 x-hardened: &hardened
   security_opt:
@@ -190,6 +193,10 @@ services:
     read_only: true
     tmpfs:
       - /tmp:size=64m
+      # vLLM 0.26 writes runtime caches under VLLM_CACHE_ROOT even on
+      # pooling runners (modelinfos, flashinfer autotune) — EngineCore
+      # dies on a read-only rootfs without this.
+      - /home/app/.cache/vllm:size=256m,mode=1777,exec
     image: vllm-service-embed:${VLLM_SERVICE_VERSION:-latest}
     build:
       context: ..
@@ -232,6 +239,8 @@ services:
     read_only: true
     tmpfs:
       - /tmp:size=64m
+      # See embed: vLLM 0.26 runtime caches need a writable VLLM_CACHE_ROOT.
+      - /home/app/.cache/vllm:size=256m,mode=1777,exec
     # Sparse/lexical (token_classify) twin of `embed`. vLLM 0.25 binds one
     # pooling task per server and rejects per-request `task` switching, so
     # the /pooling (and /tokenize) contract moved here while `embed` keeps
@@ -282,6 +291,10 @@ services:
     read_only: true
     tmpfs:
       - /tmp:size=64m
+      # vLLM 0.26 writes runtime caches under VLLM_CACHE_ROOT even on
+      # pooling runners (modelinfos, flashinfer autotune) — EngineCore
+      # dies on a read-only rootfs without this.
+      - /home/app/.cache/vllm:size=256m,mode=1777,exec
     image: vllm-service-rerank:${VLLM_SERVICE_VERSION:-latest}
     build:
       context: ..
@@ -365,6 +378,8 @@ services:
     read_only: true
     tmpfs:
       - /tmp:size=2g
+      # See embed: vLLM 0.26 runtime caches need a writable VLLM_CACHE_ROOT.
+      - /home/app/.cache/vllm:size=256m,mode=1777,exec
     image: vllm-service-asr:${VLLM_SERVICE_VERSION:-latest}
     build:
       context: ..

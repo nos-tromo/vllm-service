@@ -28,6 +28,9 @@ RUN groupadd --gid 10001 app \
 ENV HOME=/home/app \
     HF_HUB_CACHE=/home/app/.cache/huggingface/hub \
     VLLM_CACHE_ROOT=/home/app/.cache/vllm \
-    FLASHINFER_WORKSPACE_BASE=/tmp
+    FLASHINFER_WORKSPACE_BASE=/tmp \
+    TRITON_CACHE_DIR=/home/app/.cache/vllm/triton \
+    VLLM_NO_USAGE_STATS=1 \
+    DO_NOT_TRACK=1
 
 USER 10001:10001
