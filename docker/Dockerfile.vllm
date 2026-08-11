@@ -15,6 +15,11 @@ RUN pip install --no-cache-dir 'vllm[audio]==0.26.0' orjson
 # /home/app/.cache/huggingface/hub, and if the parents are missing the
 # daemon creates them root:root, leaving ~/.cache unwritable to app
 # (e.g. flashinfer's import-time mkdir ~/.cache/flashinfer fails).
+# FLASHINFER_WORKSPACE_BASE moves flashinfer's workspace (a versioned
+# dir it creates at import time) off the rootfs onto /tmp, which is
+# writable in every service — tmpfs on the read_only ones (embed,
+# rerank, asr). Pre-creating it in the image doesn't work: the path
+# embeds the flashinfer version, so it breaks on every base-image bump.
 RUN groupadd --gid 10001 app \
     && useradd --uid 10001 --gid app --create-home --home-dir /home/app \
        --shell /usr/sbin/nologin app \
@@ -22,6 +27,7 @@ RUN groupadd --gid 10001 app \
     && chown -R app:app /home/app/.cache
 ENV HOME=/home/app \
     HF_HUB_CACHE=/home/app/.cache/huggingface/hub \
-    VLLM_CACHE_ROOT=/home/app/.cache/vllm
+    VLLM_CACHE_ROOT=/home/app/.cache/vllm \
+    FLASHINFER_WORKSPACE_BASE=/tmp
 
 USER 10001:10001
