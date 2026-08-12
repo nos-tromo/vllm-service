@@ -355,3 +355,4 @@ stop-embed-only:
 # Stop + remove the embed service. External huggingface-cache survives.
 down-embed-only:
 	$(COMPOSE_EMBED_ONLY) down
+

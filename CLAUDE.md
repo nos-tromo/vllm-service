@@ -57,6 +57,30 @@ so PyTorch 2.6+'s `weights_only=True` `torch.load` can load the gated
 weights. Both diarize Dockerfiles' build smoke tests round-trip those
 globals so a base-image bump that breaks either shim fails the build.)
 
+## Container hardening (deploy ADR 0001)
+
+Every first-party image runs as the non-root `app` user (uid `10001`,
+`HOME=/home/app`); the router uses upstream's `litellm-non_root` image
+variant. The shared `huggingface-cache` volume is therefore mounted at
+**`/home/app/.cache/huggingface/hub`** (was `/root/...`) — `HF_HUB_CACHE`
+is baked into every image and set in `x-vllm-env` as belt-and-braces, and
+`ASR_DOWNLOAD_ROOT`/`PYANNOTE_CACHE` follow the same path. Compose applies
+`no-new-privileges` + `cap_drop: ALL` everywhere; most services also run
+`read_only` with a `/tmp` tmpfs (2g on the audio services — they stage
+uploads in temp files). Two documented deferrals keep a writable rootfs:
+`chat` (vLLM's torch-compile cache under `~/.cache/vllm`) and `gliner`
+(Ray session dirs under `/tmp/ray`).
+
+**Ownership is self-healing:** the `volume-permissions` one-shot present in
+every compose shape (full stack and all seven `-only` shapes) chowns any
+wrong-owner entries under the huggingface-cache mountpoint to `10001:10001`
+before any backend starts, at every `up` — so a fresh, root-owned volume and
+an already-owned multi-GB cache both boot cleanly with no separate migration
+step. Cautious operators on airgapped hosts may still want to snapshot the
+hf-cache mountpoint manually before the first hardened start (runbook:
+`docs/hardening-migration.md` in the `deploy` repo). The same uid is shared
+with docint's mounts of this volume, so the fix applies uniformly there too.
+
 ## Deployment shapes
 
 Eight independent compose projects, picked per host:

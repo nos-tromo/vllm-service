@@ -9,6 +9,8 @@ x-env-file: &env-file
     required: false
 
 x-vllm-env: &vllm-env
+  # Belt-and-braces: also baked into every image (deploy ADR 0001).
+  HF_HUB_CACHE: /home/app/.cache/huggingface/hub
   <<: *no-proxy-env
   NVIDIA_VISIBLE_DEVICES: all
   HF_HUB_OFFLINE: ${HF_HUB_OFFLINE:-1}
@@ -16,7 +18,7 @@ x-vllm-env: &vllm-env
   FLASHINFER_DISABLE_VERSION_CHECK: 1
 
 x-vllm-volumes: &vllm-volumes
-  - huggingface-cache:/root/.cache/huggingface/hub
+  - huggingface-cache:/home/app/.cache/huggingface/hub
 
 x-vllm-healthcheck: &vllm-healthcheck
   test: ["CMD-SHELL", "curl -sf http://localhost:8000/health || exit 1"]
@@ -47,9 +49,68 @@ x-logging: &default-logging
     max-file: "5"
     compress: "true"
 
+##########################################################
+# Shared hardening (deploy ADR 0001) — no privilege
+# escalation, no capabilities; every image runs as the
+# non-root app user (uid 10001; router: upstream non_root
+# image). read_only where the service tolerates it — chat
+# (torch-compile cache) and gliner (Ray session dirs)
+# keep a writable rootfs for now, documented deferrals.
+# read_only vLLM backends additionally carry a tmpfs at
+# ~/.cache/vllm: vLLM 0.26 writes runtime caches there
+# (modelinfos, flashinfer autotune) even on pooling runners.
+##########################################################
+x-hardened: &hardened
+  security_opt:
+    - no-new-privileges:true
+  cap_drop:
+    - ALL
+
+x-volume-permissions-dep: &volume-permissions-dep
+  volume-permissions:
+    condition: service_completed_successfully
+
 services:
+  ##########################################################
+  # Volume ownership (deploy ADR 0001, self-healing)
+  #
+  # Backends run as uid 10001, but external volumes keep whatever
+  # ownership they were created with (root, on a fresh `docker volume
+  # create`) — image-build chowns cannot help, since the volume mount
+  # shadows the image path at runtime. This one-shot root container
+  # fixes ownership before any backend starts; it reuses the vad image
+  # so the airgap bundle needs no extra image. The find form only
+  # touches wrong-owner entries, so a boot over an already-owned
+  # multi-GB huggingface-cache writes nothing. Canonical shape:
+  # docint/docker/compose.yaml.
+  ##########################################################
+  volume-permissions:
+    image: vllm-service-vad:${VLLM_SERVICE_VERSION:-latest}
+    logging: *default-logging
+    user: "0:0"
+    read_only: true
+    security_opt:
+      - no-new-privileges:true
+    network_mode: none
+    # Root is the mountpoint itself — its parent dirs live on the
+    # read-only image rootfs and must not (and cannot) be chowned.
+    entrypoint:
+      - /bin/sh
+      - -c
+      - >-
+        find /home/app/.cache/huggingface/hub
+        -xdev ! -user 10001 -exec chown -h 10001:10001 {} +
+    volumes: *vllm-volumes
+    restart: "no"
+
   router:
-    image: docker.io/litellm/litellm:main-v1.83.10-stable@sha256:6c82d338a60e7b273ae46bf1d8db814d2856ae010f96c44eeadde574d3893f76
+    <<: *hardened
+    read_only: true
+    tmpfs:
+      - /tmp:size=64m
+    # Upstream's supported non-root variant (runs as its internal user)
+    # — deploy ADR 0001.
+    image: ghcr.io/berriai/litellm-non_root:main-v1.83.10-stable@sha256:94b43b6e65b2b4b8d2e5f3fb2ef288688045f80841f8cf61e0a935a69eb8e2d0
     logging: *default-logging
     env_file: *env-file
     depends_on:
@@ -95,6 +156,8 @@ services:
   # backend --api-key enforcement (chat/embed/rerank/asr, all native
   # `vllm serve`) is unaffected.
   chat:
+    <<: *hardened
+    # read_only deferred (deploy ADR 0001): torch-compile cache under ~/.cache/vllm needs a writable rootfs.
     image: vllm-service-chat:${VLLM_SERVICE_VERSION:-latest}
     build:
       context: ..
@@ -103,6 +166,8 @@ services:
     gpus: all
     env_file: *env-file
     ipc: host
+    depends_on:
+      <<: *volume-permissions-dep
     entrypoint: ["/bin/sh", "-lc"]
     command:
       - >-
@@ -162,6 +227,14 @@ services:
       - inference-net
 
   embed:
+    <<: *hardened
+    read_only: true
+    tmpfs:
+      - /tmp:size=64m
+      # vLLM 0.26 writes runtime caches under VLLM_CACHE_ROOT even on
+      # pooling runners (modelinfos, flashinfer autotune) — EngineCore
+      # dies on a read-only rootfs without this.
+      - /home/app/.cache/vllm:size=256m,mode=1777,exec
     image: vllm-service-embed:${VLLM_SERVICE_VERSION:-latest}
     build:
       context: ..
@@ -171,6 +244,7 @@ services:
     env_file: *env-file
     ipc: host
     depends_on:
+      <<: *volume-permissions-dep
       chat:
         condition: service_healthy
     entrypoint: ["/bin/sh", "-lc"]
@@ -200,6 +274,12 @@ services:
       - inference-net
 
   embed-sparse:
+    <<: *hardened
+    read_only: true
+    tmpfs:
+      - /tmp:size=64m
+      # See embed: vLLM 0.26 runtime caches need a writable VLLM_CACHE_ROOT.
+      - /home/app/.cache/vllm:size=256m,mode=1777,exec
     # Sparse/lexical (token_classify) twin of `embed`. vLLM 0.25 binds one
     # pooling task per server and rejects per-request `task` switching, so
     # the /pooling (and /tokenize) contract moved here while `embed` keeps
@@ -217,6 +297,7 @@ services:
     env_file: *env-file
     ipc: host
     depends_on:
+      <<: *volume-permissions-dep
       embed:
         condition: service_healthy
     entrypoint: ["/bin/sh", "-lc"]
@@ -246,6 +327,14 @@ services:
       - inference-net
 
   rerank:
+    <<: *hardened
+    read_only: true
+    tmpfs:
+      - /tmp:size=64m
+      # vLLM 0.26 writes runtime caches under VLLM_CACHE_ROOT even on
+      # pooling runners (modelinfos, flashinfer autotune) — EngineCore
+      # dies on a read-only rootfs without this.
+      - /home/app/.cache/vllm:size=256m,mode=1777,exec
     image: vllm-service-rerank:${VLLM_SERVICE_VERSION:-latest}
     build:
       context: ..
@@ -255,6 +344,7 @@ services:
     env_file: *env-file
     ipc: host
     depends_on:
+      <<: *volume-permissions-dep
       embed-sparse:
         condition: service_healthy
     entrypoint: ["/bin/sh", "-lc"]
@@ -277,6 +367,10 @@ services:
       - inference-net
 
   clip:
+    <<: *hardened
+    read_only: true
+    tmpfs:
+      - /tmp:size=64m
     # CLIP image+text embedding tower. Same image/text encoder docint
     # used to load in-process (openai/clip-vit-base-patch32 by default).
     # FastAPI wrapper at src/clip_server.py exposes /clip/embed_image
@@ -292,6 +386,7 @@ services:
     env_file: *env-file
     ipc: host
     depends_on:
+      <<: *volume-permissions-dep
       rerank:
         condition: service_healthy
     entrypoint: ["/bin/sh", "-lc"]
@@ -321,6 +416,12 @@ services:
       - inference-net
 
   asr:
+    <<: *hardened
+    read_only: true
+    tmpfs:
+      - /tmp:size=2g
+      # See embed: vLLM 0.26 runtime caches need a writable VLLM_CACHE_ROOT.
+      - /home/app/.cache/vllm:size=256m,mode=1777,exec
     image: vllm-service-asr:${VLLM_SERVICE_VERSION:-latest}
     build:
       context: ..
@@ -330,6 +431,7 @@ services:
     env_file: *env-file
     ipc: host
     depends_on:
+      <<: *volume-permissions-dep
       clip:
         condition: service_healthy
     entrypoint: ["/bin/sh", "-lc"]
@@ -356,6 +458,10 @@ services:
       - inference-net
 
   diarize:
+    <<: *hardened
+    read_only: true
+    tmpfs:
+      - /tmp:size=2g
     # Speaker diarization (pyannote/speaker-diarization-3.1). Like clip,
     # NOT a vLLM container — pyannote's PyanNet segmentation + WeSpeaker
     # embedding + agglomerative clustering are not vLLM-supported
@@ -376,6 +482,7 @@ services:
     env_file: *env-file
     ipc: host
     depends_on:
+      <<: *volume-permissions-dep
       asr:
         condition: service_healthy
     entrypoint: ["/bin/sh", "-lc"]
@@ -395,7 +502,7 @@ services:
       # shared volume so the gated weights persist and offline mode finds
       # them; it writes the hub-standard models--org--name layout, so the
       # two caches coexist cleanly.
-      PYANNOTE_CACHE: /root/.cache/huggingface/hub
+      PYANNOTE_CACHE: /home/app/.cache/huggingface/hub
       DIARIZE_MODEL: ${DIARIZE_MODEL:-pyannote/speaker-diarization-community-1}
       DIARIZE_DEVICE: ${DIARIZE_DEVICE:-cuda}
       # VAD gating: crop /diarize turns to the vad service's Silero speech
@@ -422,6 +529,10 @@ services:
       - inference-net
 
   vad:
+    <<: *hardened
+    read_only: true
+    tmpfs:
+      - /tmp:size=2g
     # Voice activity detection (Silero VAD) via FastAPI. Like clip and
     # diarize, NOT a vLLM container — Silero is a tiny JIT speech/non-speech
     # classifier, not a vLLM-supported architecture, so a FastAPI wrapper
@@ -439,6 +550,7 @@ services:
     logging: *default-logging
     env_file: *env-file
     depends_on:
+      <<: *volume-permissions-dep
       diarize:
         condition: service_healthy
     environment:
@@ -460,6 +572,8 @@ services:
       - inference-net
 
   gliner:
+    <<: *hardened
+    # read_only deferred (deploy ADR 0001): Ray needs writable session dirs under /tmp/ray.
     # GLiNER zero-shot NER served via Ray Serve. Unlike the other backends,
     # this is NOT a vLLM container — GLiNER's span-matching head isn't a
     # stock HF classification head and the DeBERTa-v2/v3 attention used by
@@ -478,6 +592,7 @@ services:
     env_file: *env-file
     ipc: host
     depends_on:
+      <<: *volume-permissions-dep
       vad:
         condition: service_healthy
     entrypoint: ["/bin/sh", "-lc"]

@@ -6,3 +6,31 @@ FROM ${VLLM_OPENAI_IMAGE}
 # orjson — vLLM's `ORJSONResponse` uses it opportunistically for faster
 # OpenAI-endpoint serialization and falls back to stdlib json if absent.
 RUN pip install --no-cache-dir 'vllm[audio]==0.26.0' orjson
+
+# Non-root runtime user (deploy ADR 0001). The HF model cache volume is
+# mounted under /home/app/.cache (see compose); /app stays root-owned and
+# read-only to the app user. HOME matters: HF cache resolution derives
+# from it, and HF_HUB_CACHE pins it explicitly as belt-and-braces.
+# Pre-create the cache tree app-owned: the volume mounts at
+# /home/app/.cache/huggingface/hub, and if the parents are missing the
+# daemon creates them root:root, leaving ~/.cache unwritable to app
+# (e.g. flashinfer's import-time mkdir ~/.cache/flashinfer fails).
+# FLASHINFER_WORKSPACE_BASE moves flashinfer's workspace (a versioned
+# dir it creates at import time) off the rootfs onto /tmp, which is
+# writable in every service — tmpfs on the read_only ones (embed,
+# rerank, asr). Pre-creating it in the image doesn't work: the path
+# embeds the flashinfer version, so it breaks on every base-image bump.
+RUN groupadd --gid 10001 app \
+    && useradd --uid 10001 --gid app --create-home --home-dir /home/app \
+       --shell /usr/sbin/nologin app \
+    && mkdir -p /home/app/.cache/huggingface/hub /home/app/.cache/vllm \
+    && chown -R app:app /home/app/.cache
+ENV HOME=/home/app \
+    HF_HUB_CACHE=/home/app/.cache/huggingface/hub \
+    VLLM_CACHE_ROOT=/home/app/.cache/vllm \
+    FLASHINFER_WORKSPACE_BASE=/tmp \
+    TRITON_CACHE_DIR=/home/app/.cache/vllm/triton \
+    VLLM_NO_USAGE_STATS=1 \
+    DO_NOT_TRACK=1
+
+USER 10001:10001

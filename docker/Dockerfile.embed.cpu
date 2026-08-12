@@ -38,6 +38,24 @@ COPY src/embed_server.py /app/embed_server.py
 
 ENV TOKENIZERS_PARALLELISM=true
 
+# Non-root runtime user (deploy ADR 0001). The HF model cache volume is
+# mounted under /home/app/.cache (see compose); /app stays root-owned and
+# read-only to the app user. HOME matters: HF cache resolution derives
+# from it, and HF_HUB_CACHE pins it explicitly as belt-and-braces.
+# Pre-create the cache tree app-owned: the volume mounts at
+# /home/app/.cache/huggingface/hub, and if the parents are missing the
+# daemon creates them root:root, leaving ~/.cache unwritable to app
+# (e.g. flashinfer's import-time mkdir ~/.cache/flashinfer fails).
+RUN groupadd --gid 10001 app \
+    && useradd --uid 10001 --gid app --create-home --home-dir /home/app \
+       --shell /usr/sbin/nologin app \
+    && mkdir -p /home/app/.cache/huggingface/hub \
+    && chown -R app:app /home/app/.cache
+ENV HOME=/home/app \
+    HF_HUB_CACHE=/home/app/.cache/huggingface/hub
+
+USER 10001:10001
+
 EXPOSE 8000
 
 CMD ["uvicorn", "--app-dir", "/app", "embed_server:app", "--host", "0.0.0.0", "--port", "8000"]

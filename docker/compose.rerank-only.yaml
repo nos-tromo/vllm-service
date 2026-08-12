@@ -33,14 +33,65 @@ x-logging: &default-logging
     max-file: "5"
     compress: "true"
 
+# Shared hardening (deploy ADR 0001) — no privilege escalation, no
+# capabilities; the image runs as the non-root app user (uid 10001).
+x-hardened: &hardened
+  security_opt:
+    - no-new-privileges:true
+  cap_drop:
+    - ALL
+
+x-volume-permissions-dep: &volume-permissions-dep
+  volume-permissions:
+    condition: service_completed_successfully
+
 services:
+  ##########################################################
+  # Volume ownership (deploy ADR 0001, self-healing)
+  #
+  # Backends run as uid 10001, but external volumes keep whatever
+  # ownership they were created with (root, on a fresh `docker volume
+  # create`) — image-build chowns cannot help, since the volume mount
+  # shadows the image path at runtime. This one-shot root container
+  # fixes ownership before any backend starts; it reuses the shape's own
+  # image so the airgap bundle needs no extra image. The find form only
+  # touches wrong-owner entries, so a boot over an already-owned
+  # multi-GB huggingface-cache writes nothing. Canonical shape:
+  # docint/docker/compose.yaml.
+  ##########################################################
+  volume-permissions:
+    image: vllm-service-rerank-only:${VLLM_SERVICE_VERSION:-latest}
+    logging: *default-logging
+    user: "0:0"
+    read_only: true
+    security_opt:
+      - no-new-privileges:true
+    network_mode: none
+    # Root is the mountpoint itself — its parent dirs live on the
+    # read-only image rootfs and must not (and cannot) be chowned.
+    entrypoint:
+      - /bin/sh
+      - -c
+      - >-
+        find /home/app/.cache/huggingface/hub
+        -xdev ! -user 10001 -exec chown -h 10001:10001 {} +
+    volumes:
+      - huggingface-cache:/home/app/.cache/huggingface/hub
+    restart: "no"
+
   rerank-only:
+    <<: *hardened
+    read_only: true
+    tmpfs:
+      - /tmp:size=64m
     image: vllm-service-rerank-only:${VLLM_SERVICE_VERSION:-latest}
     build:
       context: ..
       dockerfile: docker/Dockerfile.rerank.cpu
     logging: *default-logging
     env_file: *env-file
+    depends_on:
+      <<: *volume-permissions-dep
     environment:
       <<: *no-proxy-env
       RERANK_MODEL: ${RERANK_MODEL:-BAAI/bge-reranker-v2-m3}
@@ -48,7 +99,7 @@ services:
       HF_HUB_OFFLINE: ${HF_HUB_OFFLINE:-1}
       TRANSFORMERS_OFFLINE: ${TRANSFORMERS_OFFLINE:-1}
     volumes:
-      - huggingface-cache:/root/.cache/huggingface/hub
+      - huggingface-cache:/home/app/.cache/huggingface/hub
     healthcheck:
       test: ["CMD-SHELL", "curl -sf http://localhost:8000/health || exit 1"]
       interval: 10s
