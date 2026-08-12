@@ -112,8 +112,16 @@ services:
   router:
     <<: *hardened
     read_only: true
-    tmpfs:
-      - /tmp:size=64m
+    # LiteLLM's multipart pass-through spools the ENTIRE request body to
+    # /tmp before forwarding (starlette SpooledTemporaryFile), so /tmp must
+    # hold whole media uploads (Nextext allows multi-GB files). A RAM tmpfs
+    # sized for that would eat host memory, so this is a disk-backed scratch
+    # volume (media-tmp, shared with asr/diarize/vad) like the Nextext
+    # backend's tmp-jobs; it never holds durable state and `down -v` may
+    # delete it.
+    volumes:
+      - ./litellm.config.yaml:/app/config.yaml:ro
+      - media-tmp:/tmp
     # Upstream's supported non-root variant (runs as its internal user)
     # — deploy ADR 0001.
     image: ghcr.io/berriai/litellm-non_root:main-v1.83.10-stable@sha256:94b43b6e65b2b4b8d2e5f3fb2ef288688045f80841f8cf61e0a935a69eb8e2d0
@@ -139,8 +147,6 @@ services:
     environment:
       <<: *no-proxy-env
       WHISPER_MODEL: ${WHISPER_MODEL:-openai/whisper-large-v3}
-    volumes:
-      - ./litellm.config.yaml:/app/config.yaml:ro
     command: ["--config", "/app/config.yaml", "--port", "4000", "--host", "0.0.0.0"]
     healthcheck:
       test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://localhost:4000/health/liveliness').read()"]
@@ -424,8 +430,11 @@ services:
   asr:
     <<: *hardened
     read_only: true
+    # /tmp spools whole audio uploads (starlette spools multipart bodies to
+    # disk; Nextext allows multi-GB files), so it is a disk-backed scratch
+    # volume (media-tmp, in `volumes:` below) rather than a RAM tmpfs — same
+    # rationale as router-tmp.
     tmpfs:
-      - /tmp:size=2g
       # See embed: vLLM 0.26 runtime caches need a writable VLLM_CACHE_ROOT.
       - /home/app/.cache/vllm:size=256m,mode=1777,exec
     image: vllm-service-asr:${VLLM_SERVICE_VERSION:-latest}
@@ -456,7 +465,9 @@ services:
       # (upstream default 600). 0 disables the check; keep it bounded so a
       # small compressed upload can't expand into tens of GB of PCM.
       VLLM_MAX_AUDIO_DECODE_DURATION_S: ${VLLM_MAX_AUDIO_DECODE_DURATION_S:-14400}
-    volumes: *vllm-volumes
+    volumes:
+      - huggingface-cache:/home/app/.cache/huggingface/hub
+      - media-tmp:/tmp
     healthcheck: *vllm-healthcheck
     deploy: *cuda-deploy
     networks:
@@ -466,8 +477,8 @@ services:
   diarize:
     <<: *hardened
     read_only: true
-    tmpfs:
-      - /tmp:size=2g
+    # /tmp spools whole audio uploads — disk-backed scratch volume
+    # (media-tmp, in `volumes:` below), same rationale as router-tmp.
     # Speaker diarization (pyannote/speaker-diarization-3.1). Like clip,
     # NOT a vLLM container — pyannote's PyanNet segmentation + WeSpeaker
     # embedding + agglomerative clustering are not vLLM-supported
@@ -522,7 +533,9 @@ services:
       DIARIZE_VAD_THRESHOLD: ${DIARIZE_VAD_THRESHOLD:-0.4}
       DIARIZE_VAD_PAD_MS: ${DIARIZE_VAD_PAD_MS:-100}
       DIARIZE_VAD_TIMEOUT: ${DIARIZE_VAD_TIMEOUT:-30}
-    volumes: *vllm-volumes
+    volumes:
+      - huggingface-cache:/home/app/.cache/huggingface/hub
+      - media-tmp:/tmp
     healthcheck:
       test: ["CMD-SHELL", "curl -sf http://localhost:8000/health || exit 1"]
       interval: 10s
@@ -537,8 +550,8 @@ services:
   vad:
     <<: *hardened
     read_only: true
-    tmpfs:
-      - /tmp:size=2g
+    # /tmp spools whole audio uploads — disk-backed scratch volume
+    # (media-tmp, in `volumes:` below), same rationale as router-tmp.
     # Voice activity detection (Silero VAD) via FastAPI. Like clip and
     # diarize, NOT a vLLM container — Silero is a tiny JIT speech/non-speech
     # classifier, not a vLLM-supported architecture, so a FastAPI wrapper
@@ -566,7 +579,9 @@ services:
       VAD_MODEL: ${VAD_MODEL:-silero_vad}
       VAD_DEVICE: cpu
       VAD_USE_ONNX: ${VAD_USE_ONNX:-false}
-    volumes: *vllm-volumes
+    volumes:
+      - huggingface-cache:/home/app/.cache/huggingface/hub
+      - media-tmp:/tmp
     healthcheck:
       test: ["CMD-SHELL", "curl -sf http://localhost:8000/health || exit 1"]
       interval: 10s
@@ -655,6 +670,11 @@ services:
 volumes:
   huggingface-cache:
     external: true
+  # Shared upload spool (/tmp) for the services that receive whole media
+  # files (router, asr, diarize, vad) — disk-backed scratch, never durable
+  # state. Safe to share: temp names are randomized and /tmp's sticky bit
+  # (1777, copied from the image) covers the differing service uids.
+  media-tmp:
 
 networks:
   vllm-net:

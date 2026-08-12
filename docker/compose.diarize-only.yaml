@@ -99,8 +99,9 @@ services:
   diarize-only:
     <<: *hardened
     read_only: true
-    tmpfs:
-      - /tmp:size=2g
+    # /tmp spools whole audio uploads (starlette spools multipart bodies
+    # to disk; Nextext allows multi-GB files), so it is a disk-backed
+    # scratch volume (media-tmp, in `volumes:` below) rather than a RAM tmpfs.
     image: vllm-service-diarize-cpu:${VLLM_SERVICE_VERSION:-latest}
     build:
       context: ..
@@ -134,6 +135,7 @@ services:
       PYANNOTE_CACHE: /home/app/.cache/huggingface/hub
     volumes:
       - huggingface-cache:/home/app/.cache/huggingface/hub
+      - media-tmp:/tmp
     healthcheck:
       test: ["CMD-SHELL", "curl -sf http://localhost:8000/health || exit 1"]
       interval: 10s
@@ -149,6 +151,8 @@ services:
 volumes:
   huggingface-cache:
     external: true
+  # Upload spool (/tmp) — disk-backed scratch, never durable state.
+  media-tmp:
 
 networks:
   inference-net:
