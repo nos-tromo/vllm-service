@@ -69,6 +69,12 @@ services:
   ##########################################################
   volume-permissions:
     image: vllm-service-vad-cpu:${VLLM_SERVICE_VERSION:-latest}
+    # The build: stanza duplicates `vad-only`'s on purpose: bake dedupes
+    # the identical build, and without it `compose pull --ignore-buildable`
+    # treats this service as pullable and fails on the local-only image.
+    build:
+      context: ..
+      dockerfile: docker/Dockerfile.vad.cpu
     logging: *default-logging
     user: "0:0"
     read_only: true
