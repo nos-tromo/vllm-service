@@ -247,6 +247,18 @@ Repo norm is "no unit-test suite; lint (ruff/pyrefly) + in-Dockerfile build smok
 - Track [ray-project/ray#63862](https://github.com/ray-project/ray/issues/63862). When a Ray
   release ships a **verified** fix, evaluate a forward upgrade and whether the watchdog can be
   relaxed (kept as defense-in-depth or removed).
+
+  > **Resolved upstream (2026-08-14):** #63862 was closed as fixed on 2026-07-23. The real
+  > fix is [ray-project/ray#64636](https://github.com/ray-project/ray/pull/64636) ("Fix rank
+  > corruption on controller recovery after lightweight reconfigure", merged 2026-07-09,
+  > verified on nightly by the original reporter), first shipped in **ray-2.57.0**
+  > (2026-08-11). Both gliner Dockerfiles now floor `ray[serve]>=2.57` so a rebuild cannot
+  > resolve a still-broken 2.5x wheel. **Decision: the watchdog stays as defense-in-depth** —
+  > the companion PR #63952 (exempt the ServeController from Ray's OOM killer) was closed
+  > unmerged, so on RAM-tight hosts the memory monitor can still kill the controller/replica
+  > and leave gliner unresponsive (a kill-loop the 2026-08-14 outage exhibited); 2.57.0 only
+  > makes controller *recovery* clean. See `NER_RAY_MEMORY_THRESHOLD` (PR #92) for the
+  > RAM-side knob.
 - Optional: heartbeat-file shared between watchdog and healthcheck to probe once.
 
 ## Verification (2026-06-26)
