@@ -1,6 +1,6 @@
 [project]
 name = "vllm-service"
-version = "0.4.0"
+version = "0.4.1"
 description = "LiteLLM router + vLLM backends (lint config for the bundled FastAPI servers)."
 requires-python = ">=3.11,<3.12"
 # Light, *typed* deps shared by the bundled FastAPI servers. Declared so
