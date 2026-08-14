@@ -27,13 +27,15 @@ x-vllm-healthcheck: &vllm-healthcheck
   retries: 60
   start_period: 120s
 
+x-cuda-resources: &cuda-resources
+  reservations:
+    devices:
+      - driver: nvidia
+        count: all
+        capabilities: [gpu]
+
 x-cuda-deploy: &cuda-deploy
-  resources:
-    reservations:
-      devices:
-        - driver: nvidia
-          count: all
-          capabilities: [gpu]
+  resources: *cuda-resources
   restart_policy:
     condition: on-failure
     delay: 10s
@@ -661,7 +663,14 @@ services:
       timeout: 10s
       retries: 5
       start_period: 180s
-    deploy: *cuda-deploy
+    # Resources only — NOT *cuda-deploy. Compose v2 gives deploy.restart_policy
+    # precedence over `restart:`, and its max_attempts is a lifetime cap (the
+    # daemon never resets the restart count), so the shared on-failure:5 policy
+    # would permanently stop this container after the watchdog's 5th self-exit.
+    # The watchdog's recovery contract requires `restart: unless-stopped` below
+    # to be the effective policy.
+    deploy:
+      resources: *cuda-resources
     restart: unless-stopped
     networks:
       - vllm-net

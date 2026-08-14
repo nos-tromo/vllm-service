@@ -28,8 +28,14 @@ RUN uv pip install --system --no-cache --compile-bytecode \
 # Pin protobuf<7: Ray 2.55.1 under-constrains it (>=3.20.3) and its generated
 # descriptors crash on protobuf 7.x, which dropped FieldDescriptor.label;
 # protobuf<7 resolves 6.x, which still exposes .label. Same pin as the CUDA image.
+# Floor ray[serve]>=2.57: ray-2.57.0 ships the rank-corruption fix for the
+# ServeController recovery wedge (ray-project/ray#63862, fixed by #64636) that
+# the watchdog below was built around; gliner[serve] itself does not constrain
+# the ray version, so without the floor a rebuild could resolve a still-broken
+# 2.5x wheel. Same floor as the CUDA image.
 RUN uv pip install --system --no-cache --compile-bytecode \
     'gliner[serve] @ https://github.com/urchade/GLiNER/archive/910a1aefb300f17bb67d31d4a92890c8d78aaa4b.tar.gz' \
+    'ray[serve]>=2.57' \
     'protobuf<7'
 
 # Force Ray Serve's HTTP proxy to bind 0.0.0.0 instead of the default

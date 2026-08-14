@@ -41,6 +41,11 @@ Internally it runs:
   the container, recovering from the Ray Serve rank-consistency wedge
   (ray-project/ray#63862). The Docker healthcheck uses the same functional probe;
   set `NER_WATCHDOG_ENABLED=false` to disable. Knobs: `NER_WATCHDOG_*` in `.env.example`.
+  The wedge itself is fixed upstream in Ray >= 2.57.0 (ray-project/ray#64636; both
+  gliner Dockerfiles floor `ray[serve]>=2.57`), but the watchdog stays as
+  defense-in-depth: Ray's memory monitor can still kill the ServeController/replica
+  under host RAM pressure and leave gliner unresponsive (see
+  `NER_RAY_MEMORY_THRESHOLD`).
 
 - `clip` (CLIP image+text tower, served via FastAPI rather than vLLM)
 - `asr` (Whisper ASR, served via vLLM)

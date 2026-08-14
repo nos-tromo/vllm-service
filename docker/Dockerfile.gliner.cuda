@@ -19,8 +19,14 @@ RUN apt-get update \
 # FieldDescriptor.label (Ray Serve's _proto_to_dict still reads it). Unpinned,
 # pip resolves protobuf 7.x on this base and Ray Serve crashes on startup;
 # protobuf<7 resolves 6.x, which still exposes .label. Same pin as the CPU image.
+# Floor ray[serve]>=2.57: ray-2.57.0 ships the rank-corruption fix for the
+# ServeController recovery wedge (ray-project/ray#63862, fixed by #64636) that
+# the watchdog below was built around; gliner[serve] itself does not constrain
+# the ray version, so without the floor a rebuild could resolve a still-broken
+# 2.5x wheel. Same floor as the CPU image.
 RUN pip install --no-cache-dir --break-system-packages \
     'gliner[serve] @ https://github.com/urchade/GLiNER/archive/910a1aefb300f17bb67d31d4a92890c8d78aaa4b.tar.gz' torchao \
+    'ray[serve]>=2.57' \
     'protobuf<7'
 
 # Force Ray Serve's HTTP proxy to bind 0.0.0.0 instead of the default

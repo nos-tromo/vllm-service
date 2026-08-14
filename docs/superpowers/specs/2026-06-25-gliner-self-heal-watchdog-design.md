@@ -46,6 +46,17 @@ inconsistent. The replica-rank feature was introduced in Ray 2.50.0.
    gliner's only restart directive is `deploy.restart_policy`, which `docker compose up`
    **ignores** (Swarm-only) — so even a hard exit would not be restarted.
 
+   > **Errata (2026-08-14):** the "Swarm-only" claim above is wrong for Compose v2, which
+   > honors `deploy.restart_policy` — and gives it **precedence** over a top-level
+   > `restart:` key (`getRestartPolicy()` in compose's `pkg/compose/create.go`). Worse,
+   > `max_attempts` is a lifetime cap: the daemon's restart manager never resets the
+   > restart count (only the backoff delay resets after a 10 s+ run), so the shared
+   > `on-failure`/`max_attempts: 5` anchor left gliner permanently `Exited(1)` after the
+   > watchdog's 5th self-exit, and its DNS name dropped off the compose network (the
+   > router then 500s every `/gliner` call with "Temporary failure in name resolution").
+   > Fixed by giving gliner a `deploy:` block with GPU resources only, so the
+   > `restart: unless-stopped` this design relies on is the effective policy.
+
 ### Why not fix it upstream instead
 
 - **Upgrade Ray:** no released fix. 2.55.1 is the latest release; the only relevant merged
@@ -236,6 +247,18 @@ Repo norm is "no unit-test suite; lint (ruff/pyrefly) + in-Dockerfile build smok
 - Track [ray-project/ray#63862](https://github.com/ray-project/ray/issues/63862). When a Ray
   release ships a **verified** fix, evaluate a forward upgrade and whether the watchdog can be
   relaxed (kept as defense-in-depth or removed).
+
+  > **Resolved upstream (2026-08-14):** #63862 was closed as fixed on 2026-07-23. The real
+  > fix is [ray-project/ray#64636](https://github.com/ray-project/ray/pull/64636) ("Fix rank
+  > corruption on controller recovery after lightweight reconfigure", merged 2026-07-09,
+  > verified on nightly by the original reporter), first shipped in **ray-2.57.0**
+  > (2026-08-11). Both gliner Dockerfiles now floor `ray[serve]>=2.57` so a rebuild cannot
+  > resolve a still-broken 2.5x wheel. **Decision: the watchdog stays as defense-in-depth** —
+  > the companion PR #63952 (exempt the ServeController from Ray's OOM killer) was closed
+  > unmerged, so on RAM-tight hosts the memory monitor can still kill the controller/replica
+  > and leave gliner unresponsive (a kill-loop the 2026-08-14 outage exhibited); 2.57.0 only
+  > makes controller *recovery* clean. See `NER_RAY_MEMORY_THRESHOLD` (PR #92) for the
+  > RAM-side knob.
 - Optional: heartbeat-file shared between watchdog and healthcheck to probe once.
 
 ## Verification (2026-06-26)
