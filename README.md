@@ -31,6 +31,7 @@ Internally it runs:
 
 - `router` (LiteLLM Proxy)
 - `chat`
+- `ocr` (document OCR / layout VLM — see [OCR backend](#ocr-backend))
 - `embed`
 - `rerank`
 - `gliner` (GLiNER, served via Ray Serve rather than vLLM)
@@ -790,7 +791,7 @@ between `load` and `up`.
 - `router` joins `inference-net` with the `vllm-router` alias so existing
   consumers do not need to change their `OPENAI_API_BASE`; it remains the
   only app-facing entry point.
-- `chat`, `embed`, `rerank`, `gliner`, `clip`, `asr`, `diarize`, and `vad`
+- `chat`, `ocr`, `embed`, `rerank`, `gliner`, `clip`, `asr`, `diarize`, and `vad`
   also join `inference-net` (no additional alias), solely so `obs-plane`
   can scrape their metrics endpoints by service name — apps should still
   go through `router`, never call a backend directly.
@@ -798,7 +799,7 @@ between `load` and `up`.
 ## Updating the model catalog
 
 `docker/litellm.config.yaml` is model-agnostic: all model names are read at
-startup from the environment variables `TEXT_MODEL`, `EMBED_MODEL`,
+startup from the environment variables `TEXT_MODEL`, `OCR_MODEL`, `EMBED_MODEL`,
 `RERANK_MODEL`, and `WHISPER_MODEL`. To switch a model,
 update the relevant variable in `.env` and restart the stack. No changes to
 `docker/litellm.config.yaml` are required.
@@ -812,6 +813,56 @@ their servers have no OpenAI-shaped endpoints, so they are not in `model_list`
 and do not appear in `/v1/models`. Switching them still works by updating the
 variable in `.env` and restarting the matching service (`gliner`, `clip`,
 `diarize`, `vad`).
+
+## OCR backend
+
+The `ocr` service serves a **document OCR / layout VLM** — a model that takes a
+page image and returns the page's layout: one element per block with a bounding
+box, a category (`Title`, `Section-header`, `Text`, `List-item`, `Table`,
+`Picture`, `Caption`, `Footnote`, `Formula`, `Page-header`, `Page-footer`) and
+its text (tables as HTML, formulas as LaTeX), in reading order. That is what a
+general chat VLM cannot give and what a scanned page has no other source for;
+`docint` uses it for scanned pages and for tables whose structure cell geometry
+cannot recover (spanning headers).
+
+It is an ordinary vLLM chat-completions backend, routed by the model id in the
+request like `chat` — no new endpoint. Consumers send one `image_url` (base64
+JPEG/PNG data URL) plus the model's own task prompt and get the answer as text.
+
+**Model.** The default is [`dots-studio/dots.mocr`](https://huggingface.co/dots-studio/dots.mocr)
+(3 B, ~6 GB bf16, natively supported by the pinned vLLM). It ships **MIT plus a
+separate `dots.mocr LICENSE AGREEMENT`** whose acceptable-use clauses touch this
+deployment: §5.2(a) prohibits processing GDPR-protected personal data unless a
+lawful basis, consents and pseudonymisation are in place, §3.3(c) bars
+"unauthorized digitization of publications/document scanning", it is governed by
+PRC law, and the licensor may issue a revised version to migrate to within 90
+days. Read it before shipping the weights in an airgap bundle; it is a condition
+someone with legal authority signs off, not a technicality. The alternative
+[`zai-org/GLM-OCR`](https://huggingface.co/zai-org/GLM-OCR) is plain MIT and
+smaller (1.3 B) but **recognition-only** — it returns Markdown with no layout or
+bounding boxes (its own pipeline puts a PaddlePaddle layout detector in front),
+so consumers lose provenance for scanned pages. Set `OCR_MODEL` to switch;
+`docint` selects its request/response handling from the model family.
+
+**Weights.** Like every backend, weights live in the `huggingface-cache` volume;
+seed them once with `HF_HUB_OFFLINE=0 TRANSFORMERS_OFFLINE=0` at first start
+(the repo is not gated). `dots.mocr` needs `--trust-remote-code` for its config
+module (`OCR_TRUST_REMOTE_CODE`, default on) — the model class itself is in vLLM.
+
+**GPU budget.** The documented shares of the other vLLM backends already sum to
+1.00 (chat 0.55, embed 0.10, embed-sparse 0.10, rerank 0.10, asr 0.15). The
+OCR backend defaults to `OCR_GPU_MEMORY_UTILIZATION=0.15`, so on a single GPU
+you must take that from `chat` (e.g. `CHAT_GPU_MEMORY_UTILIZATION=0.40`); the
+compose defaults do not do this for you. `OCR_MM_PROCESSOR_KWARGS={"max_pixels":2007040}`
+caps the vision input at ~2 Mpx — the checkpoint default of 11.3 Mpx makes vLLM
+profile for a ~14k-token image at startup, which is where memory goes on a
+shared card. Consumers must not render pages larger than that cap: `dots.mocr`
+returns bounding boxes in the frame of the *resized* image, so a client that
+sends more pixels than the server accepts gets coordinates it cannot map back
+(`docint` exposes `PIPELINE_OCR_MAX_PIXELS` for the same number).
+
+Startup order is `chat → ocr → embed → …`; the router waits for `ocr` like every
+other backend. All `OCR_*` knobs are listed in `.env.example`.
 
 ## Calling the ASR service
 

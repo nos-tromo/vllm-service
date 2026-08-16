@@ -1,8 +1,8 @@
 name: vllm-service
 
 x-no-proxy-env: &no-proxy-env
-  NO_PROXY: "router,chat,embed,rerank,gliner,clip,asr,diarize,vad,localhost,127.0.0.1,172.16.0.0/12,10.0.0.0/8${EXTRA_NO_PROXY:-}"
-  no_proxy: "router,chat,embed,rerank,gliner,clip,asr,diarize,vad,localhost,127.0.0.1,172.16.0.0/12,10.0.0.0/8${EXTRA_NO_PROXY:-}"
+  NO_PROXY: "router,chat,ocr,embed,rerank,gliner,clip,asr,diarize,vad,localhost,127.0.0.1,172.16.0.0/12,10.0.0.0/8${EXTRA_NO_PROXY:-}"
+  no_proxy: "router,chat,ocr,embed,rerank,gliner,clip,asr,diarize,vad,localhost,127.0.0.1,172.16.0.0/12,10.0.0.0/8${EXTRA_NO_PROXY:-}"
 
 x-env-file: &env-file
   - path: ../.env
@@ -132,6 +132,8 @@ services:
     depends_on:
       chat:
         condition: service_healthy
+      ocr:
+        condition: service_healthy
       embed:
         condition: service_healthy
       rerank:
@@ -239,6 +241,75 @@ services:
     networks:
       - vllm-net
       - inference-net
+  # Document OCR / layout VLM. Serves a document-parsing model that returns
+  # layout (bboxes + categories + text per element) from a page image — the
+  # structure a general chat VLM cannot give and cell geometry cannot see
+  # (spanning headers, scanned pages). Consumers (docint) reach it through
+  # the router as OCR_MODEL. Default model: dots-studio/dots.mocr (MIT plus a
+  # licence agreement with an acceptable-use rider — see README § OCR).
+  ocr:
+    <<: *hardened
+    read_only: true
+    tmpfs:
+      - /tmp:size=64m
+      # vLLM runtime caches; the model runs --enforce-eager by default so
+      # there is no torch-compile cache to persist.
+      - /home/app/.cache/vllm:size=256m,mode=1777,exec
+      # trust_remote_code materialises the checkpoint's custom config module
+      # here; it must be writable and importable.
+      - /home/app/.cache/huggingface/modules:size=64m,mode=1777,exec
+    image: vllm-service-ocr:${VLLM_SERVICE_VERSION:-latest}
+    build:
+      context: ..
+      dockerfile: docker/Dockerfile.vllm
+    logging: *default-logging
+    gpus: all
+    env_file: *env-file
+    ipc: host
+    depends_on:
+      <<: *volume-permissions-dep
+      chat:
+        condition: service_healthy
+    entrypoint: ["/bin/sh", "-lc"]
+    command:
+      - >-
+        export CUDA_VISIBLE_DEVICES="$${OCR_CUDA_VISIBLE_DEVICES:-0}";
+        mm="$${OCR_LIMIT_MM_PER_PROMPT:-}";
+        if [ -z "$$mm" ]; then mm='{"image":1}'; fi;
+        set -- vllm serve "$${OCR_MODEL:-dots-studio/dots.mocr}"
+        --tensor-parallel-size "$${OCR_TENSOR_PARALLEL_SIZE:-1}"
+        --api-key "$${OPENAI_API_KEY:-sk-no-key-required}"
+        --host 0.0.0.0
+        --port 8000
+        --gpu-memory-utilization "$${OCR_GPU_MEMORY_UTILIZATION:-0.15}"
+        --max-model-len "$${OCR_MAX_MODEL_LEN:-16384}"
+        --max-num-seqs "$${OCR_MAX_NUM_SEQS:-4}"
+        --max-num-batched-tokens "$${OCR_MAX_NUM_BATCHED_TOKENS:-16384}"
+        --limit-mm-per-prompt "$$mm"
+        --chat-template-content-format "$${OCR_TEMPLATE_CONTENT_FORMAT:-string}";
+        if [ "$${OCR_TRUST_REMOTE_CODE:-true}" = "true" ]; then
+          set -- "$@" --trust-remote-code;
+        fi;
+        if [ "$${OCR_ENFORCE_EAGER:-true}" = "true" ]; then
+          set -- "$@" --enforce-eager;
+        fi;
+        if [ -n "$${OCR_MM_PROCESSOR_KWARGS:-}" ]; then
+          set -- "$@" --mm-processor-kwargs "$${OCR_MM_PROCESSOR_KWARGS}";
+        fi;
+        if [ -n "$${OCR_HF_OVERRIDES:-}" ]; then
+          set -- "$@" --hf-overrides "$${OCR_HF_OVERRIDES}";
+        fi;
+        if [ -n "$${OCR_KV_CACHE_DTYPE:-}" ]; then
+          set -- "$@" --kv-cache-dtype "$${OCR_KV_CACHE_DTYPE}";
+        fi;
+        exec "$@"
+    environment: *vllm-env
+    volumes: *vllm-volumes
+    healthcheck: *vllm-healthcheck
+    deploy: *cuda-deploy
+    networks:
+      - vllm-net
+      - inference-net
 
   embed:
     <<: *hardened
@@ -259,7 +330,7 @@ services:
     ipc: host
     depends_on:
       <<: *volume-permissions-dep
-      chat:
+      ocr:
         condition: service_healthy
     entrypoint: ["/bin/sh", "-lc"]
     command:
