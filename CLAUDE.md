@@ -369,6 +369,15 @@ Most backends share the same `docker/Dockerfile.vllm` image, launched with a
 different model and per-service env-driven flags:
 
 - `chat` — general LLM (`TEXT_MODEL`)
+- `ocr` — document OCR / layout VLM (`OCR_MODEL`, default `dots-studio/dots.mocr`):
+  page image in, layout JSON (bbox + category + text, tables as HTML) out, over
+  plain chat completions. `--trust-remote-code` for the checkpoint's config
+  module, `--chat-template-content-format string`, `--enforce-eager`. Its GPU
+  share (`OCR_GPU_MEMORY_UTILIZATION`, 0.15) is **not** free: the other
+  documented shares already sum to 1.00, so `chat` gives it up. dots.mocr's
+  licence carries an acceptable-use rider (GDPR data, document scanning, PRC
+  law) — README § OCR backend; GLM-OCR is the plain-MIT, recognition-only
+  (no bboxes) alternative.
 - `embed` — embeddings, `--runner pooling --convert embed` (`EMBED_MODEL`)
 - `rerank` — reranker, `--runner pooling` (`RERANK_MODEL`)
 - `asr` — Whisper (`WHISPER_MODEL`)
@@ -435,8 +444,8 @@ ergonomics aren't worth it.
 ### Service startup ordering
 
 `depends_on … condition: service_healthy` chains the backends serially:
-`chat → embed → embed-sparse → rerank → clip → asr → diarize → vad → gliner
-→ router`. This
+`chat → ocr → embed → embed-sparse → rerank → clip → asr → diarize → vad →
+gliner → router`. This
 is intentional — backends compete for GPU memory at startup, so they are
 brought up one at a time. `gliner` is deliberately **last**: it runs on Ray
 Serve with `--target-memory-fraction` (a share of whatever GPU memory is still

@@ -19,6 +19,16 @@ model_list:
       api_base: http://chat:8000/v1
       api_key: os.environ/OPENAI_API_KEY
 
+  # Document OCR / layout VLM (page image in, layout JSON + text out).
+  # Plain chat-completions upstream, so the openai provider is right; the
+  # model id's first segment ("dots-studio") is not a LiteLLM provider prefix.
+  - model_name: os.environ/OCR_MODEL
+    litellm_params:
+      model: os.environ/OCR_MODEL
+      custom_llm_provider: openai
+      api_base: http://ocr:8000/v1
+      api_key: os.environ/OPENAI_API_KEY
+
   # Embeddings
   - model_name: os.environ/EMBED_MODEL
     litellm_params:
