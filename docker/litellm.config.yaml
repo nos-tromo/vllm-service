@@ -31,7 +31,9 @@ model_list:
       # hand-rolled aiohttp embeddings call (its RAG/document ingestion). Pin a valid
       # default so the null never reaches the backend. Clients that send their own
       # value still override this (the openai SDK defaults to "base64"), so SDK-based
-      # consumers like docint are unaffected.
+      # consumers like docint are unaffected. LiteLLM v1.85.0 started defaulting the
+      # OpenAI path to "float" itself, so this is now belt-and-braces rather than
+      # load-bearing — keep it, since the pin costs nothing and states the intent.
       encoding_format: float
 
   # Reranking — must use hosted_vllm provider; LiteLLM's native /v1/rerank
@@ -67,15 +69,38 @@ general_settings:
   # existing consumer configuration keeps working without changes.
   master_key: os.environ/OPENAI_API_KEY
 
+  # Pass-through uploads are whole media files (Nextext allows multi-GB) and
+  # then block on CPU-bound work, so a single /diarize call can run for hours.
+  # LiteLLM applies a default 600s pass-through timeout as of v1.91.0, which
+  # would abort those mid-flight; 4h matches the audio ceiling the backends
+  # already allow (VLLM_MAX_AUDIO_DECODE_DURATION_S). A per-endpoint `timeout`
+  # would override this for a single path.
+  pass_through_request_timeout: 14400
+
   # Pass-through endpoints for vLLM-specific paths that LiteLLM does not
   # map natively. Forwards the request body unchanged to the upstream.
+  #
+  # `auth: true` gates each one behind the master key, same as the
+  # OpenAI-shaped routes above — consumers must send
+  # `Authorization: Bearer $OPENAI_API_KEY`. LiteLLM made this the default in
+  # v1.84.0 (before that these forwarded unauthenticated); it is spelled out on
+  # every entry so the posture is read off this file rather than inherited from
+  # whatever the pinned release happens to default to.
+  #
+  # This file and the router image pin are a matched pair: pass-through `auth`
+  # was enterprise-licensed until v1.84.0, so this config makes a pre-v1.84
+  # router refuse to boot ("Error Setting Authentication on Pass Through
+  # Endpoint: You must be a LiteLLM Enterprise user"). Roll the image back only
+  # by reverting this file with it.
   pass_through_endpoints:
     - path: "/pooling"
       target: "http://embed-sparse:8000/pooling"
+      auth: true
       headers:
         content-type: "application/json"
     - path: "/tokenize"
       target: "http://embed-sparse:8000/tokenize"
+      auth: true
       headers:
         content-type: "application/json"
     # GLiNER zero-shot NER. Not OpenAI-compatible — clients POST
@@ -85,6 +110,7 @@ general_settings:
     # model_list — it has no OpenAI-shaped endpoint to route by model name.
     - path: "/gliner"
       target: "http://gliner:8000/gliner"
+      auth: true
       headers:
         content-type: "application/json"
     # CLIP image+text embedding tower. Not OpenAI-compatible — clients POST
@@ -95,12 +121,15 @@ general_settings:
     # LiteLLM forwards the original Content-Type (multipart boundary).
     - path: "/clip/embed_image"
       target: "http://clip:8000/clip/embed_image"
+      auth: true
     - path: "/clip/embed_text"
       target: "http://clip:8000/clip/embed_text"
+      auth: true
       headers:
         content-type: "application/json"
     - path: "/clip/dimension"
       target: "http://clip:8000/clip/dimension"
+      auth: true
     # Speaker diarization (pyannote). Not OpenAI-compatible — clients POST
     # multipart `file=<audio bytes>` plus optional num_speakers /
     # min_speakers / max_speakers form fields and receive
@@ -111,6 +140,7 @@ general_settings:
     # /v1/models — it has no OpenAI-shaped endpoint to route by model name.
     - path: "/diarize"
       target: "http://diarize:8000/diarize"
+      auth: true
     # Voice activity detection (Silero VAD). Not OpenAI-compatible — clients
     # POST multipart `file=<audio bytes>` plus optional threshold / duration
     # form fields and receive {"segments": [{"start", "end"}], "has_speech":
@@ -120,6 +150,7 @@ general_settings:
     # /v1/models — it has no OpenAI-shaped endpoint to route by model name.
     - path: "/vad"
       target: "http://vad:8000/vad"
+      auth: true
 
 litellm_settings:
   # Silently drop OpenAI-only params that the upstream vLLM backend does

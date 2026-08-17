@@ -126,7 +126,11 @@ services:
       - media-tmp:/tmp
     # Upstream's supported non-root variant (runs as its internal user)
     # — deploy ADR 0001.
-    image: ghcr.io/berriai/litellm-non_root:main-v1.83.10-stable@sha256:94b43b6e65b2b4b8d2e5f3fb2ef288688045f80841f8cf61e0a935a69eb8e2d0
+    # Tag has no `main-`/`-stable` affixes: upstream retired that convention at
+    # v1.84.0 — weekly MINORs are themselves the stable releases, PATCH is
+    # reserved for hotfixes, and the moving `main-stable` tag is removed
+    # 2026-09-01. Pin plain `vX.Y.Z` by digest from here on.
+    image: ghcr.io/berriai/litellm-non_root:v1.97.0@sha256:e2de74cae0d1f708bebe33bf3e03c3335029e27ff7f0dbddc7ff94d0edd63614
     logging: *default-logging
     env_file: *env-file
     depends_on:
