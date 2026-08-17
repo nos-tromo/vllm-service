@@ -421,10 +421,19 @@ annotated tag — `make bundle-dev` or an off-tag build falls back to
 tarballs for offline shipping.
 
 All backends listen on internal port 8000 and join both `vllm-net` and the
-external `inference-net` — the latter only so `obs-plane` can scrape their
+external `inference-net` — the latter so `obs-plane` can scrape their
 metrics endpoints by service name; they are not an app-facing entry point.
 Apps still reach the stack exclusively through `router`, which keeps the
 `vllm-router` alias on `inference-net` for cross-project consumers.
+
+The router is scraped there too: `litellm_settings.callbacks: ["prometheus"]`
+mounts its `/metrics` (without that callback the route does not exist and
+returns 404), and `require_auth_for_metrics_endpoint: false` keeps it
+unauthenticated like the backends' — the alternative would copy
+`OPENAI_API_KEY` into obs-plane's Prometheus config. Router metrics cover the
+routing layer specifically (per-model request counts, end-to-end latency
+including routing, failures that never reached a backend), which is why they
+are worth having alongside the per-engine vLLM metrics.
 
 ### Dependency overlay
 

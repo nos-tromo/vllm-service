@@ -153,6 +153,28 @@ general_settings:
       auth: true
 
 litellm_settings:
+  # Expose the router's own Prometheus metrics for obs-plane to scrape. This
+  # is what mounts `/metrics` at all — without the callback the route simply
+  # does not exist and returns 404, which is why the router had no telemetry
+  # before. Free in OSS LiteLLM (the 2024 enterprise gating was lifted
+  # upstream); only managed-batch metrics remain enterprise-only.
+  #
+  # These measure the routing layer, which the backends cannot report on:
+  # per-model request counts, end-to-end latency including routing, and
+  # failures that never reached a backend.
+  callbacks: ["prometheus"]
+
+  # Serve `/metrics` unauthenticated, opting out of the auth default LiteLLM
+  # introduced in v1.85.0. Deliberate, not an oversight: the vLLM backends'
+  # metrics are already scraped without auth on `inference-net`, and the
+  # alternative would mean copying OPENAI_API_KEY — which doubles as every
+  # backend's `--api-key` — into obs-plane's Prometheus config, widening that
+  # one secret's blast radius across repos. The trust boundary stays
+  # `inference-net`, exactly as it is for the backends. Note this exposes
+  # operational shape (model names, request volumes, latencies) to anything
+  # on that network.
+  require_auth_for_metrics_endpoint: false
+
   # Silently drop OpenAI-only params that the upstream vLLM backend does
   # not understand, rather than erroring out the request.
   drop_params: true

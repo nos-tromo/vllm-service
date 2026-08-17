@@ -29,7 +29,10 @@ relevant backend:
 
 Every route above — pass-throughs included — is gated by the router's master
 key, so clients must send `Authorization: Bearer $OPENAI_API_KEY`. (The
-standalone `-only` shapes described below have no router and no auth.)
+standalone `-only` shapes described below have no router and no auth.) The
+two exceptions are the operational endpoints `/health/liveliness` and
+`/metrics`, both deliberately served unauthenticated on `inference-net` for
+obs-plane — see [Networking](#networking).
 
 Internally it runs:
 
@@ -793,11 +796,18 @@ between `load` and `up`.
   service discovery and reverse-proxy access.
 - `router` joins `inference-net` with the `vllm-router` alias so existing
   consumers do not need to change their `OPENAI_API_BASE`; it remains the
-  only app-facing entry point.
+  only app-facing entry point. `obs-plane` also scrapes the router's own
+  `/metrics` there (LiteLLM's Prometheus callback, enabled in
+  `docker/litellm.config.yaml`) for routing-layer telemetry the backends
+  cannot report — per-model request counts, end-to-end latency including
+  routing, and failures that never reached a backend.
 - `chat`, `embed`, `rerank`, `gliner`, `clip`, `asr`, `diarize`, and `vad`
-  also join `inference-net` (no additional alias), solely so `obs-plane`
-  can scrape their metrics endpoints by service name — apps should still
-  go through `router`, never call a backend directly.
+  also join `inference-net` (no additional alias), so `obs-plane` can scrape
+  their metrics endpoints by service name — apps should still go through
+  `router`, never call a backend directly.
+- Both metrics surfaces are unauthenticated on `inference-net`, which is the
+  trust boundary for scraping; app traffic through the router is still
+  master-key gated.
 
 ## Updating the model catalog
 

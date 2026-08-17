@@ -163,8 +163,10 @@ services:
 
   # Backends below also join inference-net (in addition to vllm-net) so the
   # obs-plane observability stack can scrape their metrics endpoints by
-  # service name. This does not change the app-facing entry point: apps
-  # still talk to the router (alias vllm-router) exclusively, and any
+  # service name. The router above is scraped on the same network for its
+  # own routing-layer metrics (LiteLLM's prometheus callback, enabled in
+  # litellm.config.yaml). This does not change the app-facing entry point:
+  # apps still talk to the router (alias vllm-router) exclusively, and any
   # backend --api-key enforcement (chat/embed/rerank/asr, all native
   # `vllm serve`) is unaffected.
   chat:
