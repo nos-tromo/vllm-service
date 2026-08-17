@@ -363,6 +363,15 @@ are the pass-throughs whose upstreams are *not* vLLM containers — they go to
 the `gliner` (Ray Serve), `clip` (FastAPI), `diarize` (FastAPI), and `vad`
 (FastAPI) services.
 
+Every pass-through entry carries `auth: true`, so the master key gates them
+exactly like the OpenAI-shaped routes. LiteLLM made that the default in
+v1.84.0 — it is written out per entry anyway, so the posture is read off the
+config rather than inherited from the pinned release. The
+`pass_through_request_timeout` setting (4h) likewise overrides the 600s default
+introduced in v1.91.0, which would otherwise abort long `/diarize` uploads.
+When adding a pass-through, copy both properties rather than relying on
+defaults.
+
 ### Backends
 
 Most backends share the same `docker/Dockerfile.vllm` image, launched with a

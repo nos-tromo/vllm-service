@@ -27,6 +27,10 @@ relevant backend:
 - `/diarize` (speaker diarization; non-OpenAI shape)
 - `/vad` (Silero voice activity detection; non-OpenAI shape)
 
+Every route above — pass-throughs included — is gated by the router's master
+key, so clients must send `Authorization: Bearer $OPENAI_API_KEY`. (The
+standalone `-only` shapes described below have no router and no auth.)
+
 Internally it runs:
 
 - `router` (LiteLLM Proxy)
