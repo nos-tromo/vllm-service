@@ -11,6 +11,7 @@ On a build host with internet:
 
 ```bash
 make bundle              # full stack (chat, embed, rerank, gliner, clip, asr, diarize, vad, router)
+make bundle-dev          # full stack, from the current working tree (dev iteration / soak)
 make bundle-gliner-only     # NER-only shape (just vllm-service-gliner-cpu)
 make bundle-rerank-only  # Rerank-only shape (just vllm-service-rerank-only)
 make bundle-clip-only    # CLIP-only shape (just vllm-service-clip-cpu)
@@ -20,10 +21,37 @@ make bundle-asr-only     # ASR-only shape (just vllm-service-asr-cpu)
 make bundle-vad-only     # VAD-only shape (just vllm-service-vad-cpu)
 ```
 
-This computes `VLLM_SERVICE_VERSION` as `YYYY-MM-DD-<short-sha>` (override by
-exporting it before invocation), builds the locally-buildable services with
-that version tag, pulls the externally-hosted images (LiteLLM Proxy), then
-writes two gzipped tarballs in the cwd:
+Each target builds the locally-buildable services with a version tag, pulls the
+externally-hosted images (LiteLLM Proxy), then writes two gzipped tarballs in
+the cwd. Where the version comes from depends on which target you ran.
+
+**`make bundle` is the production path.** It resolves the latest **annotated**
+tag reachable from `HEAD`, checks it out detached, builds the tagged tree, and
+restores your branch afterwards (an `EXIT` trap, so it restores on failure
+too). `VLLM_SERVICE_VERSION` is then that tag verbatim — `vX.Y.Z`. It refuses
+rather than ever producing an unversioned artifact when:
+
+- tracked files are dirty (a checkout would clobber them) — commit or stash
+  first, or use `make bundle-dev`; or
+- no annotated tag is reachable from `HEAD`.
+
+Untracked and gitignored files such as `.env` are ignored by the dirty check
+and survive the checkout.
+
+**`make bundle-dev` is the dev path.** It skips the checkout and bundles the
+current working tree as-is, versioned `<commit-date>-<short-sha>` (today's date
+outside a git repo). Use it for dev iteration and staging soak; a release
+candidate promoted to production must come from `make bundle`.
+
+Exporting `VLLM_SERVICE_VERSION_OVERRIDE` short-circuits both paths: it bundles
+the working tree as-is under the version you name. The seven
+`make bundle-<shape>` targets take the production path as well — there is no
+`bundle-dev-<shape>` target, so use `VLLM_SERVICE_VERSION_OVERRIDE` for a
+working-tree bundle of a single shape.
+
+Whichever path runs, the resolved version is exported as
+`VLLM_SERVICE_VERSION`, echoed on stdout, and persisted to
+`.vllm-service-version`. The two tarballs are:
 
 | File | Contents |
 |---|---|
