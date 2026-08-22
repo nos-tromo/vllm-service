@@ -62,7 +62,7 @@ longer finds the compose file.
 
    ```bash
    make network   # create the external inference-net
-   make volume    # create the huggingface-cache Docker volume
+   make volumes   # create the huggingface-cache Docker volume
    ```
 
 4. Build and start the stack:
