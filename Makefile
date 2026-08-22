@@ -251,8 +251,8 @@ down-clip-only:
 #
 # Uses the same external inference-net + huggingface-cache as the full
 # stack, so `make network` and `make volumes` remain the one-time
-# prerequisites. The pyannote weights are gated on Hugging Face — see the
-# README "Diarize-only deployment" for the one-time pre-download.
+# prerequisites. The pyannote weights are gated on Hugging Face — see
+# docs/deployment-shapes.md, "Diarize-only", for the one-time pre-download.
 
 build-diarize-only:
 	DOCKER_BUILDKIT=1 $(COMPOSE_DIARIZE_ONLY) build

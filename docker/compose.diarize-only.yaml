@@ -20,8 +20,8 @@ name: vllm-service-diarize-only
 # pyannote/segmentation-3.0 are gated on the Hugging Face Hub. On a fresh
 # host, accept both repos' conditions and pre-populate the shared
 # huggingface-cache volume once with HF_HUB_OFFLINE=0,
-# TRANSFORMERS_OFFLINE=0, and HF_TOKEN set (see README "Diarize-only
-# deployment").
+# TRANSFORMERS_OFFLINE=0, and HF_TOKEN set (see docs/deployment-shapes.md,
+# "Diarize-only").
 #
 # Pair with `compose.gliner-only.yaml`, `compose.rerank-only.yaml`, and
 # `compose.clip-only.yaml` on the same host to give a non-CUDA dev box the

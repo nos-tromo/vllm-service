@@ -735,8 +735,9 @@ Model identity is fixed at container startup via `DIARIZE_MODEL`
 still loads on pyannote 4.x if configured). The checkpoints are gated
 on the Hugging Face Hub: accept the conditions for the model repo —
 for community-1 that's `pyannote/speaker-diarization-community-1` (its
-exact gated dependency set is still being confirmed; the README runbook
-documents the 3.1 procedure, which needs both
+exact gated dependency set is still being confirmed; the
+`docs/deployment-shapes.md` runbook also documents the 3.1 procedure,
+which needs both
 `pyannote/speaker-diarization-3.1` and `pyannote/segmentation-3.0`) —
 then run once with `HF_HUB_OFFLINE=0`, `TRANSFORMERS_OFFLINE=0`, and
 `HF_TOKEN` set so the weights land in the shared `huggingface-cache`
