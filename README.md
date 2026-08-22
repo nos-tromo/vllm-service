@@ -82,7 +82,7 @@ longer finds the compose file.
    in-network consumers reach the router as `vllm-router:4000` on
    `inference-net` regardless.
 
-5. Point third-party app at the router.
+5. Point a consuming app at the router.
 
 If the consuming app is on the same shared Docker network, use the router
 alias directly:
