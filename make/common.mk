@@ -21,7 +21,7 @@
 #   COMPOSE_FILE     ?= docker/compose.yaml
 #   COMPOSE_OVERRIDE ?= docker/compose.override.yaml
 #   BUILD_ENV        ?= DOCKER_BUILDKIT=1     # env prefix for `build`
-#   TESTS            ?= yes                    # set to `no` in repos with no pytest suite
+#   TESTS            ?= yes                    # set to `no` in repos with no pytest suite (test-frontend still runs)
 # Each repo keeps its own `help` and any unique targets (migrate, nuke, the -only shapes).
 
 ifndef REPO
@@ -112,8 +112,8 @@ pre-commit:
 # Local pre-push gate: backend lint/type-check (pre-commit = ruff + pyrefly) plus,
 # when a frontend/ exists, its eslint + build. `make verify` green => CI's lint/build
 # gate is green for TRACKED files. Like pre-commit it checks tracked files only, so
-# `git add` brand-new files first. CI stays the full safety net (tests + docker image
-# build). Syncs frontend deps first (`pnpm install --frozen-lockfile`) so a stale
+# `git add` brand-new files first. Tests are `make test` (pytest + vitest); CI stays
+# the full safety net (tests + docker image build). Syncs frontend deps first (`pnpm install --frozen-lockfile`) so a stale
 # node_modules after a dependency bump can't fail the build with phantom type
 # errors; it also fails fast when package.json and pnpm-lock.yaml disagree
 # (regenerate with `pnpm install` and commit the lockfile). Backend deps are
@@ -128,8 +128,25 @@ verify: pre-commit
 		echo ">> no frontend/ — backend checks only"; \
 	fi
 
+# Test suites. Backend: pytest (repos without a suite opt out with TESTS=no).
+# Frontend: vitest via `pnpm test`, when a frontend/ exists; deps are synced
+# first (frozen) for the same reasons as `verify`. `make test` runs both —
+# mirroring CI, which runs pytest AND the frontend job's `pnpm test` — while
+# `test-backend` / `test-frontend` run one half on its own.
+.PHONY: test test-backend test-frontend
+test: test-backend test-frontend
+
+test-backend:
 ifeq ($(TESTS),yes)
-.PHONY: test
-test:
 	uv run --locked pytest -q
+else
+	@echo ">> TESTS=no — no backend test suite"
 endif
+
+test-frontend:
+	@if [ -d frontend ]; then \
+		echo ">> frontend: install (frozen) + vitest"; \
+		cd frontend && pnpm install --frozen-lockfile && pnpm test; \
+	else \
+		echo ">> no frontend/ — no frontend test suite"; \
+	fi
