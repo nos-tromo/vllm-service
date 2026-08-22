@@ -226,9 +226,13 @@ Cache population pulls the `BAAI/bge-m3` weights — the encoder plus the
 and pooling definition the GPU stack uses, so scores are equivalent up
 to dtype: this server runs float32, while vLLM's `dtype="auto"` casts
 bge-m3's float32 checkpoint to float16, so the two diverge by roughly
-1e-3. Exact side-by-side parity is unverified pending #75 (no CUDA host
-to run the comparison against). The healthcheck reports healthy once
-FastAPI is accepting requests against `/health`.
+1e-3. Parity against the CUDA stack was verified side-by-side on
+2026-08-04 — see
+[2026-08-04-embed-parity-checklist.md](2026-08-04-embed-parity-checklist.md),
+the golden fixtures in `eval/fixtures/embed_parity/`, and
+`eval/tests/test_embed_parity.py`, which re-runs the four comparisons
+against any live backend. The healthcheck reports healthy once FastAPI is
+accepting requests against `/health`.
 
 On a dev host running Ollama for chat/embed, this shape **replaces**
 Ollama's `bge-m3` rather than sitting alongside it: point the embedding
