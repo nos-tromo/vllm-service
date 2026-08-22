@@ -31,6 +31,10 @@ make build-<shape>      # builds the shape's image
 make up-<shape>         # starts the container on inference-net
 ```
 
+For example, the NER-only shape is `make build-gliner-only` then
+`make up-gliner-only`; the ASR-only shape is `make build-asr-only` then
+`make up-asr-only`.
+
 `make up-<shape>` is the production shape — no host ports. `make
 up-dev-<shape>` layers the shape's `docker/compose.<shape>.override.yaml` and
 publishes the container's port 8000 on the host for direct testing. Each shape
