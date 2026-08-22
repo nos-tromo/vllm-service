@@ -256,15 +256,20 @@ GPU reservation. The container ships `src/diarize_server.py` — the same
 FastAPI app the full-stack `diarize` service runs — so it exposes the
 **same multipart `/diarize` contract**, and consumers (Nextext) target
 either backend by changing only the base URL. Default `DIARIZE_MODEL` is
-`pyannote/speaker-diarization-3.1`.
+`pyannote/speaker-diarization-community-1` (pyannote.audio 4.x); the 3.1
+pipeline still loads if you configure it.
 
 The pyannote weights are **gated** on the Hugging Face Hub, so unlike the
 other CPU shapes the cache cannot be populated anonymously. One-time setup:
 
-1. Accept the access conditions for both
-   [`pyannote/speaker-diarization-3.1`](https://huggingface.co/pyannote/speaker-diarization-3.1)
-   and [`pyannote/segmentation-3.0`](https://huggingface.co/pyannote/segmentation-3.0)
-   with your Hugging Face account.
+1. Accept the access conditions with your Hugging Face account for the
+   pipeline you are running:
+   - the default,
+     [`pyannote/speaker-diarization-community-1`](https://huggingface.co/pyannote/speaker-diarization-community-1)
+     — its exact gated dependency set is still being confirmed;
+   - or, if you have configured the 3.1 pipeline instead, both
+     [`pyannote/speaker-diarization-3.1`](https://huggingface.co/pyannote/speaker-diarization-3.1)
+     and [`pyannote/segmentation-3.0`](https://huggingface.co/pyannote/segmentation-3.0).
 2. In `.env`, set `HF_TOKEN=hf_...`, `HF_HUB_OFFLINE=0`, and
    `TRANSFORMERS_OFFLINE=0`, then start the container once so it downloads
    the weights (~30 MB segmentation + ~26 MB embedding) into the shared

@@ -196,9 +196,9 @@ boot.
 
 ## Diarization
 
-The `diarize` service runs the
-[pyannote/speaker-diarization-3.1](https://huggingface.co/pyannote/speaker-diarization-3.1)
-pipeline behind FastAPI. Like `gliner` and `clip` it is **not** vLLM and
+The `diarize` service runs the pipeline named by `DIARIZE_MODEL` — by default
+[pyannote/speaker-diarization-community-1](https://huggingface.co/pyannote/speaker-diarization-community-1)
+— behind FastAPI. Like `gliner` and `clip` it is **not** vLLM and
 does **not** expose OpenAI-compatible routes — it is reached through the
 router's `/diarize` pass-through. The uploaded file may be any container
 ffmpeg can decode (wav, mp3, m4a, mp4, ...); it is resampled to 16 kHz
