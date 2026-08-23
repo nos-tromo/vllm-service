@@ -164,7 +164,7 @@ Override defaults via `.env` — only `RERANK_*` knobs apply in this shape:
 ```bash
 RERANK_MODEL=BAAI/bge-reranker-v2-m3   # default
 # RERANK_USE_FP16=true                 # rare on CPU; default false
-# RERANK_HOST_PORT=8001                # host publish port for dev
+# RERANK_HOST_PORT=8002                # host publish port for dev
 ```
 
 CPU rerank of `BAAI/bge-reranker-v2-m3` lands around 50–300 ms per
@@ -197,7 +197,7 @@ Override defaults via `.env` — only `CLIP_*` knobs apply in this shape:
 ```bash
 CLIP_MODEL=openai/clip-vit-base-patch32   # default
 CLIP_DEVICE=cpu                           # default in clip-only
-# CLIP_HOST_PORT=8002                     # host publish port for dev
+# CLIP_HOST_PORT=8003                     # host publish port for dev
 ```
 
 CPU CLIP base-patch32 lands around 80–200 ms per image and ~20–40 ms

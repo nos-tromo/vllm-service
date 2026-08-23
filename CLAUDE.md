@@ -547,7 +547,7 @@ healthcheck target. There is no `/-/healthz` (Ray Serve isn't used here).
 Smoke-test:
 
 ```bash
-curl -fsS -X POST http://localhost:${RERANK_HOST_PORT:-8001}/rerank \
+curl -fsS -X POST http://localhost:${RERANK_HOST_PORT:-8002}/rerank \
   -H 'Content-Type: application/json' \
   -d '{"query": "what is RAG", "documents": ["retrieval augmented generation", "lunch menu"], "top_n": 2}'
 ```
@@ -587,16 +587,16 @@ Smoke-test:
 
 ```bash
 # text tower
-curl -fsS -X POST http://localhost:${CLIP_HOST_PORT:-8002}/clip/embed_text \
+curl -fsS -X POST http://localhost:${CLIP_HOST_PORT:-8003}/clip/embed_text \
   -H 'Content-Type: application/json' \
   -d '{"text": "a photo of a cat"}'
 
 # image tower (multipart)
-curl -fsS -X POST http://localhost:${CLIP_HOST_PORT:-8002}/clip/embed_image \
+curl -fsS -X POST http://localhost:${CLIP_HOST_PORT:-8003}/clip/embed_image \
   -F 'file=@/path/to/img.jpg'
 
 # dimension probe
-curl -fsS http://localhost:${CLIP_HOST_PORT:-8002}/clip/dimension
+curl -fsS http://localhost:${CLIP_HOST_PORT:-8003}/clip/dimension
 ```
 
 ### Embed-only shape (CPU)
