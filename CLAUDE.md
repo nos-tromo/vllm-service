@@ -348,8 +348,10 @@ below.
 `router` (LiteLLM Proxy, port 4000 inside, published on
 `${ROUTER_HOST_PORT:-9000}` on the host by `docker/compose.override.yaml`
 when `make up-dev` is used) is the **only** entry point. Clients always send to
-the router and select a backend by the `model` field in the request body —
-there is no path-based dispatch. `docker/litellm.config.yaml` maps each
+the router. OpenAI-compatible backends are selected by the `model` field in
+the request body rather than by path; the backends with their own contracts
+are reached by path pass-through instead (see below).
+`docker/litellm.config.yaml` maps each
 `model_name` (read from env vars at startup) to an upstream `api_base`
 (`http://chat:8000/v1`, `http://embed:8000/v1`, etc.).
 

@@ -7,12 +7,13 @@ a handful of small FastAPI servers; no application source.
 ## The routed-endpoint model
 
 The stack exposes **one** routed HTTP endpoint fronted by
-[LiteLLM Proxy](https://docs.litellm.ai/docs/proxy). LiteLLM dispatches each
-request to the right backend based on the `model` field in the request body —
-there is no path-based dispatch. It natively serves the OpenAI routes
-(`/v1/chat/completions`, `/v1/embeddings`, `/v1/audio/transcriptions`, …) and
-pass-through forwards the vLLM-specific and non-OpenAI ones (`/rerank`,
-`/pooling`, `/tokenize`, `/gliner`, `/clip/*`, `/diarize`, `/vad`). Every route
+[LiteLLM Proxy](https://docs.litellm.ai/docs/proxy), which dispatches to a
+backend two ways. The OpenAI-compatible backends are selected by the `model`
+field in the request body, not by path — they all answer on the standard
+OpenAI routes (`/v1/chat/completions`, `/v1/embeddings`,
+`/v1/audio/transcriptions`, …). The backends that speak their own contracts
+are reached by path instead, forwarded verbatim (`/rerank`, `/pooling`,
+`/tokenize`, `/gliner`, `/clip/*`, `/diarize`, `/vad`). Every route
 is gated by the router's master key, so clients send
 `Authorization: Bearer $OPENAI_API_KEY`.
 
