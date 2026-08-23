@@ -262,9 +262,9 @@ shape never changes. `DIARIZE_VAD_GATE=off` disables it. In `diarize-only`
 the compose hardcodes the URL to `http://vad-only:8000` (a shared `.env`'s
 full-stack `http://vad:8000` would not resolve in that shape) — co-deploy
 `vad-only` on `inference-net` and gating engages there too; without it the
-gate fails open, and `DIARIZE_VAD_GATE=off` silences it. Consumers that
-gate client-side (Nextext's `NEXTEXT_DIARIZE_VAD_GATE`) should disable
-their gate once this is live — double-gating is harmless but wasteful.
+gate fails open, and `DIARIZE_VAD_GATE=off` silences it. Gating is
+server-side only now: Nextext dropped its client-side knob, so consumers get
+pre-gated turns with nothing to configure on their end.
 
 The pipeline weights are gated on the Hugging Face Hub — see
 [deployment-shapes.md](deployment-shapes.md#diarize-only) for the one-time
