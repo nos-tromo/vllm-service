@@ -356,14 +356,18 @@ are reached by path pass-through instead (see below).
 (`http://chat:8000/v1`, `http://embed:8000/v1`, etc.).
 
 LiteLLM natively exposes `/v1/chat/completions`, `/v1/completions`,
-`/v1/embeddings`, `/v1/audio/transcriptions`, `/v1/audio/translations`, and
-`/v1/models`. vLLM-specific paths (`/v1/rerank`, `/pooling`, `/tokenize`),
-GLiNER's `/gliner`, CLIP's `/clip/*`, diarization's `/diarize`, and VAD's
-`/vad` are forwarded by `pass_through_endpoints` in
-`docker/litellm.config.yaml`. `/gliner`, `/clip/*`, `/diarize`, and `/vad`
-are the pass-throughs whose upstreams are *not* vLLM containers — they go to
-the `gliner` (Ray Serve), `clip` (FastAPI), `diarize` (FastAPI), and `vad`
-(FastAPI) services.
+`/v1/embeddings`, `/v1/rerank`, `/v1/audio/transcriptions`,
+`/v1/audio/translations`, and `/v1/models`. `/v1/rerank` is deliberately NOT a
+pass-through — LiteLLM's own rerank route takes precedence over
+`pass_through_endpoints`, so `rerank` is a `model_list` entry (`hosted_vllm`
+provider, `api_base` without the `/v1` suffix) selected by the `model` field
+like `chat`, `embed` and `asr`.
+
+The paths that ARE forwarded by `pass_through_endpoints` are `/pooling` and
+`/tokenize` (to `embed-sparse`), GLiNER's `/gliner`, CLIP's `/clip/*`,
+diarization's `/diarize`, and VAD's `/vad`. All but `/pooling` and `/tokenize`
+have upstreams that are *not* vLLM containers — they go to the `gliner` (Ray
+Serve), `clip` (FastAPI), `diarize` (FastAPI), and `vad` (FastAPI) services.
 
 Every pass-through entry carries `auth: true`, so the master key gates them
 exactly like the OpenAI-shaped routes. LiteLLM made that the default in

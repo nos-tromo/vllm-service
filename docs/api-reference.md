@@ -2,27 +2,37 @@
 
 ## Endpoint surface
 
-The stack exposes one routed HTTP endpoint fronted by [LiteLLM Proxy](https://docs.litellm.ai/docs/proxy).
-LiteLLM dispatches each request to the right vLLM backend based on the `model`
-field in the request body, and natively exposes:
+The stack exposes one routed HTTP endpoint fronted by [LiteLLM Proxy](https://docs.litellm.ai/docs/proxy),
+which dispatches two ways — see
+[architecture.md](architecture.md#two-dispatch-mechanisms-not-one).
+
+**By the `model` field**, on the routes LiteLLM serves natively:
 
 - `/v1/chat/completions`
 - `/v1/completions`
 - `/v1/embeddings`
+- `/v1/rerank`
 - `/v1/audio/transcriptions`
 - `/v1/audio/translations`
 - `/v1/models`
 
-Additional vLLM-specific endpoints are pass-through forwarded by LiteLLM to the
-relevant backend:
+Rerank belongs on this list, not among the pass-throughs: LiteLLM's own
+rerank route takes precedence over `pass_through_endpoints`, so the backend is
+declared as a `model_list` entry (`RERANK_MODEL` -> `http://rerank:8000`, via
+the `hosted_vllm` provider) and picked by the request's `model` field like any
+other — see `docker/litellm.config.yaml:39-48`.
 
-- `/rerank`
-- `/pooling`
-- `/tokenize`
-- `/gliner` (zero-shot NER; non-OpenAI shape)
-- `/clip/embed_image`, `/clip/embed_text`, `/clip/dimension` (CLIP image+text tower)
-- `/diarize` (speaker diarization; non-OpenAI shape)
-- `/vad` (Silero voice activity detection; non-OpenAI shape)
+**By path**, for the backends whose contracts are not OpenAI-shaped.
+`pass_through_endpoints` (`docker/litellm.config.yaml:95-153`) forwards the
+request body verbatim; a `model` field means nothing on these:
+
+| Path | Backend |
+|---|---|
+| `/pooling`, `/tokenize` | `embed-sparse` — sparse/lexical weights + tokenization |
+| `/gliner` | `gliner` — zero-shot NER (Ray Serve) |
+| `/clip/embed_image`, `/clip/embed_text`, `/clip/dimension` | `clip` — CLIP image+text tower |
+| `/diarize` | `diarize` — pyannote speaker diarization |
+| `/vad` | `vad` — Silero voice activity detection |
 
 ## Authentication
 
@@ -49,11 +59,16 @@ changing only the base URL (and dropping or adding the header).
 
 ## Embeddings
 
-The full stack's router passes `/v1/embeddings`, `/pooling` and `/tokenize`
-through to the vLLM `embed` backend. The `embed-only` shape serves all three
-from one loaded `BAAI/bge-m3` — dense via `/v1/embeddings`, sparse via
-`/pooling` with `task: "token_classify"` — so a consumer points both its
-embedding base and its sparse base at the same container.
+In the full stack these three routes land on **two** backends: `/v1/embeddings`
+is dispatched by `model` field to the vLLM `embed` service, while `/pooling`
+and `/tokenize` are pass-throughs to `embed-sparse` — the same image and the
+same `BAAI/bge-m3`, run a second time with the `token_classify` pooler task
+because vLLM binds one pooling task per server
+(`docker/litellm.config.yaml:96-105`). The `embed-only` shape collapses the
+pair back into one container, serving all three from one loaded model — dense
+via `/v1/embeddings`, sparse via `/pooling` with `task: "token_classify"` — so
+a consumer points both its embedding base and its sparse base at the same
+container.
 
 ```bash
 curl http://embed-only:8000/v1/embeddings \
@@ -93,9 +108,11 @@ see [configuration.md](configuration.md#embedding-batch-budget).
 
 ## Rerank
 
-The full stack's router passes `/rerank` through to the vLLM `rerank` backend;
-the `rerank-only` shape exposes the same Jina-shape contract at
-`http://rerank-only:8000/rerank`.
+The full stack reaches the vLLM `rerank` backend on the router's own
+`/v1/rerank` route, selected by the request's `model` field (`RERANK_MODEL`);
+the `rerank-only` shape exposes the same Jina-shape body at
+`http://rerank-only:8000/rerank` (`src/rerank_server.py:96`). The path and the
+`Authorization` header are the only differences.
 
 ```bash
 curl http://rerank-only:8000/rerank \
