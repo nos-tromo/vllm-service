@@ -134,6 +134,25 @@ NER_DEVICE=cpu                                  # default in gliner-only
 # NER_NUM_REPLICAS=1
 ```
 
+Seven `NER_*` defaults deliberately differ between this shape and the full
+stack, so a value read out of `.env.example` (which annotates the full-stack
+column) does not describe what `gliner-only` starts with:
+
+| Knob | `gliner-only` | Full stack |
+|---|---|---|
+| `NER_MODEL` | `gliner-community/gliner_medium-v2.5` | `gliner-community/gliner_large-v2.5` |
+| `NER_DEVICE` | `cpu` | `cuda` |
+| `NER_DTYPE` | `float32` | `bfloat16` |
+| `NER_MAX_BATCH_SIZE` | `8` | `32` |
+| `NER_BATCH_WAIT_TIMEOUT_MS` | `50` | `10` |
+| `NER_TARGET_MEMORY_FRACTION` | `0.5` | `0.8` |
+| `NER_DISABLE_COMPILE` | `true` | `false` |
+
+Three more knobs exist only here: `NER_NUM_GPUS_PER_REPLICA` (default `0`),
+`NER_NUM_CPUS_PER_REPLICA` (`1`) and `NER_SHM_SIZE` (`3gb`). The full-stack
+`gliner` service passes neither `--num-*-per-replica` flag and uses `ipc: host`
+rather than `shm_size`, so setting them there does nothing.
+
 CPU GLiNER (medium-v2.5) lands around 200 ms – 1 s per request on modern
 CPUs. Fine for batch ingestion workloads; not suitable for interactive
 per-keystroke use.
@@ -255,8 +274,8 @@ Request and response shapes: [api-reference.md](api-reference.md#embeddings).
 `docker/compose.diarize-only.yaml` is a standalone compose project for the
 same audience as NER-only / Rerank-only / CLIP-only. It runs one container,
 `diarize-only`, built from `Dockerfile.diarize.cpu` (uv-managed Python 3.11,
-CPU torch + torchaudio, `pyannote.audio`, `ffmpeg`). No LiteLLM router, no
-GPU reservation. The container ships `src/diarize_server.py` — the same
+CPU torch + torchaudio + torchcodec, `pyannote.audio`, `ffmpeg`). No LiteLLM
+router, no GPU reservation. The container ships `src/diarize_server.py` — the same
 FastAPI app the full-stack `diarize` service runs — so it exposes the
 **same multipart `/diarize` contract**, and consumers (Nextext) target
 either backend by changing only the base URL. Default `DIARIZE_MODEL` is
