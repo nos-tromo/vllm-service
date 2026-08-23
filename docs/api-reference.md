@@ -18,7 +18,7 @@ which dispatches two ways — see
 
 Rerank belongs on this list, not among the pass-throughs: LiteLLM's own
 rerank route takes precedence over `pass_through_endpoints`, so the backend is
-declared as a `model_list` entry (`RERANK_MODEL` -> `http://rerank:8000`, via
+declared as a `model_list` entry (`RERANK_MODEL` → `http://rerank:8000`, via
 the `hosted_vllm` provider) and picked by the request's `model` field like any
 other — see `docker/litellm.config.yaml:39-48`.
 

@@ -438,8 +438,10 @@ annotated tag — `make bundle-dev` or an off-tag build falls back to
 tarballs for offline shipping.
 
 All backends listen on internal port 8000 and join both `vllm-net` and the
-external `inference-net` — the latter so `obs-plane` can scrape their
-metrics endpoints by service name; they are not an app-facing entry point.
+external `inference-net` — the latter so `obs-plane` can reach them by service
+name; they are not an app-facing entry point. Only the vLLM backends serve
+`/metrics`; the FastAPI wrappers (`clip`, `diarize`, `vad`) expose their
+contract route and `/health` and nothing else.
 Apps still reach the stack exclusively through `router`, which keeps the
 `vllm-router` alias on `inference-net` for cross-project consumers.
 
