@@ -73,9 +73,8 @@ volume instead — starlette spools multipart bodies to `/tmp`, and Nextext
 allows multi-GB files, which a RAM tmpfs would have to hold. The `read_only`
 vLLM backends additionally carry a 256m tmpfs at `~/.cache/vllm`, which vLLM
 0.26 writes to even on pooling runners. Two documented deferrals keep a
-writable rootfs:
-`chat` (vLLM's torch-compile cache under `~/.cache/vllm`) and `gliner`
-(Ray session dirs under `/tmp/ray`).
+writable rootfs: `chat` (vLLM's torch-compile cache under `~/.cache/vllm`)
+and `gliner` (Ray session dirs under `/tmp/ray`).
 
 **Ownership is self-healing:** the `volume-permissions` one-shot present in
 every compose shape (full stack and all seven `-only` shapes) chowns any
@@ -441,9 +440,9 @@ All backends listen on internal port 8000 and join both `vllm-net` and the
 external `inference-net` — the latter so `obs-plane` can reach them by service
 name; they are not an app-facing entry point. Only the vLLM backends serve
 `/metrics`; the FastAPI wrappers (`clip`, `diarize`, `vad`) expose their
-contract route and `/health` and nothing else.
-Apps still reach the stack exclusively through `router`, which keeps the
-`vllm-router` alias on `inference-net` for cross-project consumers.
+contract route and `/health` and nothing else. Apps still reach the stack
+exclusively through `router`, which keeps the `vllm-router` alias on
+`inference-net` for cross-project consumers.
 
 The router is scraped there too: `litellm_settings.callbacks: ["prometheus"]`
 mounts its `/metrics` (without that callback the route does not exist and
