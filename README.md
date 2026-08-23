@@ -10,10 +10,10 @@ The stack exposes **one** routed HTTP endpoint fronted by
 [LiteLLM Proxy](https://docs.litellm.ai/docs/proxy), which dispatches to a
 backend two ways. The OpenAI-compatible backends are selected by the `model`
 field in the request body, not by path — they all answer on the standard
-OpenAI routes (`/v1/chat/completions`, `/v1/embeddings`,
+OpenAI routes (`/v1/chat/completions`, `/v1/embeddings`, `/v1/rerank`,
 `/v1/audio/transcriptions`, …). The backends that speak their own contracts
-are reached by path instead, forwarded verbatim (`/rerank`, `/pooling`,
-`/tokenize`, `/gliner`, `/clip/*`, `/diarize`, `/vad`). Every route
+are reached by path instead, forwarded verbatim (`/pooling`, `/tokenize`,
+`/gliner`, `/clip/*`, `/diarize`, `/vad`). Every route
 is gated by the router's master key, so clients send
 `Authorization: Bearer $OPENAI_API_KEY`.
 
@@ -70,7 +70,7 @@ longer finds the compose file.
 
    ```bash
    make build                 # build images for the full stack
-   make up-dev                # full stack with the router published on the host (router, chat, embed, rerank, clip, asr, diarize, vad, gliner)
+   make up-dev                # full stack with the router published on the host (router, chat, embed, embed-sparse, rerank, clip, asr, diarize, vad, gliner)
    make up                    # same as up-dev but production shape (no host ports)
    make dev                   # build, then up-dev (dev convenience)
    ```

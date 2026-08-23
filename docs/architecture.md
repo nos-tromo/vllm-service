@@ -84,9 +84,11 @@ under host RAM pressure and leave gliner unresponsive (see
   routing, and failures that never reached a backend.
 - All nine workers (`chat`, `embed`, `embed-sparse`, `rerank`, `asr`,
   `gliner`, `clip`, `diarize`, `vad`) also join `inference-net` (no additional
-  alias), so `obs-plane` can scrape
-  their metrics endpoints by service name — apps should still go through
-  `router`, never call a backend directly.
+  alias), so `obs-plane` can reach them by service name — apps should still go
+  through `router`, never call a backend directly. Not all nine have something
+  to scrape: the five vLLM workers serve `/metrics`, while the FastAPI
+  wrappers (`clip`, `diarize`, `vad`) expose only their contract route and
+  `/health`.
 - Both metrics surfaces are unauthenticated on `inference-net`, which is the
   trust boundary for scraping; app traffic through the router is still
   master-key gated.

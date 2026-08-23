@@ -2,27 +2,37 @@
 
 ## Endpoint surface
 
-The stack exposes one routed HTTP endpoint fronted by [LiteLLM Proxy](https://docs.litellm.ai/docs/proxy).
-LiteLLM dispatches each request to the right vLLM backend based on the `model`
-field in the request body, and natively exposes:
+The stack exposes one routed HTTP endpoint fronted by [LiteLLM Proxy](https://docs.litellm.ai/docs/proxy),
+which dispatches two ways — see
+[architecture.md](architecture.md#two-dispatch-mechanisms-not-one).
+
+**By the `model` field**, on the routes LiteLLM serves natively:
 
 - `/v1/chat/completions`
 - `/v1/completions`
 - `/v1/embeddings`
+- `/v1/rerank`
 - `/v1/audio/transcriptions`
 - `/v1/audio/translations`
 - `/v1/models`
 
-Additional vLLM-specific endpoints are pass-through forwarded by LiteLLM to the
-relevant backend:
+Rerank belongs on this list, not among the pass-throughs: LiteLLM's own
+rerank route takes precedence over `pass_through_endpoints`, so the backend is
+declared as a `model_list` entry (`RERANK_MODEL` → `http://rerank:8000`, via
+the `hosted_vllm` provider) and picked by the request's `model` field like any
+other — see `docker/litellm.config.yaml:39-48`.
 
-- `/rerank`
-- `/pooling`
-- `/tokenize`
-- `/gliner` (zero-shot NER; non-OpenAI shape)
-- `/clip/embed_image`, `/clip/embed_text`, `/clip/dimension` (CLIP image+text tower)
-- `/diarize` (speaker diarization; non-OpenAI shape)
-- `/vad` (Silero voice activity detection; non-OpenAI shape)
+**By path**, for the backends whose contracts are not OpenAI-shaped.
+`pass_through_endpoints` (`docker/litellm.config.yaml:95-153`) forwards the
+request body verbatim; a `model` field means nothing on these:
+
+| Path | Backend |
+|---|---|
+| `/pooling`, `/tokenize` | `embed-sparse` — sparse/lexical weights + tokenization |
+| `/gliner` | `gliner` — zero-shot NER (Ray Serve) |
+| `/clip/embed_image`, `/clip/embed_text`, `/clip/dimension` | `clip` — CLIP image+text tower |
+| `/diarize` | `diarize` — pyannote speaker diarization |
+| `/vad` | `vad` — Silero voice activity detection |
 
 ## Authentication
 
@@ -39,7 +49,12 @@ Every capability below can be reached two ways, and the request and response
 bodies are identical either way:
 
 - **Through the full stack** — at the LiteLLM router, with
-  `Authorization: Bearer $OPENAI_API_KEY`.
+  `Authorization: Bearer $OPENAI_API_KEY`. In-network that is
+  `http://vllm-router:4000` — the alias and the container port
+  (`docker/compose.yaml`, router `--port 4000`). `ROUTER_HOST_PORT` (default
+  `9000`) is the *host* publish port `make up-dev` adds
+  (`docker/compose.override.yaml:12`); it is not reachable under the alias,
+  and the production shape publishes nothing at all.
 - **Through a CPU-only standalone shape** — directly on that shape's
   container, port 8000 on `inference-net`, with no `Authorization` header.
   See [deployment-shapes.md](deployment-shapes.md).
@@ -49,11 +64,16 @@ changing only the base URL (and dropping or adding the header).
 
 ## Embeddings
 
-The full stack's router passes `/v1/embeddings`, `/pooling` and `/tokenize`
-through to the vLLM `embed` backend. The `embed-only` shape serves all three
-from one loaded `BAAI/bge-m3` — dense via `/v1/embeddings`, sparse via
-`/pooling` with `task: "token_classify"` — so a consumer points both its
-embedding base and its sparse base at the same container.
+In the full stack these three routes land on **two** backends: `/v1/embeddings`
+is dispatched by `model` field to the vLLM `embed` service, while `/pooling`
+and `/tokenize` are pass-throughs to `embed-sparse` — the same image and the
+same `BAAI/bge-m3`, run a second time with the `token_classify` pooler task
+because vLLM binds one pooling task per server
+(`docker/litellm.config.yaml:96-105`). The `embed-only` shape collapses the
+pair back into one container, serving all three from one loaded model — dense
+via `/v1/embeddings`, sparse via `/pooling` with `task: "token_classify"` — so
+a consumer points both its embedding base and its sparse base at the same
+container.
 
 ```bash
 curl http://embed-only:8000/v1/embeddings \
@@ -93,9 +113,11 @@ see [configuration.md](configuration.md#embedding-batch-budget).
 
 ## Rerank
 
-The full stack's router passes `/rerank` through to the vLLM `rerank` backend;
-the `rerank-only` shape exposes the same Jina-shape contract at
-`http://rerank-only:8000/rerank`.
+The full stack reaches the vLLM `rerank` backend on the router's own
+`/v1/rerank` route, selected by the request's `model` field (`RERANK_MODEL`);
+the `rerank-only` shape exposes the same Jina-shape body at
+`http://rerank-only:8000/rerank` (`src/rerank_server.py:96`). The path and the
+`Authorization` header are the only differences.
 
 ```bash
 curl http://rerank-only:8000/rerank \
@@ -156,7 +178,7 @@ The `asr` service runs Whisper via vLLM and exposes OpenAI-compatible
 `/v1/audio/transcriptions` and `/v1/audio/translations` endpoints.
 
 ```bash
-curl http://vllm-router:9000/v1/audio/transcriptions \
+curl http://vllm-router:4000/v1/audio/transcriptions \
   -H "Authorization: Bearer $OPENAI_API_KEY" \
   -F model="$WHISPER_MODEL" \
   -F file="@recording.mp3"
@@ -205,7 +227,7 @@ ffmpeg can decode (wav, mp3, m4a, mp4, ...); it is resampled to 16 kHz
 mono server-side.
 
 ```bash
-curl http://vllm-router:9000/diarize \
+curl http://vllm-router:4000/diarize \
   -H "Authorization: Bearer $OPENAI_API_KEY" \
   -F "file=@recording.mp3" \
   -F "max_speakers=4"
@@ -240,9 +262,9 @@ shape never changes. `DIARIZE_VAD_GATE=off` disables it. In `diarize-only`
 the compose hardcodes the URL to `http://vad-only:8000` (a shared `.env`'s
 full-stack `http://vad:8000` would not resolve in that shape) — co-deploy
 `vad-only` on `inference-net` and gating engages there too; without it the
-gate fails open, and `DIARIZE_VAD_GATE=off` silences it. Consumers that
-gate client-side (Nextext's `NEXTEXT_DIARIZE_VAD_GATE`) should disable
-their gate once this is live — double-gating is harmless but wasteful.
+gate fails open, and `DIARIZE_VAD_GATE=off` silences it. Gating is
+server-side only now: Nextext dropped its client-side knob, so consumers get
+pre-gated turns with nothing to configure on their end.
 
 The pipeline weights are gated on the Hugging Face Hub — see
 [deployment-shapes.md](deployment-shapes.md#diarize-only) for the one-time
@@ -260,7 +282,7 @@ router's `/vad` pass-through. The uploaded file may be any container ffmpeg can
 decode; it is resampled to 16 kHz mono server-side.
 
 ```bash
-curl http://vllm-router:9000/vad \
+curl http://vllm-router:4000/vad \
   -H "Authorization: Bearer $OPENAI_API_KEY" \
   -F "file=@recording.mp3"
 ```
@@ -297,7 +319,7 @@ routes — its request/response shape is GLiNER-native, and it is reached
 through the router's `/gliner` pass-through:
 
 ```bash
-curl http://vllm-router:9000/gliner \
+curl http://vllm-router:4000/gliner \
   -H "Authorization: Bearer $OPENAI_API_KEY" \
   -H "Content-Type: application/json" \
   -d '{
