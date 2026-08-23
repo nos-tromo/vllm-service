@@ -49,7 +49,12 @@ Every capability below can be reached two ways, and the request and response
 bodies are identical either way:
 
 - **Through the full stack** — at the LiteLLM router, with
-  `Authorization: Bearer $OPENAI_API_KEY`.
+  `Authorization: Bearer $OPENAI_API_KEY`. In-network that is
+  `http://vllm-router:4000` — the alias and the container port
+  (`docker/compose.yaml`, router `--port 4000`). `ROUTER_HOST_PORT` (default
+  `9000`) is the *host* publish port `make up-dev` adds
+  (`docker/compose.override.yaml:12`); it is not reachable under the alias,
+  and the production shape publishes nothing at all.
 - **Through a CPU-only standalone shape** — directly on that shape's
   container, port 8000 on `inference-net`, with no `Authorization` header.
   See [deployment-shapes.md](deployment-shapes.md).
@@ -173,7 +178,7 @@ The `asr` service runs Whisper via vLLM and exposes OpenAI-compatible
 `/v1/audio/transcriptions` and `/v1/audio/translations` endpoints.
 
 ```bash
-curl http://vllm-router:9000/v1/audio/transcriptions \
+curl http://vllm-router:4000/v1/audio/transcriptions \
   -H "Authorization: Bearer $OPENAI_API_KEY" \
   -F model="$WHISPER_MODEL" \
   -F file="@recording.mp3"
@@ -222,7 +227,7 @@ ffmpeg can decode (wav, mp3, m4a, mp4, ...); it is resampled to 16 kHz
 mono server-side.
 
 ```bash
-curl http://vllm-router:9000/diarize \
+curl http://vllm-router:4000/diarize \
   -H "Authorization: Bearer $OPENAI_API_KEY" \
   -F "file=@recording.mp3" \
   -F "max_speakers=4"
@@ -277,7 +282,7 @@ router's `/vad` pass-through. The uploaded file may be any container ffmpeg can
 decode; it is resampled to 16 kHz mono server-side.
 
 ```bash
-curl http://vllm-router:9000/vad \
+curl http://vllm-router:4000/vad \
   -H "Authorization: Bearer $OPENAI_API_KEY" \
   -F "file=@recording.mp3"
 ```
@@ -314,7 +319,7 @@ routes — its request/response shape is GLiNER-native, and it is reached
 through the router's `/gliner` pass-through:
 
 ```bash
-curl http://vllm-router:9000/gliner \
+curl http://vllm-router:4000/gliner \
   -H "Authorization: Bearer $OPENAI_API_KEY" \
   -H "Content-Type: application/json" \
   -d '{
