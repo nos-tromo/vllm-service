@@ -111,6 +111,7 @@ help:
 	@echo "  make dev              build the active service set, then up-dev"
 	@echo "  make stop             stop the active service set"
 	@echo "  make down             stop + remove the active service set"
+	@echo "  make logs             follow the active service set's logs (last 100 lines)"
 	@echo
 	@echo "NER-only stack (CPU; pairs with Ollama on non-CUDA hosts):"
 	@echo "  make build-gliner-only    build the gliner-cpu image"
@@ -161,8 +162,8 @@ help:
 	@echo "  make down-vad-only        stop + remove the VAD service"
 	@echo
 	@echo "Embed-only stack (CPU; pairs with Ollama on non-CUDA hosts):"
-	@echo "  make build-embed-only     build the embed-cpu image"
-	@echo "  make bundle-embed-only    ship the embed-cpu image as a versioned .tar.gz"
+	@echo "  make build-embed-only     build the embed-only image"
+	@echo "  make bundle-embed-only    ship the embed-only image as a versioned .tar.gz"
 	@echo "  make up-embed-only        run the dense+sparse embedding service on inference-net (detached, no host port)"
 	@echo "  make up-dev-embed-only    like 'up-embed-only', but publishes the port on the host"
 	@echo "  make stop-embed-only      stop the dense+sparse embedding service"
