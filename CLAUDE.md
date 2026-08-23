@@ -66,8 +66,14 @@ variant. The shared `huggingface-cache` volume is therefore mounted at
 is baked into every image and set in `x-vllm-env` as belt-and-braces, and
 `ASR_DOWNLOAD_ROOT`/`PYANNOTE_CACHE` follow the same path. Compose applies
 `no-new-privileges` + `cap_drop: ALL` everywhere; most services also run
-`read_only` with a `/tmp` tmpfs (2g on the audio services — they stage
-uploads in temp files). Two documented deferrals keep a writable rootfs:
+`read_only`. Two shapes of writable `/tmp`: `embed`, `embed-sparse`, `rerank`
+and `clip` get a 64m tmpfs, while the four services that receive whole media
+uploads (`router`, `asr`, `diarize`, `vad`) share the disk-backed `media-tmp`
+volume instead — starlette spools multipart bodies to `/tmp`, and Nextext
+allows multi-GB files, which a RAM tmpfs would have to hold. The `read_only`
+vLLM backends additionally carry a 256m tmpfs at `~/.cache/vllm`, which vLLM
+0.26 writes to even on pooling runners. Two documented deferrals keep a
+writable rootfs:
 `chat` (vLLM's torch-compile cache under `~/.cache/vllm`) and `gliner`
 (Ray session dirs under `/tmp/ray`).
 
@@ -85,8 +91,9 @@ with docint's mounts of this volume, so the fix applies uniformly there too.
 
 Eight independent compose projects, picked per host:
 
-- **Full stack** (`docker/compose.yaml`, CUDA-required) — chat, embed, rerank,
-  clip, asr, diarize, vad, gliner, router. The original shape; reached as
+- **Full stack** (`docker/compose.yaml`, CUDA-required) — chat, embed,
+  embed-sparse, rerank, clip, asr, diarize, vad, gliner, router, plus the
+  one-shot `volume-permissions` init job. The original shape; reached as
   `http://vllm-router:4000/...` on `inference-net`. GLiNER is routed via the
   router's `/gliner` pass-through, diarization via `/diarize`, voice activity
   detection via `/vad`. (`vad` is a tiny CPU Silero service even in the full
@@ -200,14 +207,14 @@ because they target different network aliases and host ports.
 
 The `Makefile` is the entry point — it points Compose at `docker/compose.yaml`,
 since a bare `docker compose` from the repo root no longer finds the compose
-file. It builds and runs the full stack (chat, embed, rerank, clip, asr,
-diarize, vad, gliner, router) — there are no optional profiles.
+file. It builds and runs the full stack (chat, embed, embed-sparse, rerank,
+clip, asr, diarize, vad, gliner, router) — there are no optional profiles.
 
 Prerequisites (one-time per host):
 
 ```bash
 make network           # create the external inference-net
-make volume            # create the huggingface-cache Docker volume
+make volumes           # create the huggingface-cache Docker volume
 cp .env.example .env   # then edit model IDs / API key / GPU placement
 ```
 
@@ -335,11 +342,11 @@ only the light typed deps (`fastapi`, `pydantic`, `numpy`) are declared so
 strict mode can check the first-party code.
 
 The servers (`src/rerank_server.py`, `src/clip_server.py`,
-`src/diarize_server.py`, `src/asr_server.py`, `src/vad_server.py`) are also
-small enough to verify by curl — rerank, clip, asr, and vad against their
-running standalone containers, diarize through the full-stack router — see the
-Architecture / Rerank-only, CLIP-only, Diarization, ASR-only, and VAD sections
-below.
+`src/embed_server.py`, `src/diarize_server.py`, `src/asr_server.py`,
+`src/vad_server.py`) are also small enough to verify by curl — rerank, clip,
+embed, asr, and vad against their running standalone containers, diarize
+through the full-stack router — see the Architecture / Rerank-only, CLIP-only,
+Embed-only, Diarization, ASR-only, and VAD sections below.
 
 ## Architecture
 
@@ -380,15 +387,19 @@ defaults.
 
 ### Backends
 
-Most backends share the same `docker/Dockerfile.vllm` image, launched with a
-different model and per-service env-driven flags:
+Five of the nine workers share the same `docker/Dockerfile.vllm` image,
+launched with a different model and per-service env-driven flags:
 
 - `chat` — general LLM (`TEXT_MODEL`)
-- `embed` — embeddings, `--runner pooling --convert embed` (`EMBED_MODEL`)
+- `embed` — dense embeddings, `--runner pooling --convert embed` (`EMBED_MODEL`)
+- `embed-sparse` — the same image and the same `EMBED_MODEL` run a second time
+  with `--pooler-config.task token_classify`, serving `/pooling` and
+  `/tokenize`; vLLM binds one pooling task per server, so the sparse contract
+  needs its own process
 - `rerank` — reranker, `--runner pooling` (`RERANK_MODEL`)
 - `asr` — Whisper (`WHISPER_MODEL`)
 
-Four backends are exceptions that do not run vLLM:
+The other four do not run vLLM:
 
 - `gliner` — GLiNER zero-shot NER via Ray Serve (`NER_MODEL`, default
   `gliner-community/gliner_large-v2.5` on CUDA; set `NER_DEVICE=cpu` with
@@ -470,9 +481,11 @@ ad-hoc `diarize` footprint included — must be healthy before it comes up, or
 it would claim the remaining memory and starve them. `vad` is a CPU service
 (no GPU reservation), so its place in the chain is just ordering, not memory
 contention. Healthchecks hit `http://localhost:8000/health` (vLLM backends,
-`clip`, `diarize`, and `vad`), `http://localhost:8000/-/healthz` (the `gliner`
-Ray Serve container), and `/health/liveliness` (router). Allow ~120s
-`start_period` before treating a backend as unhealthy.
+`clip`, `diarize`, and `vad`) and `/health/liveliness` (router). `gliner` has
+no `/health` route: its healthcheck is the same functional probe the watchdog
+uses — `POST /gliner` with a one-word payload — so a wedged Ray Serve
+deployment reads as unhealthy rather than merely unreachable. `start_period`
+is 120s for the backends, 180s for `gliner`, 60s for the router.
 
 ### Configuration surface
 

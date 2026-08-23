@@ -70,7 +70,7 @@ longer finds the compose file.
 
    ```bash
    make build                 # build images for the full stack
-   make up-dev                # full stack with the router published on the host (router, chat, embed, rerank, clip, asr, diarize, vad, gliner)
+   make up-dev                # full stack with the router published on the host (router, chat, embed, embed-sparse, rerank, clip, asr, diarize, vad, gliner)
    make up                    # same as up-dev but production shape (no host ports)
    make dev                   # build, then up-dev (dev convenience)
    ```
