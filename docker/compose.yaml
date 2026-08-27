@@ -16,6 +16,13 @@ x-vllm-env: &vllm-env
   HF_HUB_OFFLINE: ${HF_HUB_OFFLINE:-1}
   TRANSFORMERS_OFFLINE: ${TRANSFORMERS_OFFLINE:-1}
   FLASHINFER_DISABLE_VERSION_CHECK: 1
+  # --gpu-memory-utilization is a startup profiling target, not a hard cap:
+  # marlin workspaces, the MTP drafter and cudagraph pools grow the caching
+  # allocator at runtime. Expandable segments let it reuse reserved-but-
+  # fragmented memory instead of asking the driver for a fresh block
+  # (observed 2026-08-26: OOM on a 96 MiB request with 351 MiB reserved
+  # but unallocated, on a GPU shared with diarize's ad-hoc allocations).
+  PYTORCH_CUDA_ALLOC_CONF: ${PYTORCH_CUDA_ALLOC_CONF:-expandable_segments:True}
 
 x-vllm-volumes: &vllm-volumes
   - huggingface-cache:/home/app/.cache/huggingface/hub
