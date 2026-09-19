@@ -30,7 +30,7 @@ jobs:
   # inlining a copy keeps the canonical ref in lockstep — no hardcoded ref to
   # drift.
   python-lint:
-    uses: nos-tromo/.github/.github/workflows/python-app-ci.yml@0b022a325f9fc87b6bb3b56eb9b34769d730962f # v3.16
+    uses: nos-tromo/.github/.github/workflows/python-app-ci.yml@84acae72c7e3dff861e16fba7db60674a0d4d2fb # v3.17
     with:
       python-versions: '["3.11"]'
       run-tests: false
