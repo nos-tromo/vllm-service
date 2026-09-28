@@ -459,10 +459,10 @@ are worth having alongside the per-engine vLLM metrics.
 
 ### Dependency overlay
 
-The vLLM base image (`vllm/vllm-openai:v0.26.0`, pinned by digest) ships with
+The vLLM base image (`vllm/vllm-openai:v0.30.0`, pinned by digest) ships with
 plain vLLM and its full CUDA runtime preinstalled in the system Python prefix.
 The Dockerfile adds vLLM's `[audio]` extras (`av`, `scipy`, `soundfile`,
-`mistral_common[audio]`) so the `asr` (Whisper) service has what it needs,
+`soxr`, `mistral_common[audio]`) so the `asr` (Whisper) service has what it needs,
 plus `orjson` — vLLM picks it up opportunistically for
 faster OpenAI-endpoint JSON serialization (falls back to stdlib `json` if
 absent, so it's a perf bump rather than a hard requirement).
