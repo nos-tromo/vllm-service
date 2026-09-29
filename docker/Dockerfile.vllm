@@ -20,6 +20,8 @@ RUN pip install --no-cache-dir 'vllm[audio]==0.30.0' orjson
 # writable in every service — tmpfs on the read_only ones (embed,
 # rerank, asr). Pre-creating it in the image doesn't work: the path
 # embeds the flashinfer version, so it breaks on every base-image bump.
+# NUMBA_CACHE_DIR: vLLM 0.30's warmup imports an @njit(cache=True) module for
+# every model; numba then needs a writable cache dir, which read_only lacks.
 RUN groupadd --gid 10001 app \
     && useradd --uid 10001 --gid app --create-home --home-dir /home/app \
        --shell /usr/sbin/nologin app \
@@ -30,6 +32,7 @@ ENV HOME=/home/app \
     VLLM_CACHE_ROOT=/home/app/.cache/vllm \
     FLASHINFER_WORKSPACE_BASE=/tmp \
     TRITON_CACHE_DIR=/home/app/.cache/vllm/triton \
+    NUMBA_CACHE_DIR=/home/app/.cache/vllm/numba \
     VLLM_NO_USAGE_STATS=1 \
     DO_NOT_TRACK=1
 
