@@ -263,6 +263,10 @@ def diarize(
             result = pipeline({"waveform": waveform, "sample_rate": SAMPLE_RATE}, **kwargs)
     except Exception as exc:
         raise HTTPException(status_code=500, detail=f"diarization failed: {exc}") from exc
+    finally:
+        # Hand per-request activations back to the driver: GPU 0 is shared with
+        # vLLM's chat, which OOMs if this cache stays resident. No-op on CPU.
+        torch.cuda.empty_cache()
 
     # pyannote.audio 4.x returns a DiarizeOutput wrapper; 3.x returns the Annotation
     # directly. `.speaker_diarization` is the standard, overlap-allowing Annotation

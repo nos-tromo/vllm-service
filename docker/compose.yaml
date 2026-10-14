@@ -41,13 +41,12 @@ x-cuda-resources: &cuda-resources
         count: all
         capabilities: [gpu]
 
+# Resources only. Compose v2 gives deploy.restart_policy precedence over
+# `restart:`, and an on-failure policy never restarts vLLM, which exits 0
+# after an EngineDeadError (e.g. a runtime CUDA OOM); its max_attempts is also
+# a lifetime cap. Every service using this sets `restart: unless-stopped`.
 x-cuda-deploy: &cuda-deploy
   resources: *cuda-resources
-  restart_policy:
-    condition: on-failure
-    delay: 10s
-    max_attempts: 5
-    window: 120s
 
 # Shared logging — the local driver rotates and compresses
 # per-container; tail with `docker compose logs -f <svc>`.
@@ -243,6 +242,7 @@ services:
     volumes: *vllm-volumes
     healthcheck: *vllm-healthcheck
     deploy: *cuda-deploy
+    restart: unless-stopped
     networks:
       - vllm-net
       - inference-net
@@ -290,6 +290,7 @@ services:
     volumes: *vllm-volumes
     healthcheck: *vllm-healthcheck
     deploy: *cuda-deploy
+    restart: unless-stopped
     networks:
       - vllm-net
       - inference-net
@@ -343,6 +344,7 @@ services:
     volumes: *vllm-volumes
     healthcheck: *vllm-healthcheck
     deploy: *cuda-deploy
+    restart: unless-stopped
     networks:
       - vllm-net
       - inference-net
@@ -383,6 +385,7 @@ services:
     volumes: *vllm-volumes
     healthcheck: *vllm-healthcheck
     deploy: *cuda-deploy
+    restart: unless-stopped
     networks:
       - vllm-net
       - inference-net
@@ -423,7 +426,7 @@ services:
       HF_HUB_OFFLINE: ${HF_HUB_OFFLINE:-1}
       TRANSFORMERS_OFFLINE: ${TRANSFORMERS_OFFLINE:-1}
       CLIP_MODEL: ${CLIP_MODEL:-openai/clip-vit-base-patch32}
-      CLIP_DEVICE: cuda
+      CLIP_DEVICE: ${CLIP_DEVICE:-cuda}
     volumes: *vllm-volumes
     healthcheck:
       test: ["CMD-SHELL", "curl -sf http://localhost:8000/health || exit 1"]
@@ -432,6 +435,7 @@ services:
       retries: 60
       start_period: 120s
     deploy: *cuda-deploy
+    restart: unless-stopped
     networks:
       - vllm-net
       - inference-net
@@ -479,6 +483,7 @@ services:
       - media-tmp:/tmp
     healthcheck: *vllm-healthcheck
     deploy: *cuda-deploy
+    restart: unless-stopped
     networks:
       - vllm-net
       - inference-net
@@ -552,6 +557,7 @@ services:
       retries: 60
       start_period: 120s
     deploy: *cuda-deploy
+    restart: unless-stopped
     networks:
       - vllm-net
       - inference-net
@@ -670,14 +676,8 @@ services:
       timeout: 10s
       retries: 5
       start_period: 180s
-    # Resources only — NOT *cuda-deploy. Compose v2 gives deploy.restart_policy
-    # precedence over `restart:`, and its max_attempts is a lifetime cap (the
-    # daemon never resets the restart count), so the shared on-failure:5 policy
-    # would permanently stop this container after the watchdog's 5th self-exit.
-    # The watchdog's recovery contract requires `restart: unless-stopped` below
-    # to be the effective policy.
-    deploy:
-      resources: *cuda-resources
+    deploy: *cuda-deploy
+    # The watchdog's recovery contract requires this to be the effective policy.
     restart: unless-stopped
     networks:
       - vllm-net
