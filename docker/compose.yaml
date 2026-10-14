@@ -41,10 +41,6 @@ x-cuda-resources: &cuda-resources
         count: all
         capabilities: [gpu]
 
-# Resources only. Compose v2 gives deploy.restart_policy precedence over
-# `restart:`, and an on-failure policy never restarts vLLM, which exits 0
-# after an EngineDeadError (e.g. a runtime CUDA OOM); its max_attempts is also
-# a lifetime cap. Every service using this sets `restart: unless-stopped`.
 x-cuda-deploy: &cuda-deploy
   resources: *cuda-resources
 
