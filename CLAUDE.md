@@ -492,6 +492,14 @@ uses — `POST /gliner` with a one-word payload — so a wedged Ray Serve
 deployment reads as unhealthy rather than merely unreachable. `start_period`
 is 120s for the backends, 180s for `gliner`, 60s for the router.
 
+Every GPU service runs `restart: unless-stopped`, and `x-cuda-deploy` carries
+resources only (Compose v2's `deploy.restart_policy` would override `restart:`).
+vLLM exits **0** after an `EngineDeadError` such as a runtime CUDA OOM, so an
+`on-failure` policy left a dead `chat` down for good. An automatic restart only
+passes vLLM's startup profiling if the card has room for that service's
+budget. That is why `diarize` calls `torch.cuda.empty_cache()` after every request
+instead of keeping its multi-GiB activation cache on the GPU it shares with `chat`.
+
 ### Configuration surface
 
 All tuning is done via `.env` (see `.env.example`). Per-service env vars follow

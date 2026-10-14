@@ -263,6 +263,8 @@ def diarize(
             result = pipeline({"waveform": waveform, "sample_rate": SAMPLE_RATE}, **kwargs)
     except Exception as exc:
         raise HTTPException(status_code=500, detail=f"diarization failed: {exc}") from exc
+    finally:
+        torch.cuda.empty_cache()
 
     # pyannote.audio 4.x returns a DiarizeOutput wrapper; 3.x returns the Annotation
     # directly. `.speaker_diarization` is the standard, overlap-allowing Annotation
