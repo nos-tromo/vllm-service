@@ -11,7 +11,7 @@ routed-endpoint model and the quick start) with topic-by-topic deep dives.
 |---|---|
 | [architecture.md](architecture.md) | The containers behind the LiteLLM router, the gliner Ray Serve watchdog, and the `vllm-net` / `inference-net` seams |
 | [deployment-shapes.md](deployment-shapes.md) | The seven CPU-only standalone shapes: shared bring-up, cache population, per-shape defaults and gotchas |
-| [configuration.md](configuration.md) | The env knobs that need explaining — Gemma tool calling, the embed batch budget, diarization speaker granularity — and how to switch models |
+| [configuration.md](configuration.md) | The env knobs that need explaining — tool calling, the embed batch budget, diarization speaker granularity — and how to switch models |
 | [api-reference.md](api-reference.md) | Endpoint surface, the master-key auth model, and every request/response body for both the routed and standalone addresses |
 | [airgap-bundles.md](airgap-bundles.md) | Producing versioned image tarballs on a build host and loading them on an airgapped target |
 | [development.md](development.md) | The `ruff` + `pyrefly (strict)` regime for the FastAPI servers in `src/` |

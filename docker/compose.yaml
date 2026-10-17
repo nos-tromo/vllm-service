@@ -185,6 +185,8 @@ services:
     depends_on:
       <<: *volume-permissions-dep
     entrypoint: ["/bin/sh", "-lc"]
+    # Tool calling is on by default, with the parser for the default TEXT_MODEL. The no-colon `-` is deliberate:
+    # unset gets qwen3_xml, empty turns tool calling off. With the toggle false no default parser is applied.
     command:
       - >-
         export CUDA_VISIBLE_DEVICES="$${CHAT_CUDA_VISIBLE_DEVICES:-0}";
@@ -206,8 +208,11 @@ services:
         if [ -n "$${CHAT_TEMPLATE_CONTENT_FORMAT:-}" ]; then
           set -- "$@" --chat-template-content-format "$${CHAT_TEMPLATE_CONTENT_FORMAT}";
         fi;
-        if [ "$${CHAT_ENABLE_AUTO_TOOL_CHOICE:-false}" = "true" ]; then
-          set -- "$@" --enable-auto-tool-choice;
+        if [ "$${CHAT_ENABLE_AUTO_TOOL_CHOICE:-true}" = "true" ]; then
+          CHAT_TOOL_CALL_PARSER="$${CHAT_TOOL_CALL_PARSER-qwen3_xml}";
+          if [ -n "$${CHAT_TOOL_CALL_PARSER:-}" ]; then
+            set -- "$@" --enable-auto-tool-choice;
+          fi;
         fi;
         if [ -n "$${CHAT_TOOL_CALL_PARSER:-}" ]; then
           set -- "$@" --tool-call-parser "$${CHAT_TOOL_CALL_PARSER}";
