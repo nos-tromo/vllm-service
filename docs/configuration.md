@@ -12,9 +12,15 @@ The `chat` backend starts with auto tool choice on, using the tool-call
 parser for the default `TEXT_MODEL` (`Qwen/Qwen3.8-27B-FP8`):
 
 ```bash
-CHAT_ENABLE_AUTO_TOOL_CHOICE=true   # default; false turns tool calling off
-CHAT_TOOL_CALL_PARSER=qwen3_xml     # default; empty passes no parser, which also turns it off
+# Default. false turns tool calling off.
+CHAT_ENABLE_AUTO_TOOL_CHOICE=true
+# Default. An empty value passes no parser, which also turns tool calling off.
+CHAT_TOOL_CALL_PARSER=qwen3_xml
 ```
+
+Keep comments on their own line, as above: after an empty value Compose keeps
+a trailing `# …` as the value, and as a parser name that stops `chat` at
+startup.
 
 Without these flags the pinned vLLM release rejects a request that sends
 `tools` with HTTP 400 unless its `tool_choice` is `"none"`: `"auto"` (the
@@ -27,14 +33,19 @@ parser in the pinned release). Switching `TEXT_MODEL` to another family
 therefore means switching `CHAT_TOOL_CALL_PARSER` with it; vLLM's
 tool-calling documentation lists the parser for each family. A parser that
 does not match does not stop the server from starting — it just does not
-recognise the model's tool calls.
+recognise the model's tool calls. A name vLLM does not register (a typo, the
+reasoning parser's name, one from newer upstream documentation) does stop
+`chat` at startup, and its log lists the valid names. A `.env` that sets only
+`CHAT_TOOL_CALL_PARSER` now takes effect, and its name is checked: it used to
+be ignored while the toggle defaulted to off.
 
 ### Gemma 4
 
-For a Gemma 4 instruct checkpoint, set these chat flags in `.env`:
+For a Gemma 4 instruct checkpoint, set these chat flags in `.env`.
+`CHAT_TOOL_CALL_PARSER=gemma4` replaces the default parser (`qwen3_xml`); auto
+tool choice is already on:
 
 ```bash
-CHAT_ENABLE_AUTO_TOOL_CHOICE=true
 CHAT_TOOL_CALL_PARSER=gemma4
 CHAT_REASONING_PARSER=gemma4
 CHAT_CHAT_TEMPLATE=examples/tool_chat_template_gemma4.jinja
@@ -97,7 +108,10 @@ unparseable value warns and is ignored rather than crashing startup.
 startup from the environment variables `TEXT_MODEL`, `EMBED_MODEL`,
 `RERANK_MODEL`, and `WHISPER_MODEL`. To switch a model,
 update the relevant variable in `.env` and restart the stack. No changes to
-`docker/litellm.config.yaml` are required.
+`docker/litellm.config.yaml` are required. Switching `TEXT_MODEL` to another
+model family also needs the matching `CHAT_TOOL_CALL_PARSER`: a mismatch does
+not fail loudly, the model's tool calls just go unrecognised (see
+[Tool calling](#tool-calling)).
 
 Clients must use the exact model ID set in `.env` as the `model` field in
 their requests (e.g. `"model": "BAAI/bge-m3"`). The `/v1/models` endpoint
