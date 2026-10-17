@@ -6,10 +6,32 @@ the environment at startup. This document covers the settings that need more
 than a one-line comment. Per-shape defaults for the CPU-only containers live in
 [deployment-shapes.md](deployment-shapes.md).
 
-## Tool calling on Gemma chat models
+## Tool calling
 
-If `TEXT_MODEL` is a Gemma 4 instruct checkpoint and you want OpenAI-style
-tool calling, also set these chat flags in `.env`:
+The `chat` backend starts with auto tool choice on, using the tool-call
+parser for the default `TEXT_MODEL` (`Qwen/Qwen3.8-27B-FP8`):
+
+```bash
+CHAT_ENABLE_AUTO_TOOL_CHOICE=true   # default; false turns tool calling off
+CHAT_TOOL_CALL_PARSER=qwen3_xml     # default; empty passes no parser, which also turns it off
+```
+
+Without these flags the pinned vLLM release rejects a request that sends
+`tools` with HTTP 400 unless its `tool_choice` is `"none"`: `"auto"` (the
+default once `tools` is set), `"required"` and a named function all need them.
+
+The parser has to match the model's tool-call format. The default model's
+chat template writes calls as `<tool_call><function=…><parameter=…>` XML,
+which is what `qwen3_xml` reads (`qwen3_coder` is another name for the same
+parser in the pinned release). Switching `TEXT_MODEL` to another family
+therefore means switching `CHAT_TOOL_CALL_PARSER` with it; vLLM's
+tool-calling documentation lists the parser for each family. A parser that
+does not match does not stop the server from starting — it just does not
+recognise the model's tool calls.
+
+### Gemma 4
+
+For a Gemma 4 instruct checkpoint, set these chat flags in `.env`:
 
 ```bash
 CHAT_ENABLE_AUTO_TOOL_CHOICE=true
@@ -18,10 +40,8 @@ CHAT_REASONING_PARSER=gemma4
 CHAT_CHAT_TEMPLATE=examples/tool_chat_template_gemma4.jinja
 ```
 
-Without them, vLLM rejects `tool_choice="auto"` even though the model
-itself supports tool use. `CHAT_REASONING_PARSER` is optional — enable it
-only if you want the model's thinking traces, as it can interfere with
-tool-call parsing.
+`CHAT_REASONING_PARSER` is optional — enable it only if you want the
+model's thinking traces, as it can interfere with tool-call parsing.
 
 ## Embedding batch budget
 
