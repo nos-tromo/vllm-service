@@ -39,21 +39,6 @@ reasoning parser's name, one from newer upstream documentation) does stop
 `CHAT_TOOL_CALL_PARSER` now takes effect, and its name is checked: it used to
 be ignored while the toggle defaulted to off.
 
-### Gemma 4
-
-For a Gemma 4 instruct checkpoint, set these chat flags in `.env`.
-`CHAT_TOOL_CALL_PARSER=gemma4` replaces the default parser (`qwen3_xml`); auto
-tool choice is already on:
-
-```bash
-CHAT_TOOL_CALL_PARSER=gemma4
-CHAT_REASONING_PARSER=gemma4
-CHAT_CHAT_TEMPLATE=examples/tool_chat_template_gemma4.jinja
-```
-
-`CHAT_REASONING_PARSER` is optional — enable it only if you want the
-model's thinking traces, as it can interfere with tool-call parsing.
-
 ## Embedding batch budget
 
 Applies to the `embed-only` shape (`src/embed_server.py`).
