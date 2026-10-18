@@ -1,17 +1,51 @@
 version: 2
+# Every update waits 7 days after its upstream release before Dependabot
+# proposes it, so a compromised or broken release is usually caught upstream
+# first. Security updates are exempt and still open immediately. Our own
+# nos-tromo/* workflows skip the wait, so a hub release is not held back.
+# Dependabot can only date Docker Hub images: refreshes of images from other
+# registries (ghcr.io, ...) are proposed without the wait, which is where the
+# shared CI's signed-provenance check carries the weight.
 updates:
   - package-ecosystem: docker
     directory: "/docker"
     schedule:
       interval: weekly
+    cooldown:
+      default-days: 7
+    # The base images are literal FROM lines so Dependabot can read them (it
+    # cannot follow an ARG-defaulted FROM). Digest refreshes within each pinned
+    # tag flow. Moving vLLM or PyTorch to a new minor/major is a migration
+    # (CUDA stack, the torchcodec pin, model support), and the uv image's
+    # python3.11 tag fixes the CPU images' interpreter, so those version jumps
+    # are never automated.
+    ignore:
+      - dependency-name: "vllm/vllm-openai"
+        update-types:
+          - "version-update:semver-major"
+          - "version-update:semver-minor"
+      - dependency-name: "pytorch/pytorch"
+        update-types:
+          - "version-update:semver-major"
+          - "version-update:semver-minor"
+      - dependency-name: "astral-sh/uv"
+        update-types:
+          - "version-update:semver-major"
+          - "version-update:semver-minor"
   - package-ecosystem: github-actions
     directory: "/"
     schedule:
       interval: weekly
+    cooldown:
+      default-days: 7
+      exclude:
+        - "nos-tromo/*"
   - package-ecosystem: uv
     directory: "/"
     schedule:
       interval: weekly
+    cooldown:
+      default-days: 7
     # pyrefly and ruff are centrally pinned in nos-tromo/.github/configs/
     # python-strict/ and mirrored into pyproject.toml; the strict-config CI
     # check fails on any local drift. They move only when the canonical

@@ -17,7 +17,7 @@ jobs:
   validate:
     # Pinned to an immutable commit SHA (v3.12): infra checks + make/common.mk
     # and bundle-lib drift-checks.
-    uses: nos-tromo/.github/.github/workflows/infra-validation.yml@84acae72c7e3dff861e16fba7db60674a0d4d2fb # v3.17
+    uses: nos-tromo/.github/.github/workflows/infra-validation.yml@03c421deb194921d28554cc0d4676290e95490ee # v3.18
     with:
       compose-files: '-f docker/compose.yaml -f docker/compose.override.yaml'
       dockerfiles-glob: 'docker/Dockerfile.*'
@@ -30,7 +30,7 @@ jobs:
   # inlining a copy keeps the canonical ref in lockstep — no hardcoded ref to
   # drift.
   python-lint:
-    uses: nos-tromo/.github/.github/workflows/python-app-ci.yml@84acae72c7e3dff861e16fba7db60674a0d4d2fb # v3.17
+    uses: nos-tromo/.github/.github/workflows/python-app-ci.yml@03c421deb194921d28554cc0d4676290e95490ee # v3.18
     with:
       python-versions: '["3.11"]'
       run-tests: false

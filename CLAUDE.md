@@ -746,8 +746,8 @@ dlopen `libnvrtc.so.13`, and the `+cu128` build dlopens `libnppicc.so.12`
 decoding, and this service pre-decodes via ffmpeg, so torchcodec is an
 import-time formality; torch itself stays the base image's cu128 build
 and inference runs on CUDA. 0.11 is the torch-2.11 row of torchcodec's
-compatibility table — re-pick the pin when bumping `PYTORCH_IMAGE` (the
-build smoke test fails on a mismatch). The old `huggingface_hub<1.0` cap
+compatibility table — re-pick the pin when bumping the PyTorch base image
+(the build smoke test fails on a mismatch). The old `huggingface_hub<1.0` cap
 is dropped — it was only needed for the `use_auth_token` alias pyannote
 3.x passed. Endpoints:
 

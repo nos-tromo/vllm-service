@@ -1,6 +1,4 @@
-ARG PYTORCH_IMAGE=docker.io/pytorch/pytorch:2.11.0-cuda12.8-cudnn9-runtime@sha256:eee11b3b3872a8c838e35ef48f08b2d5def2080902c7f666831310ca1a0ef2be
-
-FROM ${PYTORCH_IMAGE}
+FROM docker.io/pytorch/pytorch:2.11.0-cuda12.8-cudnn9-runtime@sha256:eee11b3b3872a8c838e35ef48f08b2d5def2080902c7f666831310ca1a0ef2be
 
 # curl for the docker-compose /health probe; ffmpeg decodes arbitrary
 # uploaded containers to 16 kHz mono PCM before the pyannote pipeline runs.
@@ -24,9 +22,10 @@ RUN apt-get update \
 # so torchcodec's GPU decode path is never exercised. 0.11 is the torch-2.11
 # row of torchcodec's compatibility table. Installed first (and pinned) so
 # pyannote's own torchcodec>=0.7 dependency is already satisfied and pip
-# doesn't pull the broken PyPI wheel. When bumping PYTORCH_IMAGE, re-pick the
-# pin from https://github.com/pytorch/torchcodec#installing-torchcodec — the
-# smoke test below fails the build on a mismatch.
+# doesn't pull the broken PyPI wheel. When bumping the PyTorch base image,
+# re-pick the pin from
+# https://github.com/pytorch/torchcodec#installing-torchcodec — the smoke test
+# below fails the build on a mismatch.
 RUN pip install --no-cache-dir --break-system-packages \
     --index-url https://download.pytorch.org/whl/cpu \
     'torchcodec==0.11.1' \

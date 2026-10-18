@@ -1,6 +1,4 @@
-ARG UV_IMAGE=ghcr.io/astral-sh/uv:python3.11-bookworm-slim@sha256:4f5d923c9dcea037f57bda425dd209f3ec643da2f0b74227f68d09dab0b3bb36
-
-FROM ${UV_IMAGE}
+FROM ghcr.io/astral-sh/uv:python3.11-bookworm-slim@sha256:4f5d923c9dcea037f57bda425dd209f3ec643da2f0b74227f68d09dab0b3bb36
 
 # curl for the docker-compose /health probe; ffmpeg decodes arbitrary
 # uploaded containers to 16 kHz mono PCM before the pyannote pipeline runs;
