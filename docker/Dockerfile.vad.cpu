@@ -1,4 +1,4 @@
-FROM ghcr.io/astral-sh/uv:python3.11-bookworm-slim@sha256:4f5d923c9dcea037f57bda425dd209f3ec643da2f0b74227f68d09dab0b3bb36
+FROM ghcr.io/astral-sh/uv:python3.11-trixie-slim@sha256:0f2d0e6d745eb7f9cc9bc3a8f3bec70f398b39f38c8a1c7fa2967ddbe91af8bd
 
 # curl for the docker-compose /health probe; ffmpeg decodes arbitrary uploaded
 # containers to 16 kHz mono PCM before Silero runs; build-essential covers any
