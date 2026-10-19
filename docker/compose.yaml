@@ -206,8 +206,11 @@ services:
         if [ -n "$${CHAT_TEMPLATE_CONTENT_FORMAT:-}" ]; then
           set -- "$@" --chat-template-content-format "$${CHAT_TEMPLATE_CONTENT_FORMAT}";
         fi;
-        if [ "$${CHAT_ENABLE_AUTO_TOOL_CHOICE:-false}" = "true" ]; then
-          set -- "$@" --enable-auto-tool-choice;
+        if [ "$${CHAT_ENABLE_AUTO_TOOL_CHOICE:-true}" = "true" ]; then
+          CHAT_TOOL_CALL_PARSER="$${CHAT_TOOL_CALL_PARSER-qwen3_xml}";
+          if [ -n "$${CHAT_TOOL_CALL_PARSER:-}" ]; then
+            set -- "$@" --enable-auto-tool-choice;
+          fi;
         fi;
         if [ -n "$${CHAT_TOOL_CALL_PARSER:-}" ]; then
           set -- "$@" --tool-call-parser "$${CHAT_TOOL_CALL_PARSER}";
