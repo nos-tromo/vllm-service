@@ -26,9 +26,11 @@ externally-hosted images (LiteLLM Proxy), then writes two gzipped tarballs in
 the cwd. Where the version comes from depends on which target you ran.
 
 **`make bundle` is the production path.** It resolves the latest **annotated**
-tag reachable from `HEAD`, checks it out detached, builds the tagged tree, and
-restores your branch afterwards (an `EXIT` trap, so it restores on failure
-too). `VLLM_SERVICE_VERSION` is then that tag verbatim — `vX.Y.Z`. It refuses
+tag reachable from `HEAD`, checks it out detached, and builds the tagged tree.
+On success HEAD **stays on the tag**, so the repo files match the bundled
+images; `git switch main` returns. A failed build switches back (an `EXIT`
+trap), and when `HEAD` already is the tag's commit nothing is switched.
+`VLLM_SERVICE_VERSION` is then that tag verbatim — `vX.Y.Z`. It refuses
 rather than ever producing an unversioned artifact when:
 
 - tracked files are dirty (a checkout would clobber them) — commit or stash
