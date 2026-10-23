@@ -75,8 +75,8 @@ build:
 	@printf '%s\n' "$(BUILD_VERSION)" > .$(REPO)-version
 
 # Airgap release artifact. `bundle` is PRODUCTION: it builds the latest annotated
-# tag reachable from HEAD (checks it out, builds, restores your branch) and
-# refuses on a dirty tree or when no tag is reachable. `bundle-dev` bundles the
+# tag reachable from HEAD (checks it out and builds it; HEAD stays on the tag on
+# success) and refuses on a dirty tree or when no tag is reachable. `bundle-dev` bundles the
 # current working tree as-is (date+sha / override) for dev iteration and soak.
 bundle:
 	./scripts/bundle_images.sh
