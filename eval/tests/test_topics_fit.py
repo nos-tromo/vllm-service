@@ -161,14 +161,42 @@ def test_length_mismatch_raises(blobs: Blobs) -> None:
         fit_topics(texts[:-1], vectors, PARAMS)
 
 
-def test_identical_vectors_do_not_crash(blobs: Blobs, monkeypatch: pytest.MonkeyPatch) -> None:
-    """Identical rows come back as outliers with no topics, without UMAP or HDBSCAN running."""
+@pytest.mark.parametrize("min_df", [0, -1])
+def test_min_df_below_one_raises(blobs: Blobs, min_df: int) -> None:
+    """A ``min_df`` below one is refused, not mistaken for a text with no keywords."""
+    texts, vectors, _ = blobs
+    with pytest.raises(ValueError, match="min_df"):
+        fit_topics(texts, vectors, replace(PARAMS, min_df=min_df))
+
+
+@pytest.mark.parametrize("value", [np.nan, np.inf, -np.inf], ids=["nan", "inf", "-inf"])
+def test_non_finite_vectors_raise(blobs: Blobs, value: float) -> None:
+    """A single NaN or infinity anywhere in the vectors is refused before any work."""
+    texts, vectors, _ = blobs
+    vectors = vectors.copy()
+    vectors[5, 3] = value
+    with pytest.raises(ValueError, match="finite"):
+        fit_topics(texts, vectors, PARAMS)
+
+
+@pytest.fixture
+def forbid_fit(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Fail the test the moment UMAP or HDBSCAN runs.
+
+    Args:
+        monkeypatch: Pytest's monkeypatch fixture.
+    """
 
     def _must_not_run(*args: object, **kwargs: object) -> None:
         raise AssertionError("UMAP and HDBSCAN must not run on too few distinct vectors")
 
     monkeypatch.setattr(umap.UMAP, "fit_transform", _must_not_run)
     monkeypatch.setattr(hdbscan.HDBSCAN, "fit", _must_not_run)
+
+
+@pytest.mark.usefixtures("forbid_fit")
+def test_identical_vectors_do_not_crash(blobs: Blobs) -> None:
+    """Identical rows come back as outliers with no topics, without UMAP or HDBSCAN running."""
     texts, vectors, _ = blobs
     result = fit_topics(texts[:80], np.repeat(vectors[:1], 80, axis=0), PARAMS)
     assert set(result.labels) <= {-1} | {topic.id for topic in result.topics}
@@ -177,6 +205,7 @@ def test_identical_vectors_do_not_crash(blobs: Blobs, monkeypatch: pytest.Monkey
     assert result.outliers == 80
 
 
+@pytest.mark.usefixtures("forbid_fit")
 @pytest.mark.parametrize("others", [0, 18], ids=["identical", "19-distinct"])
 def test_mostly_identical_rows_yield_no_spurious_topics(blobs: Blobs, others: int) -> None:
     """Fewer distinct vectors than the minimum get no topics, not ones invented among duplicates."""
@@ -188,6 +217,7 @@ def test_mostly_identical_rows_yield_no_spurious_topics(blobs: Blobs, others: in
     assert result.outliers == 2000
 
 
+@pytest.mark.usefixtures("forbid_fit")
 def test_signed_zeros_do_not_make_vectors_distinct(blobs: Blobs) -> None:
     """Rows differing only in the sign of a zero are one vector, as ``np.unique`` counts them."""
     texts, vectors, _ = blobs
@@ -215,6 +245,111 @@ def test_fit_runs_at_exactly_the_minimum_distinct_vectors(blobs: Blobs, monkeypa
     texts, vectors, _ = blobs
     fit_topics(texts[:20], vectors[:20], PARAMS)
     assert fitted == [20]
+
+
+def test_identical_rows_above_the_minimum_share_one_label() -> None:
+    """With exactly the minimum of distinct vectors, 1,981 shuffled copies of one carry a single label."""
+    rng = np.random.default_rng(7)
+    distinct = rng.normal(size=(20, 32))
+    distinct /= np.linalg.norm(distinct, axis=1, keepdims=True)
+    rows = np.concatenate([np.repeat(distinct[:1], 1981, axis=0), distinct[1:]]).astype(np.float32)
+    order = rng.permutation(len(rows))
+    texts = [f"word{index % 7} word{index % 11}" for index in range(len(rows))]
+    result = fit_topics(texts, rows[order], PARAMS)
+    assert len({label for label, row in zip(result.labels, order, strict=True) if row < 1981}) == 1
+    assert all(topic.size >= PARAMS.min_topic_size for topic in result.topics)
+
+
+@pytest.fixture(scope="module")
+def duplicate_group() -> tuple[FitResult, list[int]]:
+    """Fit five blobs of 1,000 points plus 1,000 shuffled copies of one more vector.
+
+    That is 6,000 rows and 5,001 distinct vectors, above the 4,096 at which UMAP switches to
+    approximate nearest neighbours, where the copies used to scatter over many topics.
+
+    Returns:
+        The fit, and each row's origin: its blob (0-4), or 5 for a copy.
+    """
+    texts, vectors, planted = _make_blobs(n_per=1000, k=5, prefixes=(*PREFIXES, "delta", "epsilon"))
+    rng = np.random.default_rng(11)
+    copy = rng.normal(size=(1, vectors.shape[1]))
+    rows = np.concatenate([vectors, np.repeat((copy / np.linalg.norm(copy)).astype(np.float32), 1000, axis=0)])
+    words = [*texts, *(["zeta1 zeta2 zeta3"] * 1000)]
+    origin = [*planted, *([5] * 1000)]
+    order = rng.permutation(len(rows))
+    result = fit_topics([words[i] for i in order], rows[order], PARAMS)
+    return result, [origin[i] for i in order]
+
+
+def test_duplicate_group_shares_one_label_above_exact_nn(duplicate_group: tuple[FitResult, list[int]]) -> None:
+    """Above UMAP's exact-neighbour limit, all 1,000 copies of one vector carry a single label."""
+    result, origin = duplicate_group
+    assert len({label for label, source in zip(result.labels, origin, strict=True) if source == 5}) == 1
+
+
+def test_sizes_count_every_copy(duplicate_group: tuple[FitResult, list[int]]) -> None:
+    """A topic's size counts every input row it labels, copies included, so sizes and outliers add up to n."""
+    result, origin = duplicate_group
+    assert sum(topic.size for topic in result.topics) + result.outliers == len(origin) == 6000
+    assert [topic.size for topic in result.topics] == [result.labels.count(topic.id) for topic in result.topics]
+
+
+def _with_copies_of_blob_centre(blobs: Blobs, copies: int, text: str) -> tuple[list[str], np.ndarray, list[int]]:
+    """Add ``copies`` rows of blob 0's centre direction, all carrying ``text``, to the planted set.
+
+    Args:
+        blobs: The planted set.
+        copies: How many identical rows to add.
+        text: The text every added row carries.
+
+    Returns:
+        The texts, the float32 vectors, and each row's origin: its blob, or -1 for an added copy.
+    """
+    texts, vectors, planted = blobs
+    centre = vectors[:60].mean(axis=0)
+    rows = np.concatenate([vectors, np.repeat((centre / np.linalg.norm(centre))[None, :], copies, axis=0)])
+    return [*texts, *([text] * copies)], rows.astype(np.float32), [*planted, *([-1] * copies)]
+
+
+def test_duplicate_texts_do_not_swamp_the_topic_they_join(blobs: Blobs) -> None:
+    """1,000 copies that join a topic add their text once, so the topic keeps its own keywords."""
+    words, rows, origin = _with_copies_of_blob_centre(blobs, 1000, "swamp1 swamp2 swamp3")
+    order = np.random.default_rng(3).permutation(len(rows))
+    result = fit_topics([words[i] for i in order], rows[order], PARAMS)
+    origin = [origin[i] for i in order]
+    copies = {label for label, source in zip(result.labels, origin, strict=True) if source == -1}
+    assert len(copies) == 1
+    joined = copies.pop()
+    assert joined != -1
+    assert joined == _majority(result.labels, origin, 0)[0]
+    topic = next(topic for topic in result.topics if topic.id == joined)
+    assert all(word.startswith("alpha") for word, _ in topic.keywords[:3])
+
+
+def test_min_df_counts_a_duplicated_text_once(blobs: Blobs) -> None:
+    """A word found only in a duplicated text occurs in one distinct text, so ``min_df=2`` drops it."""
+    words, rows, _ = _with_copies_of_blob_centre(blobs, 30, " ".join(["echo"] * 100))
+    assert "echo" in _keyword_words(fit_topics(words, rows, PARAMS))
+    assert "echo" not in _keyword_words(fit_topics(words, rows, replace(PARAMS, min_df=2)))
+
+
+def test_all_distinct_input_is_fitted_as_before(blobs: Blobs, monkeypatch: pytest.MonkeyPatch) -> None:
+    """Without duplicates, UMAP gets the caller's vectors as given and the labels do not move."""
+    seen: list[np.ndarray] = []
+    fit_transform = umap.UMAP.fit_transform
+
+    def _spy(self: umap.UMAP, data: np.ndarray, *args: object, **kwargs: object) -> np.ndarray:
+        seen.append(data)
+        return fit_transform(self, data, *args, **kwargs)
+
+    monkeypatch.setattr(umap.UMAP, "fit_transform", _spy)
+    texts, vectors, _ = blobs
+    handled = fit_topics(texts, vectors, PARAMS)
+    monkeypatch.setattr(topics_fit, "_group_rows", lambda rows: (np.arange(len(rows)), np.arange(len(rows))))
+    plain = fit_topics(texts, vectors, PARAMS)
+    assert len(seen) == 2
+    assert all(np.array_equal(data, vectors) for data in seen)
+    assert handled.labels == plain.labels
 
 
 @pytest.mark.parametrize("blank", ["", " \n\t "], ids=["empty", "whitespace"])

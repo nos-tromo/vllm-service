@@ -19,9 +19,14 @@ above the number of topics found would empty the vocabulary mid-fit. A vocabular
 than two words (BERTopic's c-TF-IDF raises on one) is replaced by a two-word sentinel,
 which keeps the clustering untouched and leaves every topic without keywords.
 
-Degenerate input: when fewer than :func:`min_points` of the vectors are distinct, every
-input is returned as an outlier without running UMAP or HDBSCAN, which would otherwise
-invent clusters among the duplicates.
+Duplicates: exact-duplicate vectors are clustered once; copies inherit their
+representative's label. The fit runs on the distinct vectors in first-occurrence order,
+each paired with its first occurrence's text, so a duplicated text counts once towards
+keywords and ``min_df``, while a topic's size counts every input row, copies included. Fitting
+every row instead would scatter copies: UMAP's approximate neighbour search, used from
+4096 rows, spreads them over many clusters, and HDBSCAN labels even identical points
+inconsistently. When fewer than :func:`min_points` of the vectors are distinct, every
+input is returned as an outlier without running UMAP or HDBSCAN.
 """
 
 from __future__ import annotations
@@ -117,8 +122,9 @@ def min_points(params: FitParams) -> int:
 def fit_topics(texts: Sequence[str], vectors: np.ndarray, params: FitParams) -> FitResult:
     """Fit BERTopic to precomputed vectors and return the labels and keywords.
 
-    Inputs with fewer distinct vectors than :func:`min_points` come back as all outliers,
-    with no topics.
+    Exact-duplicate vectors are clustered once; copies inherit their representative's label
+    and count towards its topic's size. Inputs with fewer distinct vectors than
+    :func:`min_points` come back as all outliers, with no topics.
 
     Args:
         texts: One text per vector, the c-TF-IDF input.
@@ -129,8 +135,9 @@ def fit_topics(texts: Sequence[str], vectors: np.ndarray, params: FitParams) -> 
         The labels, the topics and the fit's wall time.
 
     Raises:
-        ValueError: If ``texts`` and ``vectors`` differ in length, or hold fewer than
-            :func:`min_points` inputs.
+        ValueError: If ``texts`` and ``vectors`` differ in length or hold fewer than
+            :func:`min_points` inputs, if ``min_df`` is below 1, or if ``vectors`` holds a
+            NaN or an infinity.
     """
     if len(texts) != len(vectors):
         raise ValueError(f"got {len(texts)} texts for {len(vectors)} vectors")
@@ -139,6 +146,10 @@ def fit_topics(texts: Sequence[str], vectors: np.ndarray, params: FitParams) -> 
         raise ValueError(
             f"need at least {minimum} points for min_topic_size={params.min_topic_size}, got {len(vectors)}"
         )
+    if params.min_df < 1:
+        raise ValueError(f"min_df must be at least 1, got {params.min_df}")
+    if not np.isfinite(vectors).all():
+        raise ValueError("vectors must be finite: found NaN or infinity")
 
     import hdbscan
     from bertopic import BERTopic
@@ -147,11 +158,16 @@ def fit_topics(texts: Sequence[str], vectors: np.ndarray, params: FitParams) -> 
     from umap import UMAP
 
     started = time.perf_counter()
-    if _distinct_rows(vectors, minimum) < minimum:
+    group, first = _group_rows(vectors)
+    if len(first) < minimum:
         n = len(vectors)
         return FitResult(labels=[-1] * n, topics=[], outliers=n, fit_s=time.perf_counter() - started)
 
     docs = list(texts)
+    representatives = vectors
+    if len(first) < len(vectors):  # cluster each distinct vector once, with its first occurrence's text
+        docs = [docs[index] for index in first]
+        representatives = vectors[first]
     vocabulary = _vocabulary(docs, params)
     dropped: frozenset[str] = frozenset()
     if vocabulary is None:
@@ -181,8 +197,8 @@ def fit_topics(texts: Sequence[str], vectors: np.ndarray, params: FitParams) -> 
         calculate_probabilities=False,
         verbose=False,
     )
-    predicted, _ = model.fit_transform(docs, embeddings=vectors)
-    labels = [int(label) for label in predicted]
+    predicted, _ = model.fit_transform(docs, embeddings=representatives)
+    labels = [int(label) for label in np.asarray(predicted)[group]]  # copies inherit their representative's label
     sizes = Counter(labels)
     topics = [
         TopicInfo(id=topic_id, size=sizes[topic_id], keywords=_keywords(model.get_topic(topic_id) or [], dropped))
@@ -192,26 +208,24 @@ def fit_topics(texts: Sequence[str], vectors: np.ndarray, params: FitParams) -> 
     return FitResult(labels=labels, topics=topics, outliers=sizes[-1], fit_s=time.perf_counter() - started)
 
 
-def _distinct_rows(vectors: np.ndarray, enough: int) -> int:
-    """Count the distinct rows of ``vectors``, stopping once ``enough`` have been seen.
+def _group_rows(vectors: np.ndarray) -> tuple[np.ndarray, np.ndarray]:
+    """Map every row to the first row identical to it.
 
-    The count equals ``np.unique(vectors, axis=0)``'s for finite input. Stopping early means
-    ordinary input costs a few rows, and an all-duplicate one a single pass, whereas
-    ``np.unique`` sorts every row.
+    Rows compare as ``np.unique(vectors, axis=0)`` compares finite rows, ``-0.0`` equal to
+    ``0.0``, but in one pass over a dict of row bytes: ``np.unique`` sorts every row, which on
+    150k identical 1024-dimensional rows takes about 35 seconds.
 
     Args:
-        vectors: The input rows.
-        enough: The count at which to stop.
+        vectors: The input rows, all finite.
 
     Returns:
-        The number of distinct rows, capped at ``enough``.
+        Each row's group, numbered in order of first appearance, and each group's first row.
     """
-    seen: set[bytes] = set()
-    for row in vectors:
-        seen.add((row + 0.0).tobytes())  # + 0.0 turns -0.0 into 0.0, which np.unique counts as equal
-        if len(seen) >= enough:
-            break
-    return len(seen)
+    first_seen: dict[bytes, int] = {}
+    group = np.empty(len(vectors), dtype=np.intp)
+    for index, row in enumerate(vectors):
+        group[index] = first_seen.setdefault((row + 0.0).tobytes(), len(first_seen))  # + 0.0: -0.0 becomes 0.0
+    return group, np.unique(group, return_index=True)[1]
 
 
 def _vocabulary(docs: list[str], params: FitParams) -> dict[str, int] | None:
@@ -229,7 +243,7 @@ def _vocabulary(docs: list[str], params: FitParams) -> dict[str, int] | None:
     vectorizer = CountVectorizer(stop_words=list(params.stop_words) or None, min_df=params.min_df)
     try:
         vectorizer.fit(docs)
-    except ValueError:  # no word survives the stop words and min_df
+    except ValueError:  # min_df is checked upfront, so this only means no word survives
         return None
     vocabulary = {str(word): int(index) for word, index in vectorizer.vocabulary_.items()}
     return vocabulary if len(vocabulary) >= 2 else None
