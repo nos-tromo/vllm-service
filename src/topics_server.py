@@ -20,11 +20,14 @@ Endpoints:
         ``labels[i]`` is input ``i``'s topic (``-1`` marks an outlier), and ``topics`` lists the
         ids ``>= 0`` in ascending order with their size and ``[word, score]`` keywords.
 
-        Errors: 400 for a malformed or out-of-range ``meta``; 413 when ``n`` exceeds
-        ``TOPICS_MAX_POINTS``; 422 for a missing part, a text count other than ``n``, a vector
-        byte count other than ``n * dim * 4``, a NaN or infinity, or fewer points than the fit
-        needs; 503 with ``Retry-After`` while another fit runs (one at a time, never queued);
-        500 when the fit itself fails.
+        Errors: 400 for a malformed or out-of-range ``meta`` (``dim`` above 8192 and a stop word
+        over 64 characters included) or a multipart body without a boundary; 413 when ``n``
+        exceeds ``TOPICS_MAX_POINTS``, ``n * dim`` exceeds ``TOPICS_MAX_POINTS * 1024``, ``meta``
+        is over 1 MiB, or ``texts`` is over ``min(n * 16384 + 65536, 512 MiB)`` bytes; 422 for a
+        missing part, a text count other than ``n``, a vector byte count other than
+        ``n * dim * 4``, a NaN or infinity, or fewer points than the fit needs; 503 with
+        ``Retry-After`` while another fit runs (one at a time, never queued); 500 when the fit
+        itself fails.
 
     GET /health
         Liveness probe; returns ``{"status": "ok", "versions": {...}}``. The server only starts
@@ -33,14 +36,18 @@ Endpoints:
 Configuration:
 
     TOPICS_MAX_POINTS   Largest accepted ``n``. Default 150000: a fit peaks near 3.6 GB per 100k
-                        points at 1024 dimensions. Must be a positive integer.
+                        points at 1024 dimensions. It also caps ``n * dim`` at 1024 times the
+                        limit, so a wider vector means fewer points, not more memory. Must be a
+                        positive integer.
     TOPICS_WARMUP       Run ``topics_fit.self_check()`` at import, which compiles the numba code
                         and fits a synthetic set twice. On unless set to false, 0, no or off.
 
 Starlette spools each uploaded part to a temporary file, which moves to disk beyond 1 MiB, so a
-request body is received without being held in memory. A part is read into memory only once the
-checks before it have passed: ``meta`` first, then ``n`` against the limit, then ``vectors``, then
-``texts``.
+request body is received without being held in memory. That happens before the handler runs, so
+a request refused with a 503 has been received in full. A part is read into memory only once the
+checks before it have passed, and those judge sizes alone: ``meta``'s size, then ``n`` and
+``n * dim`` against the limits, then the sizes of ``texts`` and ``vectors``, and only then the
+reads (``vectors``, then ``texts``).
 
 The server logs counts and timings only, never texts, vectors or keywords.
 """
@@ -61,6 +68,13 @@ from pydantic import BaseModel, Field, ValidationError, field_validator
 import topics_fit
 
 _WARMUP_OFF = frozenset({"false", "0", "no", "off"})
+
+# Request-size limits, all judged from meta or from a part's size on disk before the part is read.
+_META_MAX_BYTES = 1024 * 1024
+_TEXTS_BYTES_PER_POINT = 16_384
+_TEXTS_BYTES_SLACK = 65_536
+_TEXTS_MAX_BYTES = 512 * 1024 * 1024
+_VALUES_PER_POINT = 1024
 
 # uvicorn puts its handler on this logger; a logger of our own would drop the INFO line.
 _log = logging.getLogger("uvicorn.error")
@@ -108,24 +122,24 @@ class FitMeta(BaseModel):
 
     Attributes:
         n: Number of points: the length of ``texts`` and the row count of ``vectors``.
-        dim: Vector dimension.
+        dim: Vector dimension, at most 8192.
         seed: UMAP's random state, within the range numpy accepts as a seed.
         min_topic_size: HDBSCAN's ``min_cluster_size``, of which 2 is the least it accepts.
         nr_topics: Topic-reduction target, or 0 for none. BERTopic counts the outlier class as
             one of these, so 1 is refused.
         top_n_words: Keywords kept per topic.
         min_df: The fewest texts a word must occur in to become a keyword.
-        stop_words: Words never used as keywords.
+        stop_words: Words never used as keywords: at most 10000, each of at most 64 characters.
     """
 
     n: int = Field(ge=1)
-    dim: int = Field(ge=1)
+    dim: int = Field(ge=1, le=8192)
     seed: int = Field(ge=0, lt=2**32)
     min_topic_size: int = Field(ge=2)
     nr_topics: int = Field(ge=0)
     top_n_words: int = Field(ge=1, le=30)
     min_df: int = Field(ge=1)
-    stop_words: list[str] = Field(max_length=10_000)
+    stop_words: list[Annotated[str, Field(max_length=64)]] = Field(max_length=10_000)
 
     @field_validator("nr_topics")
     @classmethod
@@ -155,8 +169,23 @@ class FitResponse(BaseModel):
     timings: dict[str, float]
 
 
+def _require_size_at_most(part: UploadFile, limit: int, name: str) -> None:
+    """Refuse a part larger than ``limit`` bytes, judged by its size on disk before it is read.
+
+    Args:
+        part: The uploaded part.
+        limit: The most bytes it may hold.
+        name: The part's name, for the error message.
+
+    Raises:
+        HTTPException: 413, if the part is larger than ``limit`` or its size is unknown.
+    """
+    if part.size is None or part.size > limit:
+        raise HTTPException(status_code=413, detail=f"{name} holds {part.size} bytes, over the limit of {limit}")
+
+
 def _parse_meta(part: UploadFile) -> FitMeta:
-    """Parse and validate the ``meta`` part.
+    """Parse and validate the ``meta`` part, which may hold at most 1 MiB.
 
     Args:
         part: The uploaded ``meta.json``.
@@ -165,9 +194,10 @@ def _parse_meta(part: UploadFile) -> FitMeta:
         The validated meta.
 
     Raises:
-        HTTPException: 400, if the part is not JSON, not an object, or has a missing or
-            out-of-range field.
+        HTTPException: 413, if the part is over 1 MiB; 400, if it is not JSON, not an object,
+            or has a missing or out-of-range field.
     """
+    _require_size_at_most(part, _META_MAX_BYTES, "meta")
     try:
         return FitMeta.model_validate_json(part.file.read())
     except ValidationError as exc:
@@ -246,8 +276,8 @@ def fit(
         FitResponse: Each input's topic, and each topic's size and keywords.
 
     Raises:
-        HTTPException: 503 while another fit runs, 400 for a bad ``meta``, 413 for too many
-            points, 422 for inconsistent or unusable inputs, 500 if the fit fails.
+        HTTPException: 503 while another fit runs, 400 for a bad ``meta``, 413 for a request
+            over the size limits, 422 for inconsistent or unusable inputs, 500 if the fit fails.
     """
     if not _fit_lock.acquire(blocking=False):
         raise HTTPException(
@@ -257,6 +287,14 @@ def fit(
         settings = _parse_meta(meta)
         if settings.n > MAX_POINTS:
             raise HTTPException(status_code=413, detail=f"n={settings.n} exceeds TOPICS_MAX_POINTS={MAX_POINTS}")
+        budget = MAX_POINTS * _VALUES_PER_POINT
+        if settings.n * settings.dim > budget:
+            raise HTTPException(
+                status_code=413,
+                detail=f"n*dim={settings.n * settings.dim} exceeds TOPICS_MAX_POINTS*{_VALUES_PER_POINT}={budget}",
+            )
+        texts_limit = min(settings.n * _TEXTS_BYTES_PER_POINT + _TEXTS_BYTES_SLACK, _TEXTS_MAX_BYTES)
+        _require_size_at_most(texts, texts_limit, "texts")
         points = _read_vectors(vectors, settings)
         documents = _read_texts(texts, settings.n)
         params = topics_fit.FitParams(

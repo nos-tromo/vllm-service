@@ -5,6 +5,7 @@ environment; the fit itself is covered by ``test_topics_fit.py``. All data is sy
 """
 
 import importlib.util
+import io
 import json
 import logging
 import sys
@@ -16,6 +17,7 @@ from types import ModuleType
 import httpx
 import numpy as np
 import pytest
+from fastapi import HTTPException, UploadFile
 from fastapi.testclient import TestClient
 
 SRC = Path(__file__).resolve().parents[2] / "src"
@@ -33,10 +35,15 @@ from topics_fit import FitParams, FitResult, TopicInfo, min_points  # noqa: E402
 
 client = TestClient(topics_server.app)
 
+# The real fit, kept before any test replaces it with a stub.
+REAL_FIT_TOPICS = topics_server.topics_fit.fit_topics
+
 N = 40
 DIM = 8
 LOGGER = topics_server._log.name
 META_FIELDS = ("n", "dim", "seed", "min_topic_size", "nr_topics", "top_n_words", "min_df", "stop_words")
+META_MAX_BYTES = 1024 * 1024
+TEXTS_LIMIT = N * 16_384 + 65_536  # the texts part's size limit for N points
 
 FitCalls = list[tuple[list[str], np.ndarray, FitParams]]
 
@@ -81,11 +88,58 @@ def _texts(n: int = N) -> list[str]:
     return [f"synthetic text {i}" for i in range(n)]
 
 
+def _blobs() -> tuple[list[str], np.ndarray]:
+    """Build three well-separated blobs of 60 points in 32 dimensions, each speaking its own invented vocabulary.
+
+    Returns:
+        The texts and the L2-normalised little-endian float32 vectors.
+    """
+    rng = np.random.default_rng(7)
+    prefixes = ("alpha", "beta", "gamma")
+    centres = rng.normal(scale=4.0, size=(len(prefixes), 32))
+    vectors = np.concatenate([centre + rng.normal(size=(60, 32)) for centre in centres])
+    vectors /= np.linalg.norm(vectors, axis=1, keepdims=True)
+    texts = [
+        " ".join(f"{prefix}{word}" for word in rng.integers(0, 10, size=6)) for prefix in prefixes for _ in range(60)
+    ]
+    return texts, vectors.astype("<f4")
+
+
 def _part(value: object) -> bytes:
     """Serialize a JSON part as UTF-8; bytes pass through so a test can send malformed content."""
     if isinstance(value, bytes):
         return value
     return json.dumps(value, ensure_ascii=False).encode("utf-8")
+
+
+def _padded_meta(size: int) -> bytes:
+    """Build a valid meta part of exactly ``size`` bytes: the JSON, then trailing spaces.
+
+    Args:
+        size: The part's size in bytes.
+
+    Returns:
+        The padded meta part.
+    """
+    raw = _part(_meta())
+    return raw + b" " * (size - len(raw))
+
+
+def _texts_part(n: int, size: int) -> bytes:
+    """Build a valid texts part of ``n`` strings and exactly ``size`` bytes, by padding the first string.
+
+    Args:
+        n: The number of texts.
+        size: The part's size in bytes; at least that of the unpadded array.
+
+    Returns:
+        The padded texts part.
+    """
+    texts = _texts(n)
+    texts[0] += "a" * (size - len(_part(texts)))
+    part = _part(texts)
+    assert len(part) == size
+    return part
 
 
 def _post(meta: object, texts: object, vectors: bytes | None) -> httpx.Response:
@@ -112,6 +166,28 @@ def _post(meta: object, texts: object, vectors: bytes | None) -> httpx.Response:
 def _post_valid(n: int = N, dim: int = DIM, **meta: object) -> httpx.Response:
     """POST a consistent request of ``n`` points, with any meta field replaced."""
     return _post(_meta(n=n, dim=dim, **meta), _texts(n), _vectors(n, dim).tobytes())
+
+
+def _post_while_busy(meta: object, texts: object, vectors: bytes | None) -> tuple[httpx.Response, bool]:
+    """POST while another request holds the fit lock, as one does for the length of a fit.
+
+    Args:
+        meta: The ``meta`` object, or raw bytes.
+        texts: The texts, or raw bytes.
+        vectors: The raw vector bytes.
+
+    Returns:
+        The response, and whether the lock was still held once it arrived.
+    """
+    pool = ThreadPoolExecutor(max_workers=1)
+    topics_server._fit_lock.acquire()
+    try:
+        # A request that waited for the lock would hang; bound it so that fails fast instead.
+        response = pool.submit(_post, meta, texts, vectors).result(timeout=10)
+        return response, topics_server._fit_lock.locked()
+    finally:
+        topics_server._fit_lock.release()
+        pool.shutdown()
 
 
 @pytest.fixture(autouse=True)
@@ -228,6 +304,8 @@ def test_missing_meta_field_is_400(field: str, fit_calls: FitCalls) -> None:
         ("n", 40.5),
         ("n", "forty"),
         ("dim", 0),
+        pytest.param("dim", 8193, id="dim-8193"),
+        pytest.param("dim", 1_000_000, id="dim-a-million"),
         ("seed", -1),
         ("seed", 2**32),
         ("min_topic_size", 1),
@@ -238,6 +316,8 @@ def test_missing_meta_field_is_400(field: str, fit_calls: FitCalls) -> None:
         ("stop_words", "the"),
         ("stop_words", [1, 2]),
         ("stop_words", ["x"] * 10_001),
+        pytest.param("stop_words", ["x" * 65], id="stop-word-65-characters"),
+        pytest.param("stop_words", ["fine", "x" * 500_000], id="stop-word-half-a-million-characters"),
     ],
 )
 def test_out_of_range_meta_is_400(field: str, value: object, fit_calls: FitCalls) -> None:
@@ -260,11 +340,20 @@ def test_out_of_range_meta_is_400(field: str, value: object, fit_calls: FitCalls
         ("top_n_words", 30),
         ("min_df", 1),
         ("stop_words", ["x"] * 10_000),
+        pytest.param("stop_words", ["x" * 64], id="stop-word-64-characters"),
     ],
 )
 def test_meta_bounds_are_inclusive(field: str, value: object, fit_calls: FitCalls) -> None:
     """The limits themselves are accepted."""
     assert _post(_meta(**{field: value}), _texts(), _vectors().tobytes()).status_code == 200
+    assert len(fit_calls) == 1
+
+
+def test_dim_limit_is_inclusive(fit_calls: FitCalls) -> None:
+    """A dimension of 8192 is accepted with its vectors; 8193 is a 400 whatever the vectors."""
+    assert _post_valid(dim=8192).status_code == 200
+    assert len(fit_calls) == 1
+    assert _post_valid(dim=8193).status_code == 400
     assert len(fit_calls) == 1
 
 
@@ -296,6 +385,63 @@ def test_413_is_decided_from_meta_alone(monkeypatch: pytest.MonkeyPatch) -> None
     """The large parts are not read for an oversize fit: garbage in them still gets a 413."""
     monkeypatch.setattr(topics_server, "MAX_POINTS", 10)
     assert _post(_meta(n=11), b"not json", b"\x00").status_code == 413
+
+
+def test_n_times_dim_over_budget_is_413(monkeypatch: pytest.MonkeyPatch, fit_calls: FitCalls) -> None:
+    """``n * dim`` may not exceed ``TOPICS_MAX_POINTS * 1024``, decided from meta alone like the point limit."""
+    monkeypatch.setattr(topics_server, "MAX_POINTS", 16)
+    response = _post(_meta(n=16, dim=1025), b"not json", b"\x00")  # 16 * 1025 is 16 over 16 * 1024
+    assert response.status_code == 413
+    assert "TOPICS_MAX_POINTS" in response.json()["detail"]
+    assert fit_calls == []
+    assert _post_valid(n=16, dim=1024).status_code == 200  # exactly the budget
+    assert len(fit_calls) == 1
+
+
+def test_a_wide_dimension_cannot_buy_more_memory(fit_calls: FitCalls) -> None:
+    """With the default limit, the most points of the widest dimension are refused from meta alone."""
+    assert _post(_meta(n=150_000, dim=8192), b"not json", b"\x00").status_code == 413
+    assert fit_calls == []
+
+
+def test_oversize_meta_is_413(fit_calls: FitCalls) -> None:
+    """A meta part over 1 MiB is refused from its size alone, unread; one of exactly 1 MiB is read as usual."""
+    response = _post(b"x" * (META_MAX_BYTES + 1), _texts(), _vectors().tobytes())
+    assert response.status_code == 413
+    assert _post(_meta(stop_words=["x" * 2_000_000]), _texts(), _vectors().tobytes()).status_code == 413
+    # Even a meta that would be valid is refused for its size: it is judged before it is parsed.
+    assert _post(_padded_meta(META_MAX_BYTES + 1), _texts(), _vectors().tobytes()).status_code == 413
+    assert fit_calls == []
+    assert _post(_padded_meta(META_MAX_BYTES), _texts(), _vectors().tobytes()).status_code == 200
+    assert len(fit_calls) == 1
+
+
+def test_a_part_of_unknown_size_is_refused() -> None:
+    """A part whose size is not known cannot be judged, so it is refused rather than read."""
+    part = UploadFile(file=io.BytesIO(b"{}"))  # a part built by hand, not parsed from a request, has no size
+    with pytest.raises(HTTPException) as refused:
+        topics_server._require_size_at_most(part, 1024, "meta")
+    assert refused.value.status_code == 413
+
+
+def test_oversize_texts_is_413(fit_calls: FitCalls) -> None:
+    """The texts part may hold ``n * 16384 + 65536`` bytes; more is refused from its size alone."""
+    # Garbage in the other parts: the texts size is judged before either is read or parsed.
+    assert _post(_meta(), b"x" * (TEXTS_LIMIT + 1), b"\x00").status_code == 413
+    assert _post(_meta(), _texts_part(N, TEXTS_LIMIT + 1), _vectors().tobytes()).status_code == 413
+    assert fit_calls == []
+    assert _post(_meta(), _texts_part(N, TEXTS_LIMIT), _vectors().tobytes()).status_code == 200
+    assert len(fit_calls) == 1
+
+
+def test_texts_limit_is_capped(monkeypatch: pytest.MonkeyPatch, fit_calls: FitCalls) -> None:
+    """However many points there are, the texts part never gets more than 512 MiB."""
+    assert topics_server._TEXTS_MAX_BYTES == 512 * 1024 * 1024
+    monkeypatch.setattr(topics_server, "_TEXTS_MAX_BYTES", 1_000)
+    assert _post(_meta(), _texts_part(N, 1_001), _vectors().tobytes()).status_code == 413
+    assert fit_calls == []
+    assert _post(_meta(), _texts_part(N, 1_000), _vectors().tobytes()).status_code == 200
+    assert len(fit_calls) == 1
 
 
 @pytest.mark.parametrize("length", [N * DIM * 4 - 4, N * DIM * 4 + 4, N * DIM * 4 - 1, 0])
@@ -375,22 +521,38 @@ def test_non_multipart_body_is_422(fit_calls: FitCalls) -> None:
     assert fit_calls == []
 
 
+def test_multipart_without_a_boundary_is_400(fit_calls: FitCalls) -> None:
+    """A multipart body that names no boundary cannot be split into parts: Starlette refuses it with a 400."""
+    response = client.post("/topics/fit", content=b"", headers={"content-type": "multipart/form-data"})
+    assert response.status_code == 400
+    assert fit_calls == []
+
+
 def test_busy_returns_503(fit_calls: FitCalls) -> None:
     """A request during a fit is refused at once, never queued, and leaves the running fit's lock held."""
-    pool = ThreadPoolExecutor(max_workers=1)
-    topics_server._fit_lock.acquire()
-    try:
-        # A request that waited for the lock would hang; bound it so that fails fast instead.
-        response = pool.submit(_post_valid).result(timeout=10)
-        still_held = topics_server._fit_lock.locked()
-    finally:
-        topics_server._fit_lock.release()
-        pool.shutdown()
+    response, still_held = _post_while_busy(_meta(), _texts(), _vectors().tobytes())
     assert response.status_code == 503
     assert response.headers["Retry-After"] == "30"
     assert still_held
     assert fit_calls == []
     assert _post_valid().status_code == 200
+
+
+@pytest.mark.parametrize(
+    ("meta", "texts", "vectors"),
+    [
+        pytest.param(b"not json", b"x", b"\x00", id="malformed-meta"),
+        pytest.param(_meta(n=10_000_000), b"x", b"\x00", id="too-many-points"),
+        pytest.param(_meta(), _texts(), b"\x00", id="wrong-vector-size"),
+    ],
+)
+def test_busy_is_decided_before_the_request_is_read(
+    meta: object, texts: object, vectors: bytes, fit_calls: FitCalls
+) -> None:
+    """The lock is taken first: a request that would be refused for its content gets the 503 instead."""
+    response, _ = _post_while_busy(meta, texts, vectors)
+    assert response.status_code == 503
+    assert fit_calls == []
 
 
 @pytest.mark.parametrize("error", [RuntimeError, ValueError, MemoryError])
@@ -441,6 +603,21 @@ def test_failed_fit_logs_the_error_type_not_its_message(
     assert "RuntimeError" in caplog.text
     assert "n=40 dim=8" in caplog.text
     assert "quokka" not in caplog.text
+
+
+def test_real_fit_through_the_server(monkeypatch: pytest.MonkeyPatch) -> None:
+    """The vectors the server hands over, a read-only view of the request bytes, work with the real fit."""
+    pytest.importorskip("bertopic")
+    monkeypatch.setattr(topics_server.topics_fit, "fit_topics", REAL_FIT_TOPICS)
+    texts, vectors = _blobs()
+    n, dim = vectors.shape
+    response = _post(_meta(n=n, dim=dim, min_topic_size=10, top_n_words=5), texts, vectors.tobytes())
+    assert response.status_code == 200
+    body = response.json()
+    assert len(body["labels"]) == n
+    assert sum(topic["size"] for topic in body["topics"]) + body["outliers"] == n
+    top_keywords = [topic["keywords"][0][0].rstrip("0123456789") for topic in body["topics"]]
+    assert sorted(top_keywords) == ["alpha", "beta", "gamma"]
 
 
 def test_health_reports_versions() -> None:
