@@ -25,6 +25,8 @@ The body is `multipart/form-data`. Every part is sent as a file part:
 | `texts` | `texts.json` | A JSON array of `n` strings (the c-TF-IDF input) |
 | `vectors` | `vectors.f32` | `n × dim` little-endian float32, row-major |
 
+`nr_topics` is `0` (no reduction) or at least `2`; BERTopic counts the outlier class as one of the topics.
+
 `200` response:
 
 ```json
@@ -39,7 +41,7 @@ The body is `multipart/form-data`. Every part is sent as a file part:
 ```
 
 - `labels[i]` is the topic of input `i`; `-1` means outlier.
-- `topics` lists the ids `>= 0` in id order (BERTopic orders them by size).
+- `topics` lists the ids `>= 0` in ascending id order.
 
 Errors:
 
@@ -47,9 +49,13 @@ Errors:
 |---|---|
 | `400` | A malformed `meta.json` |
 | `413` | `n > TOPICS_MAX_POINTS` (`meta.json` is checked before the large parts are read into memory) |
-| `422` | A missing part (including a body that is not multipart), `len(texts) != n`, a vector byte count other than `n·dim·4`, non-finite values, or too few points for the settings |
+| `422` | A missing part (including a body that is not multipart), `len(texts) != n`, a vector byte count other than `n·dim·4`, non-finite values, or fewer points than the minimum, `max(16, 2·min_topic_size)` |
 | `503` + `Retry-After` | A fit is already running (one at a time; requests are not queued) |
 | `500` | The fit itself failed |
+
+Inputs with fewer distinct vectors than that minimum get a `200`, not a `422`: every label is `-1` and `topics` is empty. UMAP and HDBSCAN do not run on them.
+
+`TOPICS_MAX_POINTS` defaults to `150000`. A fit's peak memory is about 3.6 GB per 100k points at 1024 dimensions, measured on synthetic data.
 
 ### `GET /health`
 
@@ -63,9 +69,10 @@ The same input bytes, settings, image and CPU class give the same labels and
 keywords.
 
 - **Input order:** the client supplies it. The service never sorts or samples.
-- **UMAP:** `n_neighbors=15, n_components=5, min_dist=0.0, metric="cosine", random_state=seed`. A fixed seed makes UMAP single-threaded.
+- **UMAP:** `n_neighbors=15, n_components=5, min_dist=0.0, metric="cosine", random_state=seed, n_jobs=1`. A fixed seed makes UMAP single-threaded, which `n_jobs=1` states explicitly.
 - **hdbscan:** `metric="euclidean", cluster_selection_method="eom", core_dist_n_jobs=1`, with `min_cluster_size = min_topic_size`.
-- **c-TF-IDF:** `CountVectorizer(stop_words, min_df)` and `ClassTfidfTransformer(reduce_frequent_words=True)`.
+- **c-TF-IDF:** `ClassTfidfTransformer(reduce_frequent_words=True)`. A per-text `CountVectorizer(stop_words, min_df)` fixes the vocabulary before the fit, and BERTopic receives it fixed. So `min_df` counts texts, not topics, and the vocabulary cannot come out empty after clustering.
+- **Text:** BERTopic runs with `language=None`, so texts are not stripped to ASCII. When fewer than two words survive `stop_words` and `min_df`, every text is replaced by a two-word sentinel. The clustering is unchanged, and every topic's keywords are empty.
 - **Threads:** `OPENBLAS_NUM_THREADS`, `OMP_NUM_THREADS`, `MKL_NUM_THREADS` and `NUMBA_NUM_THREADS` are all set to 1. A multi-threaded BLAS reduction inside UMAP's spectral initialisation would otherwise make results depend on the host's core count.
 - **No randomness in sampling:** BERTopic's representative-document sampling uses its own fixed seed, and the service returns no representative documents.
 
