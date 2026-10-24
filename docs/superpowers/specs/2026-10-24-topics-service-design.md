@@ -47,15 +47,15 @@ Errors:
 
 | Status | When |
 |---|---|
-| `400` | A malformed `meta.json` |
-| `413` | `n > TOPICS_MAX_POINTS` (`meta.json` is checked before the large parts are read into memory) |
+| `400` | A malformed `meta.json` (including a `dim` above 8192 or a stop word over 64 characters), or a multipart body that names no boundary |
+| `413` | `n > TOPICS_MAX_POINTS`, `n·dim > TOPICS_MAX_POINTS·1024`, a `meta.json` over 1 MiB, or a `texts` part over `min(n·16384 + 65536, 536870912)` bytes. Each is decided from `meta.json` and the parts' sizes alone, before a large part is read into memory |
 | `422` | A missing part (including a body that is not multipart), `len(texts) != n`, a vector byte count other than `n·dim·4`, non-finite values, or fewer points than the minimum, `max(16, 2·min_topic_size)` |
 | `503` + `Retry-After` | A fit is already running (one at a time; requests are not queued) |
 | `500` | The fit itself failed |
 
 Exact-duplicate vectors are clustered once; copies inherit their representative's label. The fit runs on the distinct vectors in first-occurrence order, each paired with its first occurrence's text, so a duplicated text counts once towards keywords and `min_df`, while a topic's `size` counts every input row (`sum(size) + outliers == n`). Inputs with fewer distinct vectors than that minimum get a `200`, not a `422`: every label is `-1` and `topics` is empty, and UMAP and HDBSCAN do not run on them.
 
-`TOPICS_MAX_POINTS` defaults to `150000`. A fit's peak memory is about 3.6 GB per 100k points at 1024 dimensions, measured on synthetic data.
+`TOPICS_MAX_POINTS` defaults to `150000`. A fit's peak memory is about 3.6 GB per 100k points at 1024 dimensions, measured on synthetic data. Because `n·dim` is capped at `TOPICS_MAX_POINTS·1024`, a wider vector means fewer points, not a larger peak.
 
 ### `GET /health`
 
