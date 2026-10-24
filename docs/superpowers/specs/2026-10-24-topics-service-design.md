@@ -1,0 +1,90 @@
+# Topics fit service — design
+
+## Purpose
+
+A stateless CPU service that fits a topic model to vectors the caller already
+has. A client posts a sample of embedding vectors and the matching texts. It
+gets back one topic label per input and a keyword list per topic.
+
+The service stores nothing. The client keeps the topic table, computes topic
+centres, and assigns further points itself.
+
+The fit is [BERTopic](https://maartengr.github.io/BERTopic/) (UMAP → HDBSCAN →
+c-TF-IDF) with no embedding model: the vectors arrive with the request, so
+nothing is embedded or downloaded at runtime.
+
+## Contract
+
+### `POST /topics/fit`
+
+The body is `multipart/form-data`. Every part is sent as a file part:
+
+| Field | Filename | Content |
+|---|---|---|
+| `meta` | `meta.json` | `{"n", "dim", "seed", "min_topic_size", "nr_topics", "top_n_words", "min_df", "stop_words"}` |
+| `texts` | `texts.json` | A JSON array of `n` strings (the c-TF-IDF input) |
+| `vectors` | `vectors.f32` | `n × dim` little-endian float32, row-major |
+
+`200` response:
+
+```json
+{
+  "labels": [0, -1, 2, ...],
+  "outliers": 123,
+  "topics": [{"id": 0, "size": 410, "keywords": [["word", 0.031], ...]}, ...],
+  "versions": {"bertopic": "...", "umap-learn": "...", "hdbscan": "...", "scikit-learn": "...", "numpy": "...", "numba": "..."},
+  "runtime": {"machine": "...", "python": "...", "threads": {"OPENBLAS_NUM_THREADS": "1", ...}},
+  "timings": {"fit_s": 0.0}
+}
+```
+
+- `labels[i]` is the topic of input `i`; `-1` means outlier.
+- `topics` lists the ids `>= 0` in id order (BERTopic orders them by size).
+
+Errors:
+
+| Status | When |
+|---|---|
+| `400` | A malformed `meta.json` |
+| `413` | `n > TOPICS_MAX_POINTS` (`meta.json` is checked before the large parts are read into memory) |
+| `422` | A missing part (including a body that is not multipart), `len(texts) != n`, a vector byte count other than `n·dim·4`, non-finite values, or too few points for the settings |
+| `503` + `Retry-After` | A fit is already running (one at a time; requests are not queued) |
+| `500` | The fit itself failed |
+
+### `GET /health`
+
+Returns `{"status": "ok", "versions": {...}}`. It passes only after the startup
+self-check has fitted a synthetic dataset twice and found the results
+identical.
+
+## Determinism
+
+The same input bytes, settings, image and CPU class give the same labels and
+keywords.
+
+- **Input order:** the client supplies it. The service never sorts or samples.
+- **UMAP:** `n_neighbors=15, n_components=5, min_dist=0.0, metric="cosine", random_state=seed`. A fixed seed makes UMAP single-threaded.
+- **hdbscan:** `metric="euclidean", cluster_selection_method="eom", core_dist_n_jobs=1`, with `min_cluster_size = min_topic_size`.
+- **c-TF-IDF:** `CountVectorizer(stop_words, min_df)` and `ClassTfidfTransformer(reduce_frequent_words=True)`.
+- **Threads:** `OPENBLAS_NUM_THREADS`, `OMP_NUM_THREADS`, `MKL_NUM_THREADS` and `NUMBA_NUM_THREADS` are all set to 1. A multi-threaded BLAS reduction inside UMAP's spectral initialisation would otherwise make results depend on the host's core count.
+- **No randomness in sampling:** BERTopic's representative-document sampling uses its own fixed seed, and the service returns no representative documents.
+
+## Pinning
+
+The service has its own locked project, `docker/topics/{pyproject.toml,uv.lock}`. It is separate from the root project, whose lock resolves the eval environments, so neither world's pins move the other's.
+
+- The image installs the exported lock with `--no-deps --require-hashes`.
+- `exclude-dependencies` keeps `sentence-transformers` (and with it torch) and `plotly` out. BERTopic imports neither when no embedding model is configured.
+- BERTopic imports `yaml` and `packaging` at module level without declaring them; they normally arrive through sentence-transformers. The project therefore lists `pyyaml` and `packaging` itself.
+- `pandas<3` keeps BERTopic 0.17.4 on its tested range; `numpy<2.6` is numba's bound.
+- hdbscan has no linux/aarch64 wheel, so it is built in a builder stage, and only the virtualenv is copied into the runtime stage.
+
+## Deployment
+
+Both shapes use one CPU image, as VAD does: `vllm-service-topics` in the full
+stack, `vllm-service-topics-cpu` in the `topics-only` shape.
+
+- **Full stack:** the router passes `/topics/fit` through, with `auth: true` and no `headers` block, so the multipart boundary survives. The global 4 h pass-through timeout covers a fit. The router waits only for the service to *start*, not for it to be healthy, so a failed self-check never keeps inference down.
+- **`topics-only`:** alias `topics-only` on `inference-net`, port 8000 (8008 on the host in dev), no auth.
+- **Writable paths:** `/tmp` is the disk-backed `media-tmp` volume, because multipart parts spool there. `NUMBA_CACHE_DIR` points under `/tmp`. The service has no model weights and mounts no Hugging Face cache.
+- **Privacy:** texts and vectors are never logged; logs carry counts and timings only.
