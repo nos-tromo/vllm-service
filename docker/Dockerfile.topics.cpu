@@ -1,0 +1,70 @@
+# Stage 1: install the locked closure (docker/topics/uv.lock) into a virtualenv.
+# hdbscan ships no linux/aarch64 wheel, so it compiles here; the compiler stays in
+# this stage and only /opt/venv moves on. Both stages use the same pinned base, so
+# the venv's interpreter path is valid in the runtime stage.
+FROM ghcr.io/astral-sh/uv:python3.11-trixie-slim@sha256:0f2d0e6d745eb7f9cc9bc3a8f3bec70f398b39f38c8a1c7fa2967ddbe91af8bd AS builder
+
+# Never fetch an interpreter of uv's own: the venv must point at this base's Python,
+# which the runtime stage shares.
+ENV UV_PYTHON_DOWNLOADS=never
+
+RUN apt-get update \
+    && apt-get install -y --no-install-recommends build-essential \
+    && rm -rf /var/lib/apt/lists/*
+
+WORKDIR /build
+COPY docker/topics/pyproject.toml docker/topics/uv.lock /build/
+
+# Install exactly what the lock pins: every hash is required and nothing is
+# resolved. The closure has no torch, because docker/topics/pyproject.toml excludes
+# sentence-transformers and plotly.
+RUN uv export --frozen --no-dev --no-emit-project --format requirements-txt -o /build/requirements.txt
+RUN uv venv /opt/venv \
+    && uv pip install --python /opt/venv/bin/python --no-cache --no-deps --require-hashes --compile-bytecode \
+        -r /build/requirements.txt
+
+# Stage 2: runtime. No compiler.
+FROM ghcr.io/astral-sh/uv:python3.11-trixie-slim@sha256:0f2d0e6d745eb7f9cc9bc3a8f3bec70f398b39f38c8a1c7fa2967ddbe91af8bd
+
+# curl is needed for the docker-compose healthcheck against /health.
+RUN apt-get update \
+    && apt-get install -y --no-install-recommends curl \
+    && rm -rf /var/lib/apt/lists/*
+
+COPY --from=builder /opt/venv /opt/venv
+
+WORKDIR /app
+COPY src/topics_fit.py src/topics_server.py /app/
+
+# One thread everywhere: a multi-threaded BLAS or numba reduction would make a fit
+# depend on the host's core count (see topics_fit.THREAD_VARS). Caches and joblib
+# scratch go under /tmp, the only path compose leaves writable. TOPICS_WARMUP runs
+# the self-check when the server starts.
+ENV PATH=/opt/venv/bin:$PATH \
+    OPENBLAS_NUM_THREADS=1 \
+    OMP_NUM_THREADS=1 \
+    MKL_NUM_THREADS=1 \
+    NUMBA_NUM_THREADS=1 \
+    NUMBA_CACHE_DIR=/tmp/numba-cache \
+    JOBLIB_TEMP_FOLDER=/tmp \
+    TOPICS_WARMUP=true
+
+# Build smoke: fit the synthetic self-check set twice and fail the build if the two
+# fits differ. It also proves the hash-pinned install imports and that hdbscan's
+# compiled extension loads.
+RUN NUMBA_CACHE_DIR=/tmp/build-numba python -c "import topics_fit; topics_fit.self_check(); print('topics build smoke: OK')" \
+    && rm -rf /tmp/build-numba
+
+# Non-root runtime user (deploy ADR 0001). /app stays root-owned and read-only to
+# the app user; HOME gives libraries that derive a cache path from it a real,
+# if read-only, directory.
+RUN groupadd --gid 10001 app \
+    && useradd --uid 10001 --gid app --create-home --home-dir /home/app \
+       --shell /usr/sbin/nologin app
+ENV HOME=/home/app
+
+USER 10001:10001
+
+EXPOSE 8000
+
+CMD ["uvicorn", "--app-dir", "/app", "topics_server:app", "--host", "0.0.0.0", "--port", "8000"]

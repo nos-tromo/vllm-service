@@ -53,3 +53,52 @@ updates:
     ignore:
       - dependency-name: "pyrefly"
       - dependency-name: "ruff"
+  - package-ecosystem: uv
+    directory: "/docker/topics"
+    schedule:
+      interval: weekly
+    cooldown:
+      default-days: 7
+    # Major and minor bumps of the fit's libraries can change its results, so
+    # they move deliberately. Security updates still open.
+    ignore:
+      - dependency-name: "bertopic"
+        update-types:
+          - "version-update:semver-major"
+          - "version-update:semver-minor"
+      - dependency-name: "umap-learn"
+        update-types:
+          - "version-update:semver-major"
+          - "version-update:semver-minor"
+      - dependency-name: "hdbscan"
+        update-types:
+          - "version-update:semver-major"
+          - "version-update:semver-minor"
+      - dependency-name: "numba"
+        update-types:
+          - "version-update:semver-major"
+          - "version-update:semver-minor"
+      - dependency-name: "llvmlite"
+        update-types:
+          - "version-update:semver-major"
+          - "version-update:semver-minor"
+      - dependency-name: "pynndescent"
+        update-types:
+          - "version-update:semver-major"
+          - "version-update:semver-minor"
+      - dependency-name: "numpy"
+        update-types:
+          - "version-update:semver-major"
+          - "version-update:semver-minor"
+      - dependency-name: "scipy"
+        update-types:
+          - "version-update:semver-major"
+          - "version-update:semver-minor"
+      - dependency-name: "scikit-learn"
+        update-types:
+          - "version-update:semver-major"
+          - "version-update:semver-minor"
+      - dependency-name: "pandas"
+        update-types:
+          - "version-update:semver-major"
+          - "version-update:semver-minor"
