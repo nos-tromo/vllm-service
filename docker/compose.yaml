@@ -1,8 +1,8 @@
 name: vllm-service
 
 x-no-proxy-env: &no-proxy-env
-  NO_PROXY: "router,chat,embed,rerank,gliner,clip,asr,diarize,vad,localhost,127.0.0.1,172.16.0.0/12,10.0.0.0/8${EXTRA_NO_PROXY:-}"
-  no_proxy: "router,chat,embed,rerank,gliner,clip,asr,diarize,vad,localhost,127.0.0.1,172.16.0.0/12,10.0.0.0/8${EXTRA_NO_PROXY:-}"
+  NO_PROXY: "router,chat,embed,rerank,gliner,clip,asr,diarize,vad,topics,localhost,127.0.0.1,172.16.0.0/12,10.0.0.0/8${EXTRA_NO_PROXY:-}"
+  no_proxy: "router,chat,embed,rerank,gliner,clip,asr,diarize,vad,topics,localhost,127.0.0.1,172.16.0.0/12,10.0.0.0/8${EXTRA_NO_PROXY:-}"
 
 x-env-file: &env-file
   - path: ../.env
@@ -120,7 +120,7 @@ services:
     # /tmp before forwarding (starlette SpooledTemporaryFile), so /tmp must
     # hold whole media uploads (Nextext allows multi-GB files). A RAM tmpfs
     # sized for that would eat host memory, so this is a disk-backed scratch
-    # volume (media-tmp, shared with asr/diarize/vad) like the Nextext
+    # volume (media-tmp, shared with asr/diarize/vad/topics) like the Nextext
     # backend's tmp-jobs; it never holds durable state and `down -v` may
     # delete it.
     volumes:
@@ -146,6 +146,9 @@ services:
         condition: service_healthy
       gliner:
         condition: service_healthy
+      # A failed topics self-check must not keep inference down.
+      topics:
+        condition: service_started
     environment:
       <<: *no-proxy-env
       WHISPER_MODEL: ${WHISPER_MODEL:-openai/whisper-large-v3}
@@ -682,13 +685,55 @@ services:
       - vllm-net
       - inference-net
 
+  topics:
+    <<: *hardened
+    read_only: true
+    # /tmp spools whole multipart uploads (starlette moves each part to a temp
+    # file on disk once it passes 1 MiB, before the handler runs), so it is a
+    # disk-backed scratch volume (media-tmp, in `volumes:` below), same
+    # rationale as router-tmp.
+    # Topic-model fit via FastAPI. Like vad, NOT a vLLM container — a
+    # stateless CPU service (src/topics_server.py) that fits on the vectors
+    # and texts the caller sends, so it embeds nothing and has no weights:
+    # no huggingface-cache mount, hence no volume-permissions dependency.
+    # Endpoint shape:
+    #   POST /topics/fit multipart meta=<json> texts=<json> vectors=<float32>
+    #     -> {"labels": [...], "outliers", "topics": [{"id", "size", "keywords"}], ...}
+    # One fit runs at a time (a second request gets 503); TOPICS_MAX_POINTS
+    # bounds a request. Nothing waits for it to be healthy (the router needs
+    # it started only), so it sits outside the GPU startup chain above.
+    image: vllm-service-topics:${VLLM_SERVICE_VERSION:-latest}
+    build:
+      context: ..
+      dockerfile: docker/Dockerfile.topics.cpu
+    logging: *default-logging
+    env_file: *env-file
+    environment:
+      <<: *no-proxy-env
+      TOPICS_MAX_POINTS: ${TOPICS_MAX_POINTS:-150000}
+    volumes:
+      - media-tmp:/tmp
+    healthcheck:
+      test: ["CMD-SHELL", "curl -sf http://localhost:8000/health || exit 1"]
+      interval: 10s
+      timeout: 5s
+      retries: 60
+      # The server runs its startup self-check (two synthetic fits) before it
+      # listens, so the first probes fail until a cold start has finished.
+      start_period: 180s
+    restart: unless-stopped
+    networks:
+      - vllm-net
+      - inference-net
+
 volumes:
   huggingface-cache:
     external: true
-  # Shared upload spool (/tmp) for the services that receive whole media
-  # files (router, asr, diarize, vad) — disk-backed scratch, never durable
-  # state. Safe to share: temp names are randomized and /tmp's sticky bit
-  # (1777, copied from the image) covers the differing service uids.
+  # Shared upload spool (/tmp) for the services that receive whole uploads —
+  # media files (router, asr, diarize, vad) and topics' vectors and texts —
+  # disk-backed scratch, never durable state. Safe to share: temp names are
+  # randomized and /tmp's sticky bit (1777, copied from the image) covers the
+  # differing service uids.
   media-tmp:
 
 networks:

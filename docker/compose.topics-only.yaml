@@ -1,0 +1,93 @@
+name: vllm-service-topics-only
+
+# Standalone CPU topic-model fit stack. Not a profile of compose.yaml — a
+# separate compose project for hosts that cannot run the full CUDA stack
+# (macOS, CPU-only Linux, AMD/ROCm boxes running Ollama for chat/embed).
+#
+# Topology:
+#   - one container, `topics-only`, on the external `inference-net`
+#   - no LiteLLM router, no vLLM backends, no GPU reservation
+#   - the router pass-through `http://vllm-router:4000/topics/fit` is
+#     unavailable in this shape; consumers point at
+#     `http://topics-only:8000/topics/fit`
+#
+# Auth: the container has no built-in Bearer-token gate. `inference-net` is a
+# private Docker network shared only between trusted compose projects, mirroring
+# how the other `-only` shapes expose theirs.
+#
+# Weights: none. The service fits on the vectors and texts the caller sends, so
+# nothing is embedded or downloaded and this shape works fully offline on first
+# start. For the same reason it mounts no huggingface-cache, and there is no
+# volume-permissions job here. It runs the same `src/topics_server.py` the
+# full-stack `topics` service does, so it speaks the identical multipart
+# `/topics/fit` contract.
+#
+# Runs alongside the other `-only` shapes on the same host but needs none of
+# them: the caller supplies the vectors, so no embedding endpoint is involved.
+
+x-no-proxy-env: &no-proxy-env
+  NO_PROXY: "topics-only,localhost,127.0.0.1,172.16.0.0/12,10.0.0.0/8${EXTRA_NO_PROXY:-}"
+  no_proxy: "topics-only,localhost,127.0.0.1,172.16.0.0/12,10.0.0.0/8${EXTRA_NO_PROXY:-}"
+
+x-env-file: &env-file
+  - path: ../.env
+    required: false
+
+# Shared logging — the local driver rotates and compresses
+# per-container; tail with `docker compose logs -f <svc>`.
+x-logging: &default-logging
+  driver: "local"
+  options:
+    max-size: "50m"
+    max-file: "5"
+    compress: "true"
+
+# Shared hardening (deploy ADR 0001) — no privilege escalation, no
+# capabilities; the image runs as the non-root app user (uid 10001).
+x-hardened: &hardened
+  security_opt:
+    - no-new-privileges:true
+  cap_drop:
+    - ALL
+
+services:
+  topics-only:
+    <<: *hardened
+    read_only: true
+    # /tmp spools whole multipart uploads (starlette moves each part to a temp
+    # file on disk once it passes 1 MiB, before the handler runs), so it is a
+    # disk-backed scratch volume (media-tmp, in `volumes:` below) rather than
+    # a RAM tmpfs.
+    image: vllm-service-topics-cpu:${VLLM_SERVICE_VERSION:-latest}
+    build:
+      context: ..
+      dockerfile: docker/Dockerfile.topics.cpu
+    logging: *default-logging
+    env_file: *env-file
+    environment:
+      <<: *no-proxy-env
+      TOPICS_MAX_POINTS: ${TOPICS_MAX_POINTS:-150000}
+    volumes:
+      - media-tmp:/tmp
+    healthcheck:
+      test: ["CMD-SHELL", "curl -sf http://localhost:8000/health || exit 1"]
+      interval: 10s
+      timeout: 5s
+      retries: 60
+      # The server runs its startup self-check (two synthetic fits) before it
+      # listens, so the first probes fail until a cold start has finished.
+      start_period: 180s
+    networks:
+      inference-net:
+        aliases:
+          - topics-only
+    restart: unless-stopped
+
+volumes:
+  # Upload spool (/tmp) — disk-backed scratch, never durable state.
+  media-tmp:
+
+networks:
+  inference-net:
+    external: true
+    name: ${INFERENCE_NETWORK:-inference-net}
