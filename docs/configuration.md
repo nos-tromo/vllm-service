@@ -128,6 +128,9 @@ therefore passes only about 11 to 15 s after the container starts, as measured (
 compose `start_period` is 180 s, for slower hosts), and a failing check makes the
 container restart instead of serve. The first fit with 4096 or more distinct
 vectors compiles pynndescent's numba code once more, about 6–7 s on that request.
+numba caches what it compiles in `NUMBA_CACHE_DIR`, `/run/numba`, a 64 MB tmpfs
+of the container's own: numba unpickles the cache's index files, so the cache stays
+off the shared `media-tmp`. The tmpfs starts empty, so every start compiles afresh.
 `TOPICS_WARMUP` defaults to `true` in the image; `false`, `0`, `no` or `off` skip
 the check. Skipping it moves the compile onto the first request and leaves nothing
 showing that fits repeat on the host, so it is meant for tests, not for a

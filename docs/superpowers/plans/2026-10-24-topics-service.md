@@ -30,7 +30,7 @@
 
 **Runtime environment**
 - Thread variables `OPENBLAS_NUM_THREADS`, `OMP_NUM_THREADS`, `MKL_NUM_THREADS` and `NUMBA_NUM_THREADS` are all `1`.
-- `NUMBA_CACHE_DIR=/tmp/numba-cache`, `JOBLIB_TEMP_FOLDER=/tmp`.
+- `NUMBA_CACHE_DIR=/run/numba` (a tmpfs private to the container), `JOBLIB_TEMP_FOLDER=/tmp`.
 
 **Container hardening and naming**
 - Hardening follows deploy ADR 0001: non-root uid 10001, `read_only: true`, `cap_drop: ALL`, `no-new-privileges`.

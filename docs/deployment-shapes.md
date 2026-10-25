@@ -407,8 +407,9 @@ The service fits on the vectors and texts the caller sends, so it embeds nothing
 there are **no weights**, nothing is downloaded, and this shape works fully
 offline on first start. For the same reason it mounts no `huggingface-cache` and
 has no `volume-permissions` job, so `make volumes` is not a prerequisite — only
-`make network` is. Its one writable path is `/tmp`, the disk-backed `media-tmp`
-volume, because multipart parts spool there.
+`make network` is. It writes to two paths: `/tmp`, the disk-backed `media-tmp`
+volume, because multipart parts spool there, and `/run/numba`, a small tmpfs of
+its own for numba's compiled-code cache.
 
 Override defaults via `.env` — only `TOPICS_*` knobs apply in this shape:
 

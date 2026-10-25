@@ -40,15 +40,17 @@ WORKDIR /app
 COPY src/topics_fit.py src/topics_server.py /app/
 
 # One thread everywhere: a multi-threaded BLAS or numba reduction would make a fit
-# depend on the host's core count (see topics_fit.THREAD_VARS). Caches and joblib
-# scratch go under /tmp, the only path compose leaves writable. TOPICS_WARMUP runs
-# the self-check when the server starts.
+# depend on the host's core count (see topics_fit.THREAD_VARS). joblib scratch goes
+# under /tmp. numba's cache goes to /run/numba, which compose mounts as a tmpfs of
+# this container's own: numba unpickles the cache's index files, so they must not
+# sit on a volume another service can write. TOPICS_WARMUP runs the self-check when
+# the server starts.
 ENV PATH=/opt/venv/bin:$PATH \
     OPENBLAS_NUM_THREADS=1 \
     OMP_NUM_THREADS=1 \
     MKL_NUM_THREADS=1 \
     NUMBA_NUM_THREADS=1 \
-    NUMBA_CACHE_DIR=/tmp/numba-cache \
+    NUMBA_CACHE_DIR=/run/numba \
     JOBLIB_TEMP_FOLDER=/tmp \
     TOPICS_WARMUP=true
 
@@ -60,10 +62,12 @@ RUN NUMBA_CACHE_DIR=/tmp/build-numba python -c "import topics_fit; topics_fit.se
 
 # Non-root runtime user (deploy ADR 0001). /app stays root-owned and read-only to
 # the app user; HOME gives libraries that derive a cache path from it a real,
-# if read-only, directory.
+# if read-only, directory. /run/numba is the app user's alone, as the tmpfs
+# compose mounts over it is.
 RUN groupadd --gid 10001 app \
     && useradd --uid 10001 --gid app --create-home --home-dir /home/app \
-       --shell /usr/sbin/nologin app
+       --shell /usr/sbin/nologin app \
+    && install -d -o app -g app -m 0700 /run/numba
 ENV HOME=/home/app
 
 USER 10001:10001

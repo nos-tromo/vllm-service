@@ -716,6 +716,10 @@ services:
     mem_limit: ${TOPICS_MEM_LIMIT:-7g}
     volumes:
       - media-tmp:/tmp
+    # numba's cache, private to this container: numba unpickles its index
+    # files, so it must not sit on media-tmp, which asr/diarize/vad write.
+    tmpfs:
+      - /run/numba:size=64m,uid=10001,gid=10001,mode=0700
     healthcheck:
       test: ["CMD-SHELL", "curl -sf http://localhost:8000/health || exit 1"]
       interval: 10s

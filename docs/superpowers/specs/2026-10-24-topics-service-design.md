@@ -96,5 +96,5 @@ stack, `vllm-service-topics-cpu` in the `topics-only` shape.
 
 - **Full stack:** the router passes `/topics/fit` through, with `auth: true` and no `headers` block, so the multipart boundary survives. The global 4 h pass-through timeout covers a fit. The router waits only for the service to *start*, not for it to be healthy, so a failed self-check never keeps inference down.
 - **`topics-only`:** alias `topics-only` on `inference-net`, port 8000 (8008 on the host in dev), no auth.
-- **Writable paths:** `/tmp` is the disk-backed `media-tmp` volume, because multipart parts spool there. `NUMBA_CACHE_DIR` points under `/tmp`. The service has no model weights and mounts no Hugging Face cache.
+- **Writable paths:** `/tmp` is the disk-backed `media-tmp` volume, because multipart parts spool there. `NUMBA_CACHE_DIR` is `/run/numba`, a tmpfs private to the container (64 MB, uid and gid 10001, mode 0700): numba unpickles its cache's index files, so the cache must not sit on `media-tmp`, which `asr`, `diarize` and `vad` write in the full stack. The service has no model weights and mounts no Hugging Face cache.
 - **Privacy:** texts and vectors are never logged; logs carry counts and timings only.
