@@ -478,6 +478,11 @@ part (`[{"type": "missing", "loc": ["body", "vectors"], "msg": "Field required",
 so a client has to handle both. A multipart body with no boundary is a 400 from
 Starlette (`Missing boundary in multipart.`).
 
+A part sent without a filename reaches the server as a form field, not a file.
+Above 1 MiB Starlette refuses it with a 400 (`Part exceeded maximum size of
+1024KB.`); below that it is a 422 in FastAPI's list form
+(`"msg": "Value error, Expected UploadFile, received: <class 'str'>"`).
+
 The request body is received in full before any of these checks run, with each
 part over 1 MiB spooled to a temporary file, so a 413 or a 503 still costs the
 upload. The disk it takes, and the memory a fit needs for a given
@@ -501,9 +506,13 @@ thread pools to 1 (`runtime.threads` reports the four variables), so a result
 does not depend on the host's core count. numba runs its `workqueue` threading
 layer because the image has no libgomp; that is harmless with the pins at 1.
 
-Checked: identical output with the container limited to 2 and to 8 CPUs, and
-between an arm64 image and an emulated amd64 one. Not checked: real x86_64 CPU
-models, which is why the guarantee is scoped to a CPU class. The server also
-fits a synthetic set twice at start and refuses to serve if the two results
-differ, so `GET /health` (`{"status": "ok", "versions": {...}}`, the container's
-healthcheck target) answers only once that check has passed.
+Checked: identical output with the container pinned to 1, 2, 4 and 8 cores
+(`--cpuset-cpus`), each with the thread variables at 1, 2, 4 and 8. Across
+architectures the output can differ: an arm64 image and an emulated amd64 one
+agree on 2,000 points of 64 dimensions, but on 6,000 points of 1024 dimensions,
+which take the approximate-neighbour path, they found 105 and 106 topics. That,
+and the x86_64 CPU models left unchecked, is why the guarantee is scoped to a CPU
+class. The server also fits a synthetic set twice at start and refuses to serve
+if the two results differ, so `GET /health`
+(`{"status": "ok", "versions": {...}}`, the container's healthcheck target)
+answers only once that check has passed.
