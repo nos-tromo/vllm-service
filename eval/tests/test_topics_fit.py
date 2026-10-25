@@ -11,6 +11,7 @@ import importlib.util
 import os
 import socket
 import sys
+import tracemalloc
 from collections import Counter
 from dataclasses import replace
 from pathlib import Path
@@ -266,6 +267,71 @@ def test_keywords_rank_rounded_scores_then_words() -> None:
     ranked = [("bravo", 0.9), ("delta", 0.5), ("alpha", 0.25), ("charlie", 0.25)]
     assert topics_fit._keywords(words, columns, scores, 10, frozenset()) == ranked
     assert topics_fit._keywords(words, columns, scores, 3, frozenset({"delta"})) == [("bravo", 0.9), ("alpha", 0.25)]
+
+
+HdbscanFits = list[tuple[int, int]]
+
+
+@pytest.fixture
+def hdbscan_fits(monkeypatch: pytest.MonkeyPatch) -> HdbscanFits:
+    """Record each HDBSCAN fit's effective ``min_samples`` and the memory traced while it ran.
+
+    Args:
+        monkeypatch: Pytest's monkeypatch fixture.
+
+    Returns:
+        The list of ``(min_samples, traced peak in bytes)`` pairs, appended to as fits run.
+    """
+    fits: HdbscanFits = []
+    fit = hdbscan.HDBSCAN.fit
+
+    def _measured(self: hdbscan.HDBSCAN, *args: object, **kwargs: object) -> object:
+        tracemalloc.start()
+        tracemalloc.reset_peak()
+        try:
+            result = fit(self, *args, **kwargs)
+            peak = tracemalloc.get_traced_memory()[1]
+        finally:
+            tracemalloc.stop()
+        fits.append((self.min_samples if self.min_samples is not None else self.min_cluster_size, peak))
+        return result
+
+    monkeypatch.setattr(hdbscan.HDBSCAN, "fit", _measured)
+    return fits
+
+
+def test_min_samples_is_capped_at_100(hdbscan_fits: HdbscanFits) -> None:
+    """A large ``min_topic_size`` no longer multiplies HDBSCAN's memory: ``min_samples`` stops at 100.
+
+    hdbscan's default sets ``min_samples`` to ``min_cluster_size``, and its core-distance query holds
+    ``min_samples + 1`` neighbours per point; uncapped, this fit traced about 180 MiB inside HDBSCAN alone.
+    """
+    texts, vectors, _ = _make_blobs(n_per=2000, k=2)
+    fit_topics(texts, vectors, replace(PARAMS, min_topic_size=2000))
+    ((min_samples, peak),) = hdbscan_fits
+    assert min_samples == 100
+    assert peak < 32 * 2**20
+
+
+@pytest.mark.parametrize(("min_topic_size", "n_per"), [(10, 60), (100, 150)], ids=["10", "100"])
+def test_min_samples_cap_leaves_small_topic_sizes_unchanged(
+    min_topic_size: int, n_per: int, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Up to ``min_topic_size=100`` the cap changes nothing: the fit matches hdbscan's own ``min_samples``."""
+    texts, vectors, _ = _make_blobs(n_per=n_per)
+    params = replace(PARAMS, min_topic_size=min_topic_size)
+    capped = fit_topics(texts, vectors, params)
+    fit = hdbscan.HDBSCAN.fit
+
+    def _uncapped(self: hdbscan.HDBSCAN, *args: object, **kwargs: object) -> object:
+        self.min_samples = None  # hdbscan then uses min_cluster_size
+        return fit(self, *args, **kwargs)
+
+    monkeypatch.setattr(hdbscan.HDBSCAN, "fit", _uncapped)
+    uncapped = fit_topics(texts, vectors, params)
+    assert capped.topics
+    assert capped.labels == uncapped.labels
+    assert capped.topics == uncapped.topics
 
 
 def test_min_points(blobs: Blobs) -> None:

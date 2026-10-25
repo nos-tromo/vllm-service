@@ -71,7 +71,7 @@ keywords.
 
 - **Input order:** the client supplies it. The service never sorts or samples.
 - **UMAP:** `n_neighbors=15, n_components=5, min_dist=0.0, metric="cosine", random_state=seed, n_jobs=1`. A fixed seed makes UMAP single-threaded, which `n_jobs=1` states explicitly.
-- **hdbscan:** `metric="euclidean", cluster_selection_method="eom", core_dist_n_jobs=1`, with `min_cluster_size = min_topic_size`.
+- **hdbscan:** `metric="euclidean", cluster_selection_method="eom", core_dist_n_jobs=1`, with `min_cluster_size = min_topic_size` and `min_samples = min(min_topic_size, 100)`. hdbscan's own default is `min_samples = min_cluster_size`, and its core-distance query holds `min_samples + 1` neighbours of every distinct vector at 16 bytes each, so the cap bounds it at about `n·101·16` bytes. Up to `min_topic_size` 100 the clustering is identical to the default.
 - **c-TF-IDF:** `ClassTfidfTransformer(reduce_frequent_words=True)`. A per-text `CountVectorizer(stop_words, min_df)` fixes the vocabulary before the fit, and BERTopic receives it fixed. So `min_df` counts texts, not topics, and the vocabulary cannot come out empty after clustering.
 - **Keywords:** the service ranks each topic's row of the fitted c-TF-IDF matrix itself: by the score rounded to 6 decimals, then alphabetically, then cut to `top_n_words`. BERTopic's own lists leave the order of equal scores, and so which tied words survive the cut, to numpy's sort, which differs between platforms.
 - **Text:** BERTopic runs with `language=None`, so texts are not stripped to ASCII. When fewer than two words survive `stop_words` and `min_df`, every text is replaced by a two-word sentinel. The clustering is unchanged, and every topic's keywords are empty.

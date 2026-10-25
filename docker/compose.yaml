@@ -700,8 +700,10 @@ services:
     #   POST /topics/fit multipart meta=<json> texts=<json> vectors=<float32>
     #     -> {"labels": [...], "outliers", "topics": [{"id", "size", "keywords"}], ...}
     # One fit runs at a time (a second request gets 503); TOPICS_MAX_POINTS
-    # bounds a request. Nothing waits for it to be healthy (the router needs
-    # it started only), so it sits outside the GPU startup chain above.
+    # bounds a request, and mem_limit contains one that outgrows the
+    # measured peak: the kernel kills this container, not a GPU backend.
+    # Nothing waits for it to be healthy (the router needs it started only),
+    # so it sits outside the GPU startup chain above.
     image: vllm-service-topics:${VLLM_SERVICE_VERSION:-latest}
     build:
       context: ..
@@ -711,6 +713,7 @@ services:
     environment:
       <<: *no-proxy-env
       TOPICS_MAX_POINTS: ${TOPICS_MAX_POINTS:-150000}
+    mem_limit: ${TOPICS_MEM_LIMIT:-7g}
     volumes:
       - media-tmp:/tmp
     healthcheck:

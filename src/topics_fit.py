@@ -33,6 +33,11 @@ Fitting every row instead would scatter copies: UMAP's approximate neighbour sea
 from 4096 rows, spreads them over many clusters, and HDBSCAN labels even identical points
 inconsistently. When fewer than :func:`min_points` of the vectors are distinct, every
 input is returned as an outlier without running UMAP or HDBSCAN.
+
+Memory: hdbscan's ``min_samples`` defaults to ``min_cluster_size``, and its core-distance
+query keeps ``min_samples + 1`` neighbours of every distinct vector, 16 bytes each. The fit
+caps ``min_samples`` at 100, so a large ``min_topic_size`` cannot multiply that; up to 100
+the clustering is exactly hdbscan's default.
 """
 
 from __future__ import annotations
@@ -54,6 +59,9 @@ _PACKAGES = ("bertopic", "umap-learn", "hdbscan", "scikit-learn", "numpy", "numb
 # Plain lowercase ASCII, so tokenizing leaves both words exactly as written.
 _SENTINEL_WORDS = ("topicsemptyone", "topicsemptytwo")
 
+# HDBSCAN's min_samples; its core-distance query holds min_samples + 1 neighbours of every point.
+_MIN_SAMPLES_CAP = 100
+
 
 @dataclass(frozen=True)
 class FitParams:
@@ -61,7 +69,8 @@ class FitParams:
 
     Attributes:
         seed: UMAP's random state.
-        min_topic_size: HDBSCAN's ``min_cluster_size``.
+        min_topic_size: HDBSCAN's ``min_cluster_size``. HDBSCAN's ``min_samples`` is the same value
+            capped at 100, which leaves fits up to 100 as hdbscan's own default would.
         nr_topics: BERTopic's topic-reduction target, or 0 for no reduction. BERTopic
             counts the outlier class as one of these topics.
         top_n_words: Keywords kept per topic.
@@ -191,6 +200,7 @@ def fit_topics(texts: Sequence[str], vectors: np.ndarray, params: FitParams) -> 
         ),
         hdbscan_model=hdbscan.HDBSCAN(
             min_cluster_size=params.min_topic_size,
+            min_samples=min(params.min_topic_size, _MIN_SAMPLES_CAP),
             metric="euclidean",
             cluster_selection_method="eom",
             core_dist_n_jobs=1,
