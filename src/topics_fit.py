@@ -19,6 +19,12 @@ above the number of topics found would empty the vocabulary mid-fit. A vocabular
 than two words (BERTopic's c-TF-IDF raises on one) is replaced by a two-word sentinel,
 which keeps the clustering untouched and leaves every topic without keywords.
 
+Keywords: BERTopic's own lists are not used. It orders and cuts them with numpy's argsort
+and argpartition, which leave equal scores, and so which tied words survive the cut, to
+the platform's sort. :func:`_keywords` ranks each topic's row of the fitted c-TF-IDF matrix
+instead: highest score first, scores rounded to 6 places as they are reported, equal
+scores alphabetically.
+
 Duplicates: exact-duplicate vectors are clustered once; copies inherit their
 representative's label. The fit runs on the distinct vectors in first-occurrence order,
 each paired with its first occurrence's text, so a duplicated text counts once towards
@@ -38,7 +44,6 @@ from collections import Counter
 from collections.abc import Sequence
 from dataclasses import dataclass
 from importlib import metadata
-from typing import SupportsFloat
 
 import numpy as np
 
@@ -79,7 +84,8 @@ class TopicInfo:
     Attributes:
         id: The topic id, ``>= 0``.
         size: How many inputs carry the id.
-        keywords: ``(word, c-TF-IDF score)`` pairs, best first, scores rounded to 6 places.
+        keywords: ``(word, c-TF-IDF score)`` pairs, best first, scores rounded to 6 places and
+            equal scores in alphabetical order.
     """
 
     id: int
@@ -200,11 +206,17 @@ def fit_topics(texts: Sequence[str], vectors: np.ndarray, params: FitParams) -> 
     predicted, _ = model.fit_transform(docs, embeddings=representatives)
     labels = [int(label) for label in np.asarray(predicted)[group]]  # copies inherit their representative's label
     sizes = Counter(labels)
-    topics = [
-        TopicInfo(id=topic_id, size=sizes[topic_id], keywords=_keywords(model.get_topic(topic_id) or [], dropped))
-        for topic_id in sorted(sizes)
-        if topic_id >= 0
-    ]
+    c_tf_idf = model.c_tf_idf_.tocsr()
+    words = model.vectorizer_model.get_feature_names_out().tolist()
+    topics = []
+    # The matrix has one row per topic id in ascending order, so the outlier class (-1) is row 0 when present.
+    for row, topic_id in enumerate(sorted(sizes)):
+        if topic_id >= 0:
+            start, stop = c_tf_idf.indptr[row], c_tf_idf.indptr[row + 1]
+            keywords = _keywords(
+                words, c_tf_idf.indices[start:stop], c_tf_idf.data[start:stop], params.top_n_words, dropped
+            )
+            topics.append(TopicInfo(id=topic_id, size=sizes[topic_id], keywords=keywords))
     return FitResult(labels=labels, topics=topics, outliers=sizes[-1], fit_s=time.perf_counter() - started)
 
 
@@ -249,18 +261,30 @@ def _vocabulary(docs: list[str], params: FitParams) -> dict[str, int] | None:
     return vocabulary if len(vocabulary) >= 2 else None
 
 
-def _keywords(ranked: Sequence[tuple[str, SupportsFloat]], dropped: frozenset[str]) -> list[tuple[str, float]]:
-    """Round BERTopic's ranked words, dropping its blank padding and the sentinel.
+def _keywords(
+    words: Sequence[str], columns: np.ndarray, scores: np.ndarray, top_n_words: int, dropped: frozenset[str]
+) -> list[tuple[str, float]]:
+    """Rank one topic's words by c-TF-IDF score and keep the best.
+
+    Scores are rounded to 6 decimal places before they are compared, as they are reported, and
+    equal scores go alphabetically, so the result depends on the matrix alone and not on the
+    order of its columns or on the platform's sort.
 
     Args:
-        ranked: ``(word, score)`` pairs as BERTopic returns them, best first; the scores are
-            numpy scalars.
-        dropped: Words to leave out.
+        words: The vocabulary, indexed by column.
+        columns: The columns holding a stored value in the topic's row.
+        scores: Those values, in the same order.
+        top_n_words: How many keywords to keep.
+        dropped: Words to leave out, the sentinel. They go after the cut, so no other word takes their place.
 
     Returns:
-        The keywords, scores as plain floats rounded to 6 decimal places.
+        The keywords, best first, scores as plain floats rounded to 6 decimal places.
     """
-    return [(word, round(float(score), 6)) for word, score in ranked if word and word not in dropped]
+    column_ids: list[int] = columns.tolist()
+    values: list[float] = scores.tolist()
+    ranked = [(words[column], round(score, 6)) for column, score in zip(column_ids, values, strict=True) if score > 0]
+    ranked.sort(key=lambda pair: (-pair[1], pair[0]))
+    return [(word, score) for word, score in ranked[:top_n_words] if word not in dropped]
 
 
 def versions() -> dict[str, str]:
