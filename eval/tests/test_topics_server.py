@@ -537,12 +537,17 @@ def test_too_few_points_is_422(min_topic_size: int, minimum: int, fit_calls: Fit
 
 
 def test_too_few_points_is_decided_from_meta_alone(fit_calls: FitCalls) -> None:
-    """The minimum needs only meta, so it is checked before either large part is judged or read."""
+    """The minimum needs only meta, so it is checked before either large part is read."""
+    response = _post(_meta(n=15), b"not json", b"\x00")
+    assert response.status_code == 422
+    assert "at least 16" in response.json()["detail"]
+    assert fit_calls == []
+
+
+def test_texts_size_is_judged_before_the_point_minimum(fit_calls: FitCalls) -> None:
+    """Every size refusal comes before every content refusal: oversize texts are a 413 even with too few points."""
     oversize_texts = b"x" * (15 * 16_384 + 65_536 + 1)  # over the texts limit for 15 points
-    for texts in (b"not json", oversize_texts):
-        response = _post(_meta(n=15), texts, b"\x00")
-        assert response.status_code == 422
-        assert "at least 16" in response.json()["detail"]
+    assert _post(_meta(n=15), oversize_texts, b"\x00").status_code == 413
     assert fit_calls == []
 
 

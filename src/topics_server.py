@@ -60,9 +60,9 @@ body is spooled at a time and a stalled client cannot keep the slot. The slot is
 process, so these bounds hold per uvicorn worker; the image runs one.
 
 The handler then reads a part into memory only once the checks before it have passed, and those
-judge sizes alone: ``meta``'s size, then ``n`` and ``n * dim`` against the limits and ``n``
-against the fit's minimum, then the sizes of ``texts`` and ``vectors``, and only then the reads
-(``vectors``, then ``texts``).
+judge sizes alone: ``meta``'s size, then ``n`` and ``n * dim`` against the limits and the size of
+``texts``, so that every 413 comes before any 422, then ``n`` against the fit's minimum and the
+size of ``vectors``, and only then the reads (``vectors``, then ``texts``).
 
 The server logs counts and timings only, never texts, vectors or keywords.
 """
@@ -487,6 +487,8 @@ def fit(
             status_code=413,
             detail=f"n*dim={settings.n * settings.dim} exceeds TOPICS_MAX_POINTS*{_VALUES_PER_POINT}={budget}",
         )
+    texts_limit = min(settings.n * _TEXTS_BYTES_PER_POINT + _TEXTS_BYTES_SLACK, _TEXTS_MAX_BYTES)
+    _require_size_at_most(texts, texts_limit, "texts")
     params = topics_fit.FitParams(
         seed=settings.seed,
         min_topic_size=settings.min_topic_size,
@@ -501,8 +503,6 @@ def fit(
             status_code=422,
             detail=f"need at least {minimum} points for min_topic_size={settings.min_topic_size}, got {settings.n}",
         )
-    texts_limit = min(settings.n * _TEXTS_BYTES_PER_POINT + _TEXTS_BYTES_SLACK, _TEXTS_MAX_BYTES)
-    _require_size_at_most(texts, texts_limit, "texts")
     points = _read_vectors(vectors, settings)
     documents = _read_texts(texts, settings.n)
     try:
