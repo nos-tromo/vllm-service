@@ -56,7 +56,7 @@ Errors:
 
 Exact-duplicate vectors are clustered once; copies inherit their representative's label. The fit runs on the distinct vectors in first-occurrence order, each paired with its first occurrence's text. The texts of the copies are not used, for keywords or for `min_df`, while a topic's `size` counts every input row (`sum(size) + outliers == n`). Inputs with fewer distinct vectors than that minimum get a `200`, not a `422`: every label is `-1` and `topics` is empty, and UMAP and HDBSCAN do not run on them.
 
-`TOPICS_MAX_POINTS` defaults to `150000`. A fit's peak memory is about 3.6 GB per 100k points at 1024 dimensions, measured on synthetic data. Because `n·dim` is capped at `TOPICS_MAX_POINTS·1024`, a wider vector means fewer points, not a larger peak.
+`TOPICS_MAX_POINTS` defaults to `150000`. Because `n·dim` is capped at `TOPICS_MAX_POINTS·1024`, a wider vector means fewer points, not a larger peak. The limit does not bound memory on its own: a fit's peak grows with the number of points, their dimensions and their text length, and the share of distinct vectors moves it too. Measured on the real server with synthetic data (1024 dimensions, texts of about 2,000 characters, `min_topic_size` 100, 10% exact duplicates), one fit peaked at 2.3 GB with 50k points and 3.9 GB with 100k, about 5.4 GB at 150k extrapolated linearly. Both topics services therefore set `mem_limit: ${TOPICS_MEM_LIMIT:-7g}`, that peak plus 25% rounded up to a whole GiB. A request that outgrows it kills only the topics container, which restarts.
 
 ### `GET /health`
 

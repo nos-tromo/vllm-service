@@ -35,10 +35,14 @@ Endpoints:
 
 Configuration:
 
-    TOPICS_MAX_POINTS   Largest accepted ``n``. Default 150000: a fit peaks near 3.6 GB per 100k
-                        points at 1024 dimensions. It also caps ``n * dim`` at 1024 times the
-                        limit, so a wider vector means fewer points, not more memory. Must be a
-                        positive integer.
+    TOPICS_MAX_POINTS   Largest accepted ``n``. Default 150000. It also caps ``n * dim`` at 1024
+                        times the limit, so a wider vector means fewer points, not more memory.
+                        Must be a positive integer. It does not bound memory on its own: at 1024
+                        dimensions with texts of about 2,000 characters a fit measured 2.3 GB at
+                        50k points and 3.9 GB at 100k, about 5.4 GB at 150k extrapolated, and
+                        more points, wider vectors and longer texts raise it. Compose's
+                        ``mem_limit`` (``TOPICS_MEM_LIMIT``, default 7g) contains a request that
+                        outgrows it.
     TOPICS_WARMUP       Run ``topics_fit.self_check()`` at import, which compiles the numba code
                         and fits a synthetic set twice. On unless set to false, 0, no or off.
 

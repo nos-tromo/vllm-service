@@ -386,7 +386,7 @@ with a filename, as `curl -F name=@file` does):
 | `n` | Number of points: the length of `texts` and the row count of `vectors` | ≥ 1 |
 | `dim` | Vector dimension | 1 to 8192 |
 | `seed` | UMAP's random state | 0 to 2³² − 1 |
-| `min_topic_size` | HDBSCAN's `min_cluster_size` | ≥ 2 |
+| `min_topic_size` | HDBSCAN's `min_cluster_size`; HDBSCAN's `min_samples` is the same value capped at 100 | ≥ 2 |
 | `nr_topics` | Topic-reduction target, or `0` for none; BERTopic counts the outlier class as one of the topics | `0` or ≥ 2 |
 | `top_n_words` | Keywords kept per topic | 1 to 30 |
 | `min_df` | The fewest texts a word must occur in to become a keyword | ≥ 1 |
@@ -453,10 +453,13 @@ with, for example, this `meta.json`:
   every topic's `keywords` is empty; the clustering is unchanged.
 - **One fit at a time.** A request that arrives while a fit is running gets a 503
   with `Retry-After: 30`; requests are not queued.
-- **Duration.** A fit takes seconds to minutes: about 90 s for 100k points at 1024
-  dimensions (synthetic data, one Apple Silicon core), growing roughly linearly
-  with `n`. The first fit with 4096 or more distinct vectors in a process also
-  compiles pynndescent's numba code once, adding about 6–7 s to that request.
+- **Duration.** A fit takes seconds to minutes. Measured on synthetic data at 1024
+  dimensions on one Apple Silicon core: about 90 s for 100k points with six-word
+  texts, and 57 s for 50k and 180 s for 100k with texts of about 2,000 characters.
+  It grows faster than `n`, and the shape of the data moves it as well: one
+  512-dimensional set of 50k points took 244 s. The first fit with 4096 or more
+  distinct vectors in a process also compiles pynndescent's numba code once,
+  adding about 6–7 s to that request.
   Clients need a read timeout to match; the router's pass-through timeout is 4 h.
 
 ### Errors
@@ -480,6 +483,13 @@ part over 1 MiB spooled to a temporary file, so a 413 or a 503 still costs the
 upload. The disk it takes, and the memory a fit needs for a given
 `TOPICS_MAX_POINTS`, are in
 [configuration.md](configuration.md#topic-model-fit-limits).
+
+A request whose fit outgrows the container's memory limit (`TOPICS_MEM_LIMIT`)
+gets none of these answers. The kernel kills the topics container, so a direct
+call sees the connection close with no response, and a call through the router
+gets a 500 from LiteLLM, `{"error": {"message": "Server disconnected", ...}}`,
+not the service's `{"detail": ...}`. The container then restarts and passes its
+self-check again before it answers.
 
 ### Determinism
 

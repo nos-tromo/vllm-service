@@ -415,13 +415,16 @@ Override defaults via `.env` — only `TOPICS_*` knobs apply in this shape:
 
 ```bash
 TOPICS_MAX_POINTS=150000   # default; the most points one request may carry
+TOPICS_MEM_LIMIT=7g        # default; the container's memory limit
 # TOPICS_HOST_PORT=8008    # host publish port for dev
 ```
 
-`TOPICS_MAX_POINTS` also decides how much memory and disk one request can take:
-about 3.6 GB of memory per 100k points at 1024 dimensions, and about 600 MB of
-spool for the vectors of a request at the default limit. Compose sets no memory
-limit. The figures, and the startup self-check, are in
+One request's memory grows with its points, their dimensions and their texts: with
+1024 dimensions and texts of about 2,000 characters a fit measured 3.9 GB at 100k
+points, about 5.4 GB extrapolated to the default 150k. The vectors of a request at
+the default limit also spool about 600 MB to disk. `TOPICS_MEM_LIMIT` contains a
+request that outgrows the limit: the kernel kills this container, which restarts,
+and nothing else. The figures, what drives them, and the startup self-check are in
 [configuration.md](configuration.md#topic-model-fit-limits).
 
 **Startup.** The container reports healthy about 11 to 15 s after it starts, as

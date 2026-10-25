@@ -96,6 +96,7 @@ defaults via `.env`:
 
 ```bash
 TOPICS_MAX_POINTS=150000   # default; the most points one request may carry
+TOPICS_MEM_LIMIT=7g        # default; the container's memory limit (compose mem_limit)
 # TOPICS_HOST_PORT=8008    # host publish port for dev (topics-only)
 # TOPICS_WARMUP=true       # image default, not in .env.example; false skips the startup self-check
 ```
@@ -105,14 +106,43 @@ from `meta.json` alone. It also caps `n × dim` at `TOPICS_MAX_POINTS × 1024` (
 too), so a wider vector means fewer points, not a larger peak. A value that is not
 a positive integer stops the server at startup.
 
-**Memory.** A fit peaks near 3.6 GB per 100k points at 1024 dimensions. That is
-measured on synthetic data, for the whole process with the vectors in it: about
-0.8 GB at 10k points, 1.9 GB at 50k and 3.6 GB at 100k. The default limit
-extrapolates to about 5.4 GB. An input with exact-duplicate vectors adds a second
-copy of the vectors (the distinct rows), up to about 0.4 GB per 100k points.
-Compose sets no memory limit on the service, as on every other service in this
-repo, so `TOPICS_MAX_POINTS` is the only guard: size it to the headroom the host
-has. In the full stack the fit shares the host with chat, embed and gliner.
+**Memory.** A fit's peak grows with the number of points and with what each one
+carries. Measured on the real server, natively on one Apple Silicon core, with
+synthetic requests (1024-dimensional vectors, texts of about 2,000 characters,
+`min_topic_size` 100, 10% exact duplicates, about a third of the points outliers),
+one request peaked at 2.3 GB with 50,000 points and 3.9 GB with 100,000, of which
+the idle server is about 0.5 GB. Extrapolated linearly, the default of 150,000
+points peaks at about 5.4 GB. What drives it, measured at 50,000 points:
+
+- **Points:** each added about 31 KB between 50,000 and 100,000 at those settings,
+  and almost every part of the fit scales with them.
+- **Dimensions:** 512 instead of 1024 saved 0.44 GB, about four times the vector
+  bytes left out, because the vectors are held several times over: the request
+  bytes, the distinct rows the fit runs on, and a transient while duplicates are
+  found. Since `n × dim` is capped, a wider vector means fewer points.
+- **Text length:** texts of 200 instead of 2,000 characters saved 0.24 GB, about
+  2.7 times the text left out. Each text is tokenized for the vocabulary, and again,
+  joined with the rest of its topic, for c-TF-IDF. The `texts` part may hold up to
+  512 MiB, so longer texts can cost well beyond these figures.
+- **Duplicates:** roughly neutral at 10%. Copies are not fitted, but the distinct
+  rows are copied out of the request; the same 50,000 points with no duplicates
+  peaked 0.18 GB higher.
+- **`min_topic_size`:** bounded. HDBSCAN's `min_samples` is capped at 100, so its
+  neighbour table stays under `n × 101 × 16` bytes, about 0.24 GB at 150,000
+  points.
+
+`TOPICS_MAX_POINTS` therefore does not bound memory on its own. `TOPICS_MEM_LIMIT`
+sets compose's `mem_limit` on both topics services: the default, `7g`, is the
+extrapolated 150,000-point peak plus 25%, rounded up to a whole GiB. Checked on
+Linux in the `topics-only` container, a 150,000-point request of the same shape
+peaked at 4.3 GB resident, 5.1 GB for the container with its page cache, and used
+no swap. A request that outgrows the limit kills only the topics container, never
+another service: a direct client sees the connection close with no response, a
+client of the router gets a 500 from LiteLLM (`Server disconnected`), and the
+container restarts and runs its self-check again before it serves. With swap on
+the host, Docker lets the container use as much swap again before the kill. In the
+full stack the fit shares the host with chat, embed and gliner; raise either
+setting only as far as the host's headroom allows.
 
 **Disk.** Starlette spools each uploaded part to a temporary file once it passes
 1 MiB, and does so before the handler runs, so a request is received in full

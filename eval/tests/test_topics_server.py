@@ -641,7 +641,7 @@ def test_health_reports_versions() -> None:
 
 
 def test_max_points_defaults_to_150000() -> None:
-    """A fit's peak memory sets the default: about 5.4 GB at 150000 points of 1024 dimensions."""
+    """The default is 150000 points: about 5.4 GB at 1024 dimensions with 2,000-character texts, extrapolated."""
     assert topics_server.MAX_POINTS == 150_000
 
 
