@@ -50,7 +50,7 @@ Errors:
 |---|---|
 | `400` | A malformed `meta.json` (including a `dim` above 8192 or a stop word over 64 characters), or a multipart body that names no boundary |
 | `413` | `n > TOPICS_MAX_POINTS`, `n·dim > TOPICS_MAX_POINTS·1024`, a `meta.json` over 1 MiB, or a `texts` part over `min(n·16384 + 65536, 536870912)` bytes. Each is decided from `meta.json` and the parts' sizes alone, before a large part is read into memory |
-| `422` | A missing part (including a body that is not multipart), `len(texts) != n`, a vector byte count other than `n·dim·4`, non-finite values, or fewer points than the minimum, `max(16, 2·min_topic_size)` |
+| `422` | A missing part (including a body that is not multipart), a `texts` part that is not a JSON array of strings, `len(texts) != n`, a vector byte count other than `n·dim·4`, non-finite values, or fewer points than the minimum, `max(16, 2·min_topic_size)` |
 | `503` + `Retry-After` | A fit is already running (one at a time; requests are not queued) |
 | `500` | The fit itself failed |
 

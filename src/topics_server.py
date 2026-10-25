@@ -24,10 +24,10 @@ Endpoints:
         over 64 characters included) or a multipart body without a boundary; 413 when ``n``
         exceeds ``TOPICS_MAX_POINTS``, ``n * dim`` exceeds ``TOPICS_MAX_POINTS * 1024``, ``meta``
         is over 1 MiB, or ``texts`` is over ``min(n * 16384 + 65536, 512 MiB)`` bytes; 422 for a
-        missing part, a text count other than ``n``, a vector byte count other than
-        ``n * dim * 4``, a NaN or infinity, or fewer points than the fit needs; 503 with
-        ``Retry-After`` while another fit runs (one at a time, never queued); 500 when the fit
-        itself fails.
+        missing part, a ``texts`` part that is not a JSON array of strings, a text count other
+        than ``n``, a vector byte count other than ``n * dim * 4``, a NaN or infinity, or fewer
+        points than the fit needs; 503 with ``Retry-After`` while another fit runs (one at a
+        time, never queued); 500 when the fit itself fails.
 
     GET /health
         Liveness probe; returns ``{"status": "ok", "versions": {...}}``. The server only starts

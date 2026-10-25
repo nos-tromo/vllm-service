@@ -111,9 +111,8 @@ measured on synthetic data, for the whole process with the vectors in it: about
 extrapolates to about 5.4 GB. An input with exact-duplicate vectors adds a second
 copy of the vectors (the distinct rows), up to about 0.4 GB per 100k points.
 Compose sets no memory limit on the service, as on every other service in this
-repo, so
-`TOPICS_MAX_POINTS` is the only guard: size it to the headroom the host has. In the
-full stack the fit shares the host with chat, embed and gliner.
+repo, so `TOPICS_MAX_POINTS` is the only guard: size it to the headroom the host
+has. In the full stack the fit shares the host with chat, embed and gliner.
 
 **Disk.** Starlette spools each uploaded part to a temporary file once it passes
 1 MiB, and does so before the handler runs, so a request is received in full
@@ -127,11 +126,12 @@ well, onto the same volume, so a request in flight occupies it twice.
 code, fits a synthetic set twice, and stops if the two results differ. `/health`
 therefore passes only about 11 to 15 s after the container starts, as measured (the
 compose `start_period` is 180 s, for slower hosts), and a failing check makes the
-container restart instead of serve. The first fit above 4096 rows compiles
-pynndescent's numba code once more, about 6–7 s on that request. `TOPICS_WARMUP`
-defaults to `true` in the image; `false`, `0`, `no` or `off` skip the check.
-Skipping it moves the compile onto the first request and leaves nothing showing
-that fits repeat on the host, so it is meant for tests, not for a deployment.
+container restart instead of serve. The first fit with 4096 or more distinct
+vectors compiles pynndescent's numba code once more, about 6–7 s on that request.
+`TOPICS_WARMUP` defaults to `true` in the image; `false`, `0`, `no` or `off` skip
+the check. Skipping it moves the compile onto the first request and leaves nothing
+showing that fits repeat on the host, so it is meant for tests, not for a
+deployment.
 
 **Threads.** A fit runs on one core. `OPENBLAS_NUM_THREADS`, `OMP_NUM_THREADS`,
 `MKL_NUM_THREADS` and `NUMBA_NUM_THREADS` are set to 1 in the image, which keeps a

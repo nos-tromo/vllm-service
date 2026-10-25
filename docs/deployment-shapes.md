@@ -425,8 +425,8 @@ limit. The figures, and the startup self-check, are in
 
 **Startup.** The container reports healthy about 11 to 15 s after it starts, as
 measured: the server fits a synthetic set twice before it listens. The first fit
-above 4096 rows compiles pynndescent's numba code once, about 6–7 s on that
-request.
+with 4096 or more distinct vectors compiles pynndescent's numba code once, about
+6–7 s on that request.
 
 **Build and pinning.** The other CPU images install the ranges their Dockerfiles
 name; this one installs from a lock of its own, because a fixed-seed fit changes

@@ -439,12 +439,12 @@ with, for example, this `meta.json`:
   needs more points than its 15 neighbours, and HDBSCAN room for two topics.
 - **Exact duplicates are clustered once.** The fit runs on the distinct vectors in
   first-occurrence order (`-0.0` and `0.0` are the same value), each paired with
-  its first occurrence's text, and copies inherit their representative's label. A
-  duplicated text therefore counts once towards keywords and `min_df`, while
+  its first occurrence's text, and copies inherit their representative's label.
+  The texts of the copies are not used, for keywords or for `min_df`, while
   `size` counts every row. `min_topic_size` counts distinct vectors, so copies of
-  one vector never add up to a topic. An input of at least the minimum above
-  that holds fewer distinct vectors than that gets a `200` rather than a `422`:
-  every label is `-1`, `topics` is empty, and UMAP and HDBSCAN do not run.
+  one vector never add up to a topic. If the points meet the minimum above but
+  the distinct vectors do not, the answer is a `200`, not a `422`: every label is
+  `-1`, `topics` is empty, and UMAP and HDBSCAN do not run.
 - **Texts are used as sent.** They are not stripped to ASCII, so non-Latin scripts
   and diacritics reach the keywords unchanged. Words are scikit-learn tokens:
   lowercased, two or more word characters. The vocabulary is fitted on the
@@ -455,9 +455,9 @@ with, for example, this `meta.json`:
   with `Retry-After: 30`; requests are not queued.
 - **Duration.** A fit takes seconds to minutes: about 90 s for 100k points at 1024
   dimensions (synthetic data, one Apple Silicon core), growing roughly linearly
-  with `n`. The first fit above 4096 rows in a process also compiles pynndescent's
-  numba code once, adding about 6–7 s to that request. Clients need a read timeout
-  to match; the router's pass-through timeout is 4 h.
+  with `n`. The first fit with 4096 or more distinct vectors in a process also
+  compiles pynndescent's numba code once, adding about 6–7 s to that request.
+  Clients need a read timeout to match; the router's pass-through timeout is 4 h.
 
 ### Errors
 
@@ -465,7 +465,7 @@ with, for example, this `meta.json`:
 |---|---|
 | `400` | A malformed `meta.json` (including a `dim` above 8192 or a stop word over 64 characters), or a multipart body that names no boundary |
 | `413` | `n > TOPICS_MAX_POINTS`, `n·dim > TOPICS_MAX_POINTS·1024`, a `meta.json` over 1 MiB, or a `texts` part over `min(n·16384 + 65536, 536870912)` bytes. Each is decided from `meta.json` and the parts' sizes alone, before a large part is read into memory |
-| `422` | A missing part (including a body that is not multipart), `len(texts) != n`, a vector byte count other than `n·dim·4`, non-finite values, or fewer points than the minimum, `max(16, 2·min_topic_size)` |
+| `422` | A missing part (including a body that is not multipart), a `texts` part that is not a JSON array of strings, `len(texts) != n`, a vector byte count other than `n·dim·4`, non-finite values, or fewer points than the minimum, `max(16, 2·min_topic_size)` |
 | `503` + `Retry-After` | A fit is already running (one at a time; requests are not queued) |
 | `500` | The fit itself failed; the body is a fixed message and quotes nothing from the request |
 
@@ -484,12 +484,12 @@ upload. The disk it takes, and the memory a fit needs for a given
 ### Determinism
 
 The same input bytes, settings, image and CPU class give the same labels and
-keywords. The service never sorts or samples, so the input order is the caller's.
-A fixed `seed` makes UMAP single-threaded (`n_jobs=1`), HDBSCAN computes core
-distances on one thread, and the image pins the BLAS and numba thread pools to 1
-(`runtime.threads` reports the four variables), so a result does not depend on the
-host's core count. numba runs its `workqueue` threading layer because the image
-has no libgomp; that is harmless with the pins at 1.
+keywords. The service never reorders or samples the input, so its order is the
+caller's. A fixed `seed` makes UMAP single-threaded (`n_jobs=1`), HDBSCAN
+computes core distances on one thread, and the image pins the BLAS and numba
+thread pools to 1 (`runtime.threads` reports the four variables), so a result
+does not depend on the host's core count. numba runs its `workqueue` threading
+layer because the image has no libgomp; that is harmless with the pins at 1.
 
 Checked: identical output with the container limited to 2 and to 8 CPUs, and
 between an arm64 image and an emulated amd64 one. Not checked: real x86_64 CPU
