@@ -31,7 +31,7 @@ from bertopic import BERTopic
 sys.path.insert(0, str(Path(__file__).resolve().parents[2] / "src"))
 
 import topics_fit
-from topics_fit import FitParams, FitResult, fit_topics, min_points, self_check
+from topics_fit import FitParams, FitResult, TopicInfo, fit_topics, min_points, self_check
 
 PREFIXES = ("alpha", "beta", "gamma")
 PARAMS = FitParams(seed=7, min_topic_size=10, nr_topics=0, top_n_words=10, min_df=1, stop_words=())
@@ -224,19 +224,26 @@ def test_keywords_rank_by_score_without_ties(blobs: Blobs, bertopic_models: list
 
 
 @pytest.mark.parametrize("scenario", ["plain", "outliers", "reduced"])
-def test_keywords_come_from_the_topics_own_matrix_row(scenario: str, bertopic_models: list[BERTopic]) -> None:
+def test_keywords_come_from_the_topics_own_matrix_row(
+    scenario: str, bertopic_models: list[BERTopic], monkeypatch: pytest.MonkeyPatch
+) -> None:
     """A topic's row of the c-TF-IDF matrix is its id, plus one when the outlier class takes the first row.
 
     BERTopic's rows are checked against its own report of each topic, and the fit's keywords against both.
+    For the outlier row, every twelfth point is relabelled -1 straight after HDBSCAN's real fit, whose
+    ``labels_`` BERTopic reads next, so the outlier class exists whatever the seed does.
     """
     texts, vectors, _ = _make_blobs()
     params = replace(PARAMS, top_n_words=30)
     if scenario == "outliers":
-        rng = np.random.default_rng(5)
-        noise = rng.normal(size=(40, vectors.shape[1]))
-        noise /= np.linalg.norm(noise, axis=1, keepdims=True)
-        texts = [*texts, *(" ".join(f"noise{word}" for word in rng.integers(0, 10, size=6)) for _ in noise)]
-        vectors = np.concatenate([vectors, noise.astype(np.float32)])
+        fit = hdbscan.HDBSCAN.fit
+
+        def _with_outliers(self: hdbscan.HDBSCAN, *args: object, **kwargs: object) -> object:
+            result = fit(self, *args, **kwargs)
+            self.labels_[::12] = -1
+            return result
+
+        monkeypatch.setattr(hdbscan.HDBSCAN, "fit", _with_outliers)
     if scenario == "reduced":
         params = replace(params, nr_topics=2)
     result = fit_topics(texts, vectors, params)
@@ -572,11 +579,19 @@ def test_single_word_vocabulary_yields_empty_keywords(blobs: Blobs) -> None:
 
 
 def test_min_df_counts_texts(blobs: Blobs) -> None:
-    """``min_df`` counts the texts a word occurs in, not the topics, however often it repeats."""
+    """``min_df`` counts the texts a word occurs in, not the topics, however often it repeats.
+
+    ``solo`` fills one text and ``duo`` two texts of one topic. Counted by topic, both occur once, so
+    ``min_df=2`` would drop both; counted by text, only ``solo`` goes.
+    """
     texts, vectors, _ = blobs
-    texts = [texts[0] + " solo" * 100, *texts[1:]]
-    assert "solo" in _keyword_words(fit_topics(texts, vectors, PARAMS))
-    assert "solo" not in _keyword_words(fit_topics(texts, vectors, replace(PARAMS, min_df=2)))
+    texts = [texts[0] + " solo" * 100, texts[1] + " duo" * 100, texts[2] + " duo" * 100, *texts[3:]]
+    params = replace(PARAMS, top_n_words=30)  # no cut: only the vocabulary decides
+    assert {"solo", "duo"} <= _keyword_words(fit_topics(texts, vectors, params))
+    result = fit_topics(texts, vectors, replace(params, min_df=2))
+    assert result.labels[1] == result.labels[2] != -1
+    assert "solo" not in _keyword_words(result)
+    assert "duo" in _keyword_words(result)
 
 
 def test_stop_words_stay_out_of_warnings_and_logs(
@@ -634,6 +649,30 @@ def test_versions_and_runtime_report_the_stack() -> None:
 def test_self_check_passes() -> None:
     """The startup self-check fits its synthetic set twice and finds the results identical."""
     assert self_check() is None
+
+
+_FIRST = FitResult(labels=[0, 1], topics=[TopicInfo(0, 1, [("word", 1.0)])], outliers=0, fit_s=1.0)
+
+
+@pytest.mark.parametrize(
+    ("second", "raises"),
+    [
+        pytest.param(replace(_FIRST, labels=[1, 0]), True, id="labels-differ"),
+        pytest.param(replace(_FIRST, topics=[TopicInfo(0, 1, [("other", 1.0)])]), True, id="keywords-differ"),
+        pytest.param(replace(_FIRST, fit_s=2.0), False, id="only-the-timing-differs"),
+    ],
+)
+def test_self_check_compares_labels_and_topics(
+    second: FitResult, raises: bool, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Two fits that disagree on the labels or the keywords stop the self-check; a timing difference does not."""
+    results = iter([_FIRST, second])
+    monkeypatch.setattr(topics_fit, "fit_topics", lambda texts, vectors, params: next(results))
+    if raises:
+        with pytest.raises(RuntimeError, match="not deterministic"):
+            self_check()
+    else:
+        self_check()
 
 
 def test_build_smoke_set_takes_the_approximate_neighbour_path() -> None:
