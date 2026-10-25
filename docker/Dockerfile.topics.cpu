@@ -54,10 +54,12 @@ ENV PATH=/opt/venv/bin:$PATH \
     JOBLIB_TEMP_FOLDER=/tmp \
     TOPICS_WARMUP=true
 
-# Build smoke: fit the synthetic self-check set twice and fail the build if the two
-# fits differ. It also proves the hash-pinned install imports and that hdbscan's
-# compiled extension loads.
+# Build smoke: fit a synthetic set twice and fail the build if the two fits differ,
+# at the startup check's 180 points and at 4200, where UMAP's neighbour search turns
+# approximate (from 4096 rows). It also proves the hash-pinned install imports and
+# that hdbscan's compiled extension loads.
 RUN NUMBA_CACHE_DIR=/tmp/build-numba python -c "import topics_fit; topics_fit.self_check(); print('topics build smoke: OK')" \
+    && NUMBA_CACHE_DIR=/tmp/build-numba python -c "import topics_fit; topics_fit.self_check(points_per_blob=1400); print('topics build smoke, approximate neighbours: OK')" \
     && rm -rf /tmp/build-numba
 
 # Non-root runtime user (deploy ADR 0001). /app stays root-owned and read-only to

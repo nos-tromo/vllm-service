@@ -634,3 +634,14 @@ def test_versions_and_runtime_report_the_stack() -> None:
 def test_self_check_passes() -> None:
     """The startup self-check fits its synthetic set twice and finds the results identical."""
     assert self_check() is None
+
+
+def test_build_smoke_set_takes_the_approximate_neighbour_path() -> None:
+    """The build smoke's larger set has 4096 or more distinct rows, where UMAP leaves its exact search.
+
+    The default set, the startup check's, keeps its 180 rows.
+    """
+    _, startup = topics_fit._synthetic_blobs()
+    _, smoke = topics_fit._synthetic_blobs(points_per_blob=1400)
+    assert startup.shape == (180, 32)
+    assert len(np.unique(smoke, axis=0)) >= 4096

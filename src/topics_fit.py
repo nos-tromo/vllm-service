@@ -334,13 +334,18 @@ def runtime() -> dict[str, object]:
     }
 
 
-def self_check() -> None:
+def self_check(points_per_blob: int = 60) -> None:
     """Fit a fixed synthetic set twice and require identical results.
+
+    Args:
+        points_per_blob: Points in each of the set's three blobs. The default, 180 points in all, is
+            the startup check. The build smoke also runs 1400, whose 4200 points take UMAP's
+            approximate-neighbour path, used from 4096 rows.
 
     Raises:
         RuntimeError: If the two fits disagree on the labels or the keywords.
     """
-    texts, vectors = _synthetic_blobs()
+    texts, vectors = _synthetic_blobs(points_per_blob)
     params = FitParams(seed=7, min_topic_size=10, nr_topics=0, top_n_words=10, min_df=1, stop_words=())
     first = fit_topics(texts, vectors, params)
     second = fit_topics(texts, vectors, params)
@@ -348,8 +353,11 @@ def self_check() -> None:
         raise RuntimeError("topic-model fit is not deterministic: two fits of the self-check set differ")
 
 
-def _synthetic_blobs() -> tuple[list[str], np.ndarray]:
-    """Build the self-check set: three separated blobs of 60 points with a vocabulary each.
+def _synthetic_blobs(points_per_blob: int = 60) -> tuple[list[str], np.ndarray]:
+    """Build the self-check set: three separated blobs with a vocabulary each.
+
+    Args:
+        points_per_blob: Points in each blob.
 
     Returns:
         The texts and the L2-normalised float32 vectors.
@@ -357,9 +365,11 @@ def _synthetic_blobs() -> tuple[list[str], np.ndarray]:
     rng = np.random.default_rng(7)
     prefixes = ("alpha", "beta", "gamma")
     centres = rng.normal(scale=4.0, size=(len(prefixes), 32))
-    vectors = np.concatenate([centre + rng.normal(size=(60, 32)) for centre in centres])
+    vectors = np.concatenate([centre + rng.normal(size=(points_per_blob, 32)) for centre in centres])
     vectors /= np.linalg.norm(vectors, axis=1, keepdims=True)
     texts = [
-        " ".join(f"{prefix}{word}" for word in rng.integers(0, 10, size=6)) for prefix in prefixes for _ in range(60)
+        " ".join(f"{prefix}{word}" for word in rng.integers(0, 10, size=6))
+        for prefix in prefixes
+        for _ in range(points_per_blob)
     ]
     return texts, vectors.astype(np.float32)
