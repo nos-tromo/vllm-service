@@ -83,6 +83,7 @@ keywords.
 The service has its own locked project, `docker/topics/{pyproject.toml,uv.lock}`. It is separate from the root project, whose lock resolves the eval environments, so neither world's pins move the other's.
 
 - The image installs the exported lock with `--no-deps --require-hashes`.
+- The export uses `--locked`, so a lock that has drifted from `docker/topics/pyproject.toml` fails the build instead of installing stale pins.
 - `exclude-dependencies` keeps `sentence-transformers` (and with it torch) and `plotly` out. BERTopic imports neither when no embedding model is configured.
 - BERTopic imports `yaml` and `packaging` at module level without declaring them; they normally arrive through sentence-transformers. The project therefore lists `pyyaml` and `packaging` itself.
 - `pandas<3` keeps BERTopic 0.17.4 on its tested range; `numpy<2.6` is numba's bound.

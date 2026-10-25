@@ -237,7 +237,7 @@ git commit -m "feat(topics): deterministic topic-model fit core with its own loc
   - `POST /topics/fit` with form file fields `meta`, `texts` and `vectors`.
   - `GET /health`.
 - Environment:
-  - `TOPICS_MAX_POINTS`: default `250000`, read once into the module constant `MAX_POINTS: int`. The tests monkeypatch `topics_server.MAX_POINTS`. Fail fast at startup if it isn't a positive int, as in `embed_server._positive_int_env`.
+  - `TOPICS_MAX_POINTS`: default `150000`, read once into the module constant `MAX_POINTS: int`. The tests monkeypatch `topics_server.MAX_POINTS`. Fail fast at startup if it isn't a positive int, as in `embed_server._positive_int_env`.
   - `TOPICS_WARMUP`: default `true`; when true, call `topics_fit.self_check()` at import.
 
 - [ ] **Step 1: Write the failing tests in `eval/tests/test_topics_server.py`**
@@ -286,7 +286,7 @@ Order inside `POST /topics/fit`:
    - `1 <= top_n_words <= 30`
    - `min_topic_size >= 2`
    - `min_df >= 1`
-   - `nr_topics >= 0`
+   - `nr_topics` is 0 or ≥ 2
    - `stop_words: list[str]` with at most 10000 entries
    - Errors → 400.
 3. `n > MAX_POINTS` → 413.
@@ -333,7 +333,7 @@ Use two stages on the pinned base `ghcr.io/astral-sh/uv:python3.11-trixie-slim@s
 Builder stage:
 1. Install `build-essential`.
 2. `COPY docker/topics/pyproject.toml docker/topics/uv.lock /build/`.
-3. `uv export --frozen --no-dev --no-emit-project --format requirements-txt -o /build/requirements.txt`.
+3. `uv export --locked --no-dev --no-emit-project --format requirements-txt -o /build/requirements.txt`.
 4. `uv venv /opt/venv`.
 5. `uv pip install --python /opt/venv/bin/python --no-deps --require-hashes --compile-bytecode -r /build/requirements.txt`.
 
@@ -424,7 +424,7 @@ The `topics` service:
 - `<<: *hardened`, `read_only: true`;
 - image `vllm-service-topics:${VLLM_SERVICE_VERSION:-latest}`, built from `docker/Dockerfile.topics.cpu`;
 - `logging: *default-logging`, `env_file: *env-file`;
-- environment `<<: *no-proxy-env` and `TOPICS_MAX_POINTS: ${TOPICS_MAX_POINTS:-250000}`;
+- environment `<<: *no-proxy-env` and `TOPICS_MAX_POINTS: ${TOPICS_MAX_POINTS:-150000}`;
 - volumes `media-tmp:/tmp` only;
 - the healthcheck as in `vad`, with `start_period: 180s` for the warm-up;
 - networks `vllm-net` and `inference-net`.
