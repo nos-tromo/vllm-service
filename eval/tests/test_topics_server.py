@@ -1,24 +1,36 @@
 """HTTP-contract tests for the topics fit server in ``src/topics_server.py``.
 
 The fit is stubbed, so these tests need only numpy and FastAPI and run in the root eval
-environment; the fit itself is covered by ``test_topics_fit.py``. All data is synthetic.
+environment; the fit itself is covered by ``test_topics_fit.py``. The live-server tests also need
+uvicorn, which only the topics environment has, and are skipped without it. All data is synthetic.
 """
 
+import asyncio
+import contextlib
 import importlib.util
 import io
+import itertools
 import json
 import logging
+import select
+import socket
 import sys
-from collections.abc import Iterator, Sequence
+import threading
+import time
+from collections.abc import Iterable, Iterator, Sequence
 from concurrent.futures import ThreadPoolExecutor
+from dataclasses import dataclass
 from pathlib import Path
 from types import ModuleType
+from typing import Any
 
 import httpx
 import numpy as np
 import pytest
 from fastapi import HTTPException, UploadFile
+from fastapi.routing import APIRoute
 from fastapi.testclient import TestClient
+from starlette.types import Message, Scope
 
 SRC = Path(__file__).resolve().parents[2] / "src"
 
@@ -142,6 +154,27 @@ def _texts_part(n: int, size: int) -> bytes:
     return part
 
 
+def _files(meta: object, texts: object, vectors: bytes | None) -> dict[str, tuple[str, bytes, str]]:
+    """Build the three file parts, leaving out any given as ``None``.
+
+    Args:
+        meta: The ``meta`` object, or raw bytes.
+        texts: The texts, or raw bytes.
+        vectors: The raw vector bytes.
+
+    Returns:
+        The parts, as httpx's ``files`` argument takes them.
+    """
+    files: dict[str, tuple[str, bytes, str]] = {}
+    if meta is not None:
+        files["meta"] = ("meta.json", _part(meta), "application/json")
+    if texts is not None:
+        files["texts"] = ("texts.json", _part(texts), "application/json")
+    if vectors is not None:
+        files["vectors"] = ("vectors.f32", vectors, "application/octet-stream")
+    return files
+
+
 def _post(meta: object, texts: object, vectors: bytes | None) -> httpx.Response:
     """POST the three parts as file uploads, leaving out any given as ``None``.
 
@@ -153,14 +186,7 @@ def _post(meta: object, texts: object, vectors: bytes | None) -> httpx.Response:
     Returns:
         The response.
     """
-    files: dict[str, tuple[str, bytes, str]] = {}
-    if meta is not None:
-        files["meta"] = ("meta.json", _part(meta), "application/json")
-    if texts is not None:
-        files["texts"] = ("texts.json", _part(texts), "application/json")
-    if vectors is not None:
-        files["vectors"] = ("vectors.f32", vectors, "application/octet-stream")
-    return client.post("/topics/fit", files=files)
+    return client.post("/topics/fit", files=_files(meta, texts, vectors))
 
 
 def _post_valid(n: int = N, dim: int = DIM, **meta: object) -> httpx.Response:
@@ -169,7 +195,7 @@ def _post_valid(n: int = N, dim: int = DIM, **meta: object) -> httpx.Response:
 
 
 def _post_while_busy(meta: object, texts: object, vectors: bytes | None) -> tuple[httpx.Response, bool]:
-    """POST while another request holds the fit lock, as one does for the length of a fit.
+    """POST while another request holds the fit lock, as one does for the length of its upload and fit.
 
     Args:
         meta: The ``meta`` object, or raw bytes.
@@ -210,8 +236,15 @@ def fit_calls(monkeypatch: pytest.MonkeyPatch) -> FitCalls:
 
 @pytest.fixture(autouse=True)
 def lock_is_free() -> Iterator[None]:
-    """Fail a test that leaves the fit lock held, and free it so later tests are not refused."""
+    """Fail a test that leaves the fit lock held, and free it so later tests are not refused.
+
+    The lock is released just after a response has been sent, so a client may hold its answer
+    while the lock is still taken; only a lock still held two seconds later counts as left.
+    """
     yield
+    deadline = time.monotonic() + 2
+    while topics_server._fit_lock.locked() and time.monotonic() < deadline:
+        time.sleep(0.01)
     leaked = topics_server._fit_lock.locked()
     if leaked:
         topics_server._fit_lock.release()
@@ -559,7 +592,7 @@ def test_busy_returns_503(fit_calls: FitCalls) -> None:
 def test_busy_is_decided_before_the_request_is_read(
     meta: object, texts: object, vectors: bytes, fit_calls: FitCalls
 ) -> None:
-    """The lock is taken first: a request that would be refused for its content gets the 503 instead."""
+    """The slot is checked before anything is read: a request that would be refused for its content gets the 503."""
     response, _ = _post_while_busy(meta, texts, vectors)
     assert response.status_code == 503
     assert fit_calls == []
@@ -685,3 +718,520 @@ def test_failed_self_check_stops_the_server_starting(monkeypatch: pytest.MonkeyP
     monkeypatch.setattr(topics_server.topics_fit, "self_check", failing_self_check)
     with pytest.raises(RuntimeError, match="not deterministic"):
         _load_fresh(monkeypatch, TOPICS_WARMUP="true")
+
+
+# The upload guard: what is refused before any of the body is read, and how much of a body is read at all.
+
+# The largest body a fit can need: meta's 1 MiB, the texts limit at TOPICS_MAX_POINTS points, the
+# n * dim float32 values at their TOPICS_MAX_POINTS * 1024 cap, and 64 KiB of multipart framing.
+DEFAULT_CEILING = 1_048_576 + 536_870_912 + 150_000 * 1024 * 4 + 65_536  # 1,152,385,024 bytes
+CEILING_AT_16_POINTS = 1_048_576 + (16 * 16_384 + 65_536) + 16 * 1024 * 4 + 65_536  # 1,507,328 bytes
+CHUNK = 65_536
+BOUNDARY_TYPE = "multipart/form-data; boundary=b"
+# The opening of a ``vectors`` file part, for a body that never closes it.
+VECTORS_PART_HEAD = (
+    b"--b\r\n"
+    b'Content-Disposition: form-data; name="vectors"; filename="vectors.f32"\r\n'
+    b"Content-Type: application/octet-stream\r\n\r\n"
+)
+HTTP_IMPLEMENTATIONS = pytest.mark.parametrize("http", ["httptools", "h11"])
+
+
+def _valid_upload() -> tuple[bytes, list[tuple[str, str]]]:
+    """Encode a consistent request of ``N`` points as httpx sends it.
+
+    Returns:
+        The body, and the ``content-type`` and ``content-length`` headers that go with it.
+    """
+    request = httpx.Request("POST", "http://topics/topics/fit", files=_files(_meta(), _texts(), _vectors().tobytes()))
+    content = request.read()
+    return content, [("content-type", request.headers["content-type"]), ("content-length", str(len(content)))]
+
+
+def _chunks(content: bytes, size: int = CHUNK) -> list[bytes]:
+    """Split a body into the pieces a server hands over one ``receive()`` at a time."""
+    return [content[start : start + size] for start in range(0, len(content), size)]
+
+
+def _scope(
+    headers: Sequence[tuple[str, str]] = (), method: str = "POST", path: str = "/topics/fit", root_path: str = ""
+) -> Scope:
+    """Build the ASGI scope of one HTTP/1.1 request as uvicorn passes it.
+
+    Args:
+        headers: Header names and values.
+        method: The request method.
+        path: The path, ``root_path`` included, as uvicorn passes it.
+        root_path: The ASGI ``root_path``.
+
+    Returns:
+        The scope.
+    """
+    return {
+        "type": "http",
+        "asgi": {"version": "3.0", "spec_version": "2.4"},
+        "http_version": "1.1",
+        "method": method,
+        "scheme": "http",
+        "path": path,
+        "raw_path": path.encode("ascii"),
+        "root_path": root_path,
+        "query_string": b"",
+        "headers": [(name.lower().encode("latin-1"), value.encode("latin-1")) for name, value in headers],
+        "client": ("127.0.0.1", 40000),
+        "server": ("127.0.0.1", 8000),
+        "state": {},
+    }
+
+
+class _Body:
+    """A request body handed to the app one ``receive()`` at a time, recording what the app pulls.
+
+    Attributes:
+        calls: How many times the app called ``receive()``.
+        pulled: How many body bytes it was handed.
+        held_at_end: Whether the fit slot was held when the body ran out; ``None`` until then.
+    """
+
+    def __init__(
+        self, chunks: Iterable[bytes], then: str = "end", gate: asyncio.Event | None = None, pause_after: int = 0
+    ) -> None:
+        """Set out the body.
+
+        Args:
+            chunks: The body, in the pieces the app is to receive.
+            then: What follows the last piece: ``"end"`` closes the body, ``"stall"`` sends nothing
+                more, ``"disconnect"`` reports the client gone.
+            gate: If given, the piece after the first ``pause_after`` waits until it is set.
+            pause_after: How many pieces go out before the gate.
+        """
+        self._chunks = iter(chunks)
+        self._then = then
+        self._gate = gate
+        self._pause_after = pause_after
+        self._ended = False
+        self.calls = 0
+        self.pulled = 0
+        self.held_at_end: bool | None = None
+
+    async def receive(self) -> Message:
+        """Hand the app its next message.
+
+        Returns:
+            The next ASGI ``receive`` message.
+        """
+        self.calls += 1
+        if self._gate is not None and self.calls == self._pause_after + 1:
+            await self._gate.wait()
+        chunk = next(self._chunks, None)
+        if chunk is not None:
+            self.pulled += len(chunk)
+            return {"type": "http.request", "body": chunk, "more_body": True}
+        if self.held_at_end is None:
+            self.held_at_end = topics_server._fit_lock.locked()
+        if self._then == "stall":
+            await asyncio.Event().wait()
+        if self._then == "disconnect" or self._ended:
+            return {"type": "http.disconnect"}
+        self._ended = True
+        return {"type": "http.request", "body": b"", "more_body": False}
+
+
+@dataclass
+class _Answer:
+    """What the app sent back.
+
+    Attributes:
+        status: The status code.
+        headers: The headers, with names lower-cased.
+        body: The body.
+    """
+
+    status: int
+    headers: dict[str, str]
+    body: bytes
+
+    def json(self) -> Any:
+        """Decode the body as JSON.
+
+        Returns:
+            The decoded body.
+        """
+        return json.loads(self.body)
+
+
+async def _exchange(scope: Scope, body: _Body) -> _Answer:
+    """Run one request through the app, guard included, and collect what it sends back.
+
+    Args:
+        scope: The request's ASGI scope.
+        body: The request body.
+
+    Returns:
+        The response.
+    """
+    start: dict[str, Any] = {}
+    parts: list[bytes] = []
+
+    async def send(message: Message) -> None:
+        if message["type"] == "http.response.start":
+            start.update(message)
+        elif message["type"] == "http.response.body":
+            parts.append(message.get("body", b""))
+
+    await topics_server.app(scope, body.receive, send)
+    headers = {name.decode("latin-1").lower(): value.decode("latin-1") for name, value in start.get("headers", [])}
+    return _Answer(start["status"], headers, b"".join(parts))
+
+
+def _drive(scope: Scope, body: _Body) -> _Answer:
+    """Run one request through the app in an event loop of its own, failing one that hangs.
+
+    Args:
+        scope: The request's ASGI scope.
+        body: The request body.
+
+    Returns:
+        The response.
+    """
+    return asyncio.run(asyncio.wait_for(_exchange(scope, body), timeout=5))
+
+
+@contextlib.contextmanager
+def _fit_running() -> Iterator[None]:
+    """Hold the fit slot for the block, as a running fit does."""
+    topics_server._fit_lock.acquire()
+    try:
+        yield
+    finally:
+        topics_server._fit_lock.release()
+
+
+def _wait_for_free_slot() -> None:
+    """Wait up to two seconds for the slot, which is freed just after a response has been sent."""
+    deadline = time.monotonic() + 2
+    while topics_server._fit_lock.locked():
+        assert time.monotonic() < deadline, "the fit slot was not freed"
+        time.sleep(0.01)
+
+
+def test_busy_is_refused_before_any_body_is_read(fit_calls: FitCalls) -> None:
+    """While a fit holds the slot, a new request gets its 503 before the app pulls a byte of its body."""
+    content, headers = _valid_upload()
+    body = _Body(_chunks(content))
+    with _fit_running():
+        answer = _drive(_scope(headers), body)
+    assert answer.status == 503
+    assert answer.headers["retry-after"] == "30"
+    assert answer.json() == {"detail": "a topic-model fit is already running"}
+    assert body.calls == 0
+    assert fit_calls == []
+
+
+def test_declared_oversize_is_refused_unread(fit_calls: FitCalls) -> None:
+    """A declared length over the ceiling is a 413 with nothing read, decided before the slot is checked."""
+    headers = [("content-type", BOUNDARY_TYPE), ("content-length", str(DEFAULT_CEILING + 1))]
+    body = _Body([VECTORS_PART_HEAD])
+    assert _drive(_scope(headers), body).status == 413
+    assert body.calls == 0
+    with _fit_running():
+        busy_body = _Body([VECTORS_PART_HEAD])
+        assert _drive(_scope(headers), busy_body).status == 413
+    assert busy_body.calls == 0
+    assert fit_calls == []
+
+
+def test_the_ceiling_itself_is_not_refused() -> None:
+    """A declared length of exactly the ceiling is not refused for its size."""
+    headers = [("content-type", BOUNDARY_TYPE), ("content-length", str(DEFAULT_CEILING))]
+    assert _drive(_scope(headers), _Body([b"--b--\r\n"])).status != 413
+
+
+def test_streamed_oversize_is_cut_off(monkeypatch: pytest.MonkeyPatch, fit_calls: FitCalls) -> None:
+    """A body sent without a length is cut off once it passes the ceiling, not read to its end."""
+    monkeypatch.setattr(topics_server, "MAX_POINTS", 16)
+    body = _Body(itertools.chain([VECTORS_PART_HEAD], itertools.repeat(bytes(CHUNK), 256)))  # 16 MiB on offer
+    answer = _drive(_scope([("content-type", BOUNDARY_TYPE)]), body)
+    assert answer.status == 413
+    assert CEILING_AT_16_POINTS < body.pulled <= CEILING_AT_16_POINTS + CHUNK
+    assert fit_calls == []
+
+
+def test_a_streamed_body_of_exactly_the_ceiling_is_read(monkeypatch: pytest.MonkeyPatch) -> None:
+    """A body of exactly the ceiling is read to its end, not refused for its size."""
+    monkeypatch.setattr(topics_server, "MAX_POINTS", 16)
+    body = _Body([VECTORS_PART_HEAD, bytes(CEILING_AT_16_POINTS - len(VECTORS_PART_HEAD))])
+    assert _drive(_scope([("content-type", BOUNDARY_TYPE)]), body).status != 413
+    assert body.pulled == CEILING_AT_16_POINTS
+
+
+def test_an_unreadable_declared_length_is_left_to_the_count(monkeypatch: pytest.MonkeyPatch) -> None:
+    """A ``Content-Length`` that is not plain digits does not break the guard; the body is counted instead."""
+    monkeypatch.setattr(topics_server, "MAX_POINTS", 16)
+    headers = [("content-type", BOUNDARY_TYPE), ("content-length", "many")]
+    body = _Body(itertools.chain([VECTORS_PART_HEAD], itertools.repeat(bytes(CHUNK), 256)))
+    assert _drive(_scope(headers), body).status == 413
+    assert body.pulled <= CEILING_AT_16_POINTS + CHUNK
+
+
+def test_a_declared_length_does_not_stop_the_count(monkeypatch: pytest.MonkeyPatch) -> None:
+    """A body that runs past its declared length is still counted, as when h11 frames it chunked."""
+    monkeypatch.setattr(topics_server, "MAX_POINTS", 16)
+    headers = [("content-type", BOUNDARY_TYPE), ("content-length", "100")]
+    body = _Body(itertools.chain([VECTORS_PART_HEAD], itertools.repeat(bytes(CHUNK), 256)))
+    assert _drive(_scope(headers), body).status == 413
+    assert body.pulled <= CEILING_AT_16_POINTS + CHUNK
+
+
+def test_stalled_upload_gets_408_and_frees_the_slot(monkeypatch: pytest.MonkeyPatch, fit_calls: FitCalls) -> None:
+    """A fit whose body stops arriving is refused at the deadline and closed, and the next fit is admitted."""
+    monkeypatch.setattr(topics_server, "_BODY_TIMEOUT_S", 0.2)
+    content, headers = _valid_upload()
+    started = time.monotonic()
+    answer = _drive(_scope(headers), _Body([content[:1024]], then="stall"))
+    assert answer.status == 408
+    assert answer.headers["connection"] == "close"
+    assert time.monotonic() - started < 2
+    assert fit_calls == []
+    assert _post_valid().status_code == 200
+
+
+def test_slot_is_held_for_the_whole_upload(fit_calls: FitCalls) -> None:
+    """The slot is taken when a fit's upload begins, so a request arriving mid-upload is refused unread."""
+    content, headers = _valid_upload()
+
+    async def run() -> tuple[_Answer, _Answer, _Body, bool]:
+        gate = asyncio.Event()
+        first = _Body(_chunks(content, 256), gate=gate, pause_after=1)
+        second = _Body(_chunks(content))
+        upload = asyncio.create_task(_exchange(_scope(headers), first))
+        while first.calls < 2:  # the first piece is in; the second waits at the gate
+            await asyncio.sleep(0.01)
+        held = topics_server._fit_lock.locked()
+        refused = await _exchange(_scope(headers), second)
+        gate.set()
+        return await upload, refused, second, held
+
+    admitted, refused, second, held = asyncio.run(asyncio.wait_for(run(), timeout=5))
+    assert held
+    assert refused.status == 503
+    assert second.calls == 0
+    assert admitted.status == 200
+    assert len(fit_calls) == 1
+
+
+def test_disconnect_mid_upload_frees_the_slot(fit_calls: FitCalls) -> None:
+    """A client that leaves mid-upload held the slot until it left, and frees it then; nothing is fitted."""
+    content, headers = _valid_upload()
+    body = _Body([content[:1024]], then="disconnect")
+    _drive(_scope(headers), body)
+    assert body.held_at_end is True
+    assert not topics_server._fit_lock.locked()
+    assert fit_calls == []
+
+
+def test_health_is_never_gated() -> None:
+    """The health probe answers while a fit holds the slot."""
+    with _fit_running():
+        assert client.get("/health").status_code == 200
+
+
+@pytest.mark.parametrize(
+    ("method", "path", "root_path", "status"),
+    [
+        pytest.param("POST", "/topics/fit/", "", 307, id="trailing-slash-redirects"),
+        pytest.param("GET", "/topics/fit", "", 405, id="get"),
+        pytest.param("HEAD", "/topics/fit", "", 405, id="head"),
+        pytest.param("POST", "/svc/topics/fit", "/svc", 503, id="fit-under-a-root-path"),
+    ],
+)
+def test_only_the_fit_route_waits_for_the_slot(method: str, path: str, root_path: str, status: int) -> None:
+    """While busy, only a POST that routes to the fit gets the 503, and none of these reads the body."""
+    body = _Body([VECTORS_PART_HEAD])
+    with _fit_running():
+        answer = _drive(_scope([("content-type", BOUNDARY_TYPE)], method, path, root_path), body)
+    assert answer.status == status
+    assert body.calls == 0
+
+
+def test_a_fit_under_a_root_path_is_admitted(fit_calls: FitCalls) -> None:
+    """A fit served under a ``root_path`` is matched the way the routes match it, and runs."""
+    content, headers = _valid_upload()
+    answer = _drive(_scope(headers, path="/svc/topics/fit", root_path="/svc"), _Body(_chunks(content)))
+    assert answer.status == 200
+    assert len(fit_calls) == 1
+
+
+def test_the_fit_is_the_only_route_that_reads_a_body() -> None:
+    """The guard admits ``POST /topics/fit`` alone, so a new route that reads a body needs a decision there."""
+    body_routes = {
+        (method, route.path)
+        for route in topics_server.app.routes
+        if isinstance(route, APIRoute) and route.body_field is not None
+        for method in route.methods or ()
+    }
+    assert body_routes == {("POST", "/topics/fit")}
+
+
+def test_a_fit_that_skipped_admission_is_refused(monkeypatch: pytest.MonkeyPatch, fit_calls: FitCalls) -> None:
+    """Should the guard and the routes disagree on the fit's path, the fit refuses rather than run unadmitted."""
+    monkeypatch.setattr(topics_server, "_FIT_PATH", "/elsewhere")
+    assert _post_valid().status_code == 500
+    assert fit_calls == []
+
+
+@contextlib.contextmanager
+def _serving(http: str) -> Iterator[int]:
+    """Serve the app with uvicorn on a free local port for the length of the block.
+
+    Args:
+        http: uvicorn's HTTP implementation, ``httptools`` or ``h11``.
+
+    Yields:
+        The port.
+    """
+    uvicorn = pytest.importorskip("uvicorn")
+    pytest.importorskip(http)
+    listener = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+    # A small receive buffer keeps what the kernel holds in flight close to what the app has pulled.
+    listener.setsockopt(socket.SOL_SOCKET, socket.SO_RCVBUF, CHUNK)
+    listener.bind(("127.0.0.1", 0))
+    config = uvicorn.Config(
+        topics_server.app,
+        http=http,
+        lifespan="off",
+        log_config=None,  # uvicorn's own logging config would stop its logger reaching caplog
+        access_log=False,
+        timeout_keep_alive=1,
+        timeout_graceful_shutdown=2,
+    )
+    server = uvicorn.Server(config)
+    thread = threading.Thread(target=server.run, kwargs={"sockets": [listener]}, daemon=True)
+    thread.start()
+    deadline = time.monotonic() + 5
+    try:
+        while not server.started:
+            assert thread.is_alive(), "uvicorn stopped before it served"
+            assert time.monotonic() < deadline, "uvicorn did not start within 5 s"
+            time.sleep(0.01)
+        yield listener.getsockname()[1]
+    finally:
+        server.should_exit = True
+        thread.join(5)
+        if thread.is_alive():
+            server.force_exit = True
+            thread.join(5)
+        listener.close()
+
+
+def _head(method: str, target: str, headers: Sequence[tuple[str, str]]) -> bytes:
+    """Encode an HTTP/1.1 request line and its headers, up to the blank line before the body."""
+    lines = [f"{method} {target} HTTP/1.1", "Host: topics", *(f"{name}: {value}" for name, value in headers)]
+    return ("\r\n".join(lines) + "\r\n\r\n").encode("latin-1")
+
+
+def _read_response(conn: socket.socket) -> tuple[int, dict[str, str], bytes]:
+    """Read one response off a socket.
+
+    Args:
+        conn: The connected socket.
+
+    Returns:
+        The status, the headers with names lower-cased, and the body, read to its Content-Length.
+    """
+    data = b""
+    while b"\r\n\r\n" not in data:
+        received = conn.recv(CHUNK)
+        if not received:
+            raise ConnectionError("the connection closed before a whole response head arrived")
+        data += received
+    head, body = data.split(b"\r\n\r\n", 1)
+    status_line, *lines = head.decode("latin-1").split("\r\n")
+    headers = {name.strip().lower(): value.strip() for name, _, value in (line.partition(":") for line in lines)}
+    length = int(headers.get("content-length", "0"))
+    while len(body) < length:
+        received = conn.recv(CHUNK)
+        if not received:
+            break
+        body += received
+    return int(status_line.split()[1]), headers, body[:length]
+
+
+@HTTP_IMPLEMENTATIONS
+def test_live_busy_answer_arrives_before_the_body(http: str) -> None:
+    """A busy fit's 503 arrives after 1 KiB of a declared 8 MiB; the rest is drained, and the connection reused."""
+    declared = 8 * 1024 * 1024
+    with _serving(http) as port, _fit_running(), socket.create_connection(("127.0.0.1", port), timeout=5) as conn:
+        conn.sendall(_head("POST", "/topics/fit", [("Content-Type", BOUNDARY_TYPE), ("Content-Length", str(declared))]))
+        conn.sendall(bytes(1024))
+        status, headers, _ = _read_response(conn)
+        assert status == 503
+        assert headers["retry-after"] == "30"
+        conn.sendall(bytes(declared - 1024))
+        conn.sendall(_head("GET", "/health", []))
+        assert _read_response(conn)[0] == 200
+
+
+@HTTP_IMPLEMENTATIONS
+def test_live_declared_oversize_is_refused_unread(http: str) -> None:
+    """A declared length over the ceiling gets its 413 before a byte of the body is sent."""
+    headers = [("Content-Type", BOUNDARY_TYPE), ("Content-Length", str(DEFAULT_CEILING + 1))]
+    with _serving(http) as port, socket.create_connection(("127.0.0.1", port), timeout=5) as conn:
+        conn.sendall(_head("POST", "/topics/fit", headers))
+        assert _read_response(conn)[0] == 413
+
+
+@HTTP_IMPLEMENTATIONS
+def test_live_chunked_oversize_is_cut_off(http: str, monkeypatch: pytest.MonkeyPatch) -> None:
+    """A chunked body gets its 413 soon after it passes the ceiling, long before the sender would stop."""
+    monkeypatch.setattr(topics_server, "MAX_POINTS", 16)
+    frame = f"{CHUNK:x}\r\n".encode("ascii") + bytes(CHUNK) + b"\r\n"
+    sent = 0
+    with _serving(http) as port, socket.create_connection(("127.0.0.1", port), timeout=5) as conn:
+        conn.setsockopt(socket.SOL_SOCKET, socket.SO_SNDBUF, CHUNK)
+        conn.sendall(_head("POST", "/topics/fit", [("Content-Type", BOUNDARY_TYPE), ("Transfer-Encoding", "chunked")]))
+        conn.sendall(f"{len(VECTORS_PART_HEAD):x}\r\n".encode("ascii") + VECTORS_PART_HEAD + b"\r\n")
+        while sent < 32 * 1024 * 1024 and not select.select([conn], [], [], 0)[0]:
+            conn.sendall(frame)
+            sent += CHUNK
+        status = _read_response(conn)[0]
+    assert status == 413
+    assert sent <= CEILING_AT_16_POINTS + 8 * 1024 * 1024
+
+
+@HTTP_IMPLEMENTATIONS
+def test_live_expect_continue_is_not_invited_when_busy(http: str) -> None:
+    """A client that waits for ``100 Continue`` is answered with the 503 instead, and sends no body."""
+    headers = [("Content-Type", BOUNDARY_TYPE), ("Content-Length", str(8 * 1024 * 1024)), ("Expect", "100-continue")]
+    with _serving(http) as port, _fit_running(), socket.create_connection(("127.0.0.1", port), timeout=5) as conn:
+        conn.sendall(_head("POST", "/topics/fit", headers))
+        assert _read_response(conn)[0] == 503
+
+
+@HTTP_IMPLEMENTATIONS
+def test_live_stalled_upload_frees_the_slot(http: str, monkeypatch: pytest.MonkeyPatch) -> None:
+    """An upload that stops gets a 408 that closes its connection, and the next fit is admitted."""
+    monkeypatch.setattr(topics_server, "_BODY_TIMEOUT_S", 0.5)
+    headers = [("Content-Type", BOUNDARY_TYPE), ("Content-Length", str(8 * 1024 * 1024))]
+    with _serving(http) as port:
+        with socket.create_connection(("127.0.0.1", port), timeout=5) as conn:
+            conn.sendall(_head("POST", "/topics/fit", headers))
+            conn.sendall(VECTORS_PART_HEAD)
+            status, answer_headers, _ = _read_response(conn)
+            closed = conn.recv(1) == b""
+        assert status == 408
+        assert answer_headers["connection"] == "close"
+        assert closed
+        _wait_for_free_slot()
+        files = _files(_meta(), _texts(), _vectors().tobytes())
+        assert httpx.post(f"http://127.0.0.1:{port}/topics/fit", files=files, timeout=5).status_code == 200
+
+
+@HTTP_IMPLEMENTATIONS
+def test_live_httpx_reads_the_busy_answer(http: str) -> None:
+    """httpx, the transport of the docint client, reads the 503 that arrives while it is still uploading."""
+    files = _files(_meta(), _texts(), bytes(8 * 1024 * 1024))
+    with _serving(http) as port, _fit_running():
+        response = httpx.post(f"http://127.0.0.1:{port}/topics/fit", files=files, timeout=5)
+    assert response.status_code == 503
+    assert response.headers["retry-after"] == "30"

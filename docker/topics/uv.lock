@@ -627,6 +627,7 @@ name = "vllm-service-topics"
 version = "0.0.0"
 source = { virtual = "." }
 dependencies = [
+    { name = "anyio" },
     { name = "bertopic" },
     { name = "fastapi" },
     { name = "hdbscan" },
@@ -649,6 +650,7 @@ dev = [
 
 [package.metadata]
 requires-dist = [
+    { name = "anyio", specifier = ">=4" },
     { name = "bertopic", specifier = "==0.17.4" },
     { name = "fastapi", specifier = ">=0.141.1" },
     { name = "hdbscan", specifier = "==0.8.44" },
