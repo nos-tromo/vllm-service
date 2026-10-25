@@ -8,10 +8,12 @@ All data is synthetic: Gaussian blobs, each with its own invented vocabulary.
 """
 
 import importlib.util
+import logging
 import os
 import socket
 import sys
 import tracemalloc
+import warnings
 from collections import Counter
 from dataclasses import replace
 from pathlib import Path
@@ -575,6 +577,26 @@ def test_min_df_counts_texts(blobs: Blobs) -> None:
     texts = [texts[0] + " solo" * 100, *texts[1:]]
     assert "solo" in _keyword_words(fit_topics(texts, vectors, PARAMS))
     assert "solo" not in _keyword_words(fit_topics(texts, vectors, replace(PARAMS, min_df=2)))
+
+
+def test_stop_words_stay_out_of_warnings_and_logs(
+    blobs: Blobs, caplog: pytest.LogCaptureFixture, capfd: pytest.CaptureFixture[str]
+) -> None:
+    """scikit-learn's stop-word check quotes the caller's stop words; a fit lets none of them out.
+
+    ``Wombat-Lantern`` tokenizes to two words that are not stop words themselves, the inconsistency
+    the check names them for. Every filter is reset to "always" first, as if nothing had imported
+    BERTopic, whose import silences UserWarnings process-wide.
+    """
+    texts, vectors, _ = blobs
+    with warnings.catch_warnings(record=True) as caught, caplog.at_level(logging.INFO):
+        warnings.simplefilter("always")
+        result = fit_topics(texts, vectors, replace(PARAMS, stop_words=("Wombat-Lantern",)))
+    assert result.topics
+    out, err = capfd.readouterr()
+    for text in (*(str(warning.message) for warning in caught), caplog.text, out, err):
+        for word in ("wombat", "lantern"):
+            assert word not in text.lower()
 
 
 def test_no_network_during_fit(blobs: Blobs, monkeypatch: pytest.MonkeyPatch) -> None:

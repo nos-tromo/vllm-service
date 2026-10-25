@@ -17,7 +17,10 @@ to BERTopic fixed. Left to BERTopic, the vectorizer is fitted after clustering t
 topic's joined texts, so ``min_df`` would count topics rather than texts, and a setting
 above the number of topics found would empty the vocabulary mid-fit. A vocabulary of fewer
 than two words (BERTopic's c-TF-IDF raises on one) is replaced by a two-word sentinel,
-which keeps the clustering untouched and leaves every topic without keywords.
+which keeps the clustering untouched and leaves every topic without keywords. UserWarnings
+from the vocabulary fit and the fit are silenced, whatever the import order: scikit-learn's
+stop-word check quotes the caller's stop words, and BERTopic's own silencing of them is a
+process-wide side effect of importing it.
 
 Keywords: BERTopic's own lists are not used. It orders and cuts them with numpy's argsort
 and argpartition, which leave equal scores, and so which tied words survive the cut, to
@@ -45,6 +48,7 @@ from __future__ import annotations
 import os
 import platform
 import time
+import warnings
 from collections import Counter
 from collections.abc import Sequence
 from dataclasses import dataclass
@@ -213,7 +217,9 @@ def fit_topics(texts: Sequence[str], vectors: np.ndarray, params: FitParams) -> 
         calculate_probabilities=False,
         verbose=False,
     )
-    predicted, _ = model.fit_transform(docs, embeddings=representatives)
+    with warnings.catch_warnings():
+        warnings.simplefilter("ignore", category=UserWarning)  # a warning can quote the input's words
+        predicted, _ = model.fit_transform(docs, embeddings=representatives)
     labels = [int(label) for label in np.asarray(predicted)[group]]  # copies inherit their representative's label
     sizes = Counter(labels)
     c_tf_idf = model.c_tf_idf_.tocsr()
@@ -264,7 +270,9 @@ def _vocabulary(docs: list[str], params: FitParams) -> dict[str, int] | None:
 
     vectorizer = CountVectorizer(stop_words=list(params.stop_words) or None, min_df=params.min_df)
     try:
-        vectorizer.fit(docs)
+        with warnings.catch_warnings():
+            warnings.simplefilter("ignore", category=UserWarning)  # the stop-word check quotes the stop words
+            vectorizer.fit(docs)
     except ValueError:  # min_df is checked upfront, so this only means no word survives
         return None
     vocabulary = {str(word): int(index) for word, index in vectorizer.vocabulary_.items()}
