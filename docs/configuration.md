@@ -150,7 +150,12 @@ before any check is made. A 503 for a busy service is no exception. `/tmp` is th
 disk-backed `media-tmp` volume (shared with the router, `asr`, `diarize` and `vad`
 in the full stack). At the default limit the `vectors` part alone is about 600 MB
 (150000 × 1024 × 4 bytes), and in the full stack the router spools the body as
-well, onto the same volume, so a request in flight occupies it twice.
+well, onto the same volume, so a request in flight occupies it twice. The router
+also holds the body in memory: LiteLLM reads every file part into memory and
+re-encodes the multipart body with a new boundary for the backend (the part names,
+filenames and content types survive). At the caps that is about 1.1 GB of router
+memory per request in flight (the vectors plus a 512 MiB `texts` part), including
+a request the service will refuse with a 503.
 
 **Startup.** The server runs a self-check before it listens: it compiles the numba
 code, fits a synthetic set twice, and stops if the two results differ. `/health`

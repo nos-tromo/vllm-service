@@ -154,11 +154,12 @@ general_settings:
     # Topic-model fit. Not OpenAI-compatible — clients POST multipart parts
     # `meta` (JSON settings), `texts` (JSON array of strings) and `vectors`
     # (n x dim little-endian float32) and receive {"labels": [...],
-    # "outliers", "topics": [{"id", "size", "keywords"}], ...}. Like /diarize,
-    # the headers block is omitted so LiteLLM forwards the original
-    # Content-Type (multipart boundary) intact. A fit can run for minutes; the
-    # global pass_through_request_timeout above covers it. The topics backend
-    # is not in model_list and does not appear in /v1/models — it has no
+    # "outliers", "topics": [{"id", "size", "keywords"}], ...}. No headers
+    # block. LiteLLM reads every file part into memory and re-encodes the
+    # multipart body with a new boundary; the part names, filenames and
+    # content types survive. A fit can run for minutes; the global
+    # pass_through_request_timeout above covers it. The topics backend is not
+    # in model_list and does not appear in /v1/models — it has no
     # OpenAI-shaped endpoint to route by model name.
     - path: "/topics/fit"
       target: "http://topics:8000/topics/fit"
