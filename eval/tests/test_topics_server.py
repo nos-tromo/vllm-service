@@ -1240,3 +1240,33 @@ def test_live_httpx_reads_the_busy_answer(http: str) -> None:
         response = httpx.post(f"http://127.0.0.1:{port}/topics/fit", files=files, timeout=5)
     assert response.status_code == 503
     assert response.headers["retry-after"] == "30"
+
+
+DOCKERFILE = Path(__file__).resolve().parents[2] / "docker" / "Dockerfile.topics.cpu"
+
+
+def _image_command() -> list[str]:
+    """Return the topics image's exec-form ``CMD``.
+
+    Returns:
+        The program and its arguments.
+    """
+    for line in DOCKERFILE.read_text().splitlines():
+        if line.startswith("CMD "):
+            return json.loads(line.removeprefix("CMD "))
+    raise AssertionError("docker/Dockerfile.topics.cpu declares no CMD")
+
+
+@pytest.mark.parametrize("variable", ["WEB_CONCURRENCY", "UVICORN_WORKERS"])
+def test_the_image_starts_one_worker_whatever_the_environment_says(
+    monkeypatch: pytest.MonkeyPatch, variable: str
+) -> None:
+    """The fit slot is a lock in one process, so a worker count from the shared ``.env`` must not start a second."""
+    uvicorn = pytest.importorskip("uvicorn")
+    for name in ("WEB_CONCURRENCY", "UVICORN_WORKERS"):
+        monkeypatch.delenv(name, raising=False)
+    monkeypatch.setenv(variable, "2")
+    program, *arguments = _image_command()
+    assert program == "uvicorn"
+    params = uvicorn.main.make_context("uvicorn", arguments).params
+    assert uvicorn.Config(params["app"], workers=params["workers"]).workers == 1

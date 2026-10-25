@@ -76,4 +76,6 @@ USER 10001:10001
 
 EXPOSE 8000
 
-CMD ["uvicorn", "--app-dir", "/app", "topics_server:app", "--host", "0.0.0.0", "--port", "8000"]
+# One worker, pinned: the fit slot is a lock in one process, and a WEB_CONCURRENCY or
+# UVICORN_WORKERS from the shared .env would otherwise start more.
+CMD ["uvicorn", "--app-dir", "/app", "topics_server:app", "--host", "0.0.0.0", "--port", "8000", "--workers", "1"]

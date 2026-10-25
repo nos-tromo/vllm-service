@@ -57,7 +57,8 @@ read; what such a client sends anyway is read and dropped, never stored. An admi
 slot from its first byte until its response has been sent, and its body is counted as it arrives,
 chunked or not, and cut off with a 413 past that size or a 408 past the deadline, so at most one
 body is spooled at a time and a stalled client cannot keep the slot. The slot is a lock in this
-process, so these bounds hold per uvicorn worker; the image runs one.
+process, so these bounds hold per uvicorn worker; the image pins uvicorn to one (``--workers 1``),
+so a ``WEB_CONCURRENCY`` or ``UVICORN_WORKERS`` from the shared ``.env`` cannot start a second.
 
 The handler then reads a part into memory only once the checks before it have passed, and those
 judge sizes alone: ``meta``'s size, then ``n`` and ``n * dim`` against the limits and the size of
