@@ -15,10 +15,13 @@ RUN apt-get update \
 WORKDIR /build
 COPY docker/topics/pyproject.toml docker/topics/uv.lock /build/
 
-# Install exactly what the lock pins: every hash is required and nothing is
-# resolved. The closure has no torch, because docker/topics/pyproject.toml excludes
-# sentence-transformers and plotly.
-RUN uv export --frozen --no-dev --no-emit-project --format requirements-txt -o /build/requirements.txt
+# Install what the lock pins. --locked fails the build if docker/topics/uv.lock has
+# drifted from docker/topics/pyproject.toml, and --require-hashes checks each locked
+# artifact against its hash. Outside the lock: on aarch64 hdbscan builds from its sdist,
+# and that build's requirements (setuptools, wheel, cython, numpy) are fetched at build
+# time, unpinned, within the ranges hdbscan sets. The closure has no torch, because
+# docker/topics/pyproject.toml excludes sentence-transformers and plotly.
+RUN uv export --locked --no-dev --no-emit-project --format requirements-txt -o /build/requirements.txt
 RUN uv venv /opt/venv \
     && uv pip install --python /opt/venv/bin/python --no-cache --no-deps --require-hashes --compile-bytecode \
         -r /build/requirements.txt
