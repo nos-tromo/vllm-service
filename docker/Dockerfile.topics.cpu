@@ -2,7 +2,7 @@
 # hdbscan ships no linux/aarch64 wheel, so it compiles here; the compiler stays in
 # this stage and only /opt/venv moves on. Both stages use the same pinned base, so
 # the venv's interpreter path is valid in the runtime stage.
-FROM ghcr.io/astral-sh/uv:python3.11-trixie-slim@sha256:0f2d0e6d745eb7f9cc9bc3a8f3bec70f398b39f38c8a1c7fa2967ddbe91af8bd AS builder
+FROM ghcr.io/astral-sh/uv:python3.11-trixie-slim@sha256:e1726dc72f5a45d6fde5814c9bdb87cfdf46ea4fd8a5fd806fdda378fffb4ae5 AS builder
 
 # Never fetch an interpreter of uv's own: the venv must point at this base's Python,
 # which the runtime stage shares.
@@ -27,7 +27,7 @@ RUN uv venv /opt/venv \
         -r /build/requirements.txt
 
 # Stage 2: runtime. No compiler.
-FROM ghcr.io/astral-sh/uv:python3.11-trixie-slim@sha256:0f2d0e6d745eb7f9cc9bc3a8f3bec70f398b39f38c8a1c7fa2967ddbe91af8bd
+FROM ghcr.io/astral-sh/uv:python3.11-trixie-slim@sha256:e1726dc72f5a45d6fde5814c9bdb87cfdf46ea4fd8a5fd806fdda378fffb4ae5
 
 # curl is needed for the docker-compose healthcheck against /health.
 RUN apt-get update \
