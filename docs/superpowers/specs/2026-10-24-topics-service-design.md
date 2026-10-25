@@ -49,10 +49,13 @@ Errors:
 | Status | When |
 |---|---|
 | `400` | A malformed `meta.json` (including a `dim` above 8192 or a stop word over 64 characters), or a multipart body that names no boundary |
-| `413` | `n > TOPICS_MAX_POINTS`, `n·dim > TOPICS_MAX_POINTS·1024`, a `meta.json` over 1 MiB, or a `texts` part over `min(n·16384 + 65536, 536870912)` bytes. Each is decided from `meta.json` and the parts' sizes alone, before a large part is read into memory |
+| `408` | An admitted fit's body has not arrived within 300 s; the connection is closed |
+| `413` | A body over the request ceiling, declared in `Content-Length` or counted as it arrives; `n > TOPICS_MAX_POINTS`, `n·dim > TOPICS_MAX_POINTS·1024`, a `meta.json` over 1 MiB, or a `texts` part over `min(n·16384 + 65536, 536870912)` bytes. Each is decided from the body's length, `meta.json` and the parts' sizes alone, before a large part is read into memory |
 | `422` | A missing part (including a body that is not multipart), a `texts` part that is not a JSON array of strings, `len(texts) != n`, a vector byte count other than `n·dim·4`, non-finite values, or fewer points than the minimum, `max(16, 2·min_topic_size)` |
-| `503` + `Retry-After` | A fit is already running (one at a time; requests are not queued) |
+| `503` + `Retry-After` | Another fit is being received or run (one at a time; requests are not queued). Answered before any of the body is read |
 | `500` | The fit itself failed |
+
+Uploads are bounded before FastAPI parses them, since it would otherwise receive a whole body, spooling the parts to `/tmp`, before any check could refuse it. The request ceiling is `meta.json`'s 1 MiB, plus the `texts` limit at `TOPICS_MAX_POINTS` points, plus `TOPICS_MAX_POINTS·1024·4` bytes of vectors, plus 64 KiB of multipart framing: 1,152,385,024 bytes at the default. A declared length over it, and a fit that arrives while the one slot is taken, are answered before any of the body is read. An admitted fit holds the slot from the first byte of its body until its response is sent, and its body is counted as it arrives, chunked or not, and cut off past the ceiling or after 300 s. So at most one body is spooled at a time, and a stalled client cannot keep the slot.
 
 Exact-duplicate vectors are clustered once; copies inherit their representative's label. The fit runs on the distinct vectors in first-occurrence order, each paired with its first occurrence's text. The texts of the copies are not used, for keywords or for `min_df`, while a topic's `size` counts every input row (`sum(size) + outliers == n`). Inputs with fewer distinct vectors than that minimum get a `200`, not a `422`: every label is `-1` and `topics` is empty, and UMAP and HDBSCAN do not run on them.
 
@@ -94,7 +97,7 @@ The service has its own locked project, `docker/topics/{pyproject.toml,uv.lock}`
 Both shapes use one CPU image, as VAD does: `vllm-service-topics` in the full
 stack, `vllm-service-topics-cpu` in the `topics-only` shape.
 
-- **Full stack:** the router passes `/topics/fit` through, with `auth: true` and no `headers` block. LiteLLM reads every file part into memory and re-encodes the multipart body with a new boundary; the part names, filenames and content types survive. The global 4 h pass-through timeout covers a fit. The router waits only for the service to *start*, not for it to be healthy, so a failed self-check never keeps inference down.
+- **Full stack:** the router passes `/topics/fit` through, with `auth: true` and no `headers` block. LiteLLM reads every file part into memory and re-encodes the multipart body with a new boundary; the part names, filenames and content types survive. It takes the whole body before it even checks the key, on every multipart route, and its own size limit needs an enterprise license, so the service's guard bounds what reaches the service, not what the router has buffered (tracked in issue #158). The global 4 h pass-through timeout covers a fit. The router waits only for the service to *start*, not for it to be healthy, so a failed self-check never keeps inference down.
 - **`topics-only`:** alias `topics-only` on `inference-net`, port 8000 (8008 on the host in dev), no auth.
 - **Writable paths:** `/tmp` is the disk-backed `media-tmp` volume, because multipart parts spool there. `NUMBA_CACHE_DIR` is `/run/numba`, a tmpfs private to the container (64 MB, uid and gid 10001, mode 0700): numba unpickles its cache's index files, so the cache must not sit on `media-tmp`, which `asr`, `diarize` and `vad` write in the full stack. The service has no model weights and mounts no Hugging Face cache.
 - **Privacy:** texts and vectors are never logged; logs carry counts and timings only.

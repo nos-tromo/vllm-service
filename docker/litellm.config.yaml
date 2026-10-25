@@ -157,9 +157,11 @@ general_settings:
     # "outliers", "topics": [{"id", "size", "keywords"}], ...}. No headers
     # block. LiteLLM reads every file part into memory and re-encodes the
     # multipart body with a new boundary; the part names, filenames and
-    # content types survive. A fit can run for minutes; the global
-    # pass_through_request_timeout above covers it. The topics backend is not
-    # in model_list and does not appear in /v1/models — it has no
+    # content types survive. It does so before the service's own upload
+    # limits apply, which spare the service, not this router
+    # (docs/configuration.md, issue #158). A fit can run for minutes; the
+    # global pass_through_request_timeout above covers it. The topics backend
+    # is not in model_list and does not appear in /v1/models — it has no
     # OpenAI-shaped endpoint to route by model name.
     - path: "/topics/fit"
       target: "http://topics:8000/topics/fit"

@@ -451,8 +451,9 @@ with, for example, this `meta.json`:
   individual texts, so `min_df` counts texts rather than topics, and is fixed
   before clustering. When fewer than two words survive `stop_words` and `min_df`,
   every topic's `keywords` is empty; the clustering is unchanged.
-- **One fit at a time.** A request that arrives while a fit is running gets a 503
-  with `Retry-After: 30`; requests are not queued.
+- **One fit at a time.** A fit request that arrives while another fit is being
+  received or run gets a 503 with `Retry-After: 30` before any of its body is
+  read; requests are not queued.
 - **Duration.** A fit takes seconds to minutes. Measured on synthetic data at 1024
   dimensions on one Apple Silicon core: about 90 s for 100k points with six-word
   texts, and 57 s for 50k and 180 s for 100k with texts of about 2,000 characters.
@@ -467,9 +468,10 @@ with, for example, this `meta.json`:
 | Status | When |
 |---|---|
 | `400` | A malformed `meta.json` (including a `dim` above 8192 or a stop word over 64 characters), or a multipart body that names no boundary |
-| `413` | `n > TOPICS_MAX_POINTS`, `n·dim > TOPICS_MAX_POINTS·1024`, a `meta.json` over 1 MiB, or a `texts` part over `min(n·16384 + 65536, 536870912)` bytes. Each is decided from `meta.json` and the parts' sizes alone, before a large part is read into memory |
+| `408` | An admitted fit's body has not arrived within 300 s; the connection is closed |
+| `413` | A body over the request ceiling (below), declared in `Content-Length` or counted as it arrives; `n > TOPICS_MAX_POINTS`, `n·dim > TOPICS_MAX_POINTS·1024`, a `meta.json` over 1 MiB, or a `texts` part over `min(n·16384 + 65536, 536870912)` bytes. Each is decided from the body's length, `meta.json` and the parts' sizes alone, before a large part is read into memory |
 | `422` | A missing part (including a body that is not multipart), a `texts` part that is not a JSON array of strings, `len(texts) != n`, a vector byte count other than `n·dim·4`, non-finite values, or fewer points than the minimum, `max(16, 2·min_topic_size)` |
-| `503` + `Retry-After` | A fit is already running (one at a time; requests are not queued) |
+| `503` + `Retry-After` | Another fit is being received or run (one at a time; requests are not queued). Answered before any of the body is read |
 | `500` | The fit itself failed; the body is a fixed message and quotes nothing from the request |
 
 An error body is `{"detail": ...}`. A 422's `detail` is a string from the service
@@ -483,9 +485,18 @@ Above 1 MiB Starlette refuses it with a 400 (`Part exceeded maximum size of
 1024KB.`); below that it is a 422 in FastAPI's list form
 (`"msg": "Value error, Expected UploadFile, received: <class 'str'>"`).
 
-The request body is received in full before any of these checks run, with each
-part over 1 MiB spooled to a temporary file, so a 413 or a 503 still costs the
-upload. The disk it takes, and the memory a fit needs for a given
+The upload is bounded before it is parsed. A 503, or a 413 for a declared
+`Content-Length` over the request ceiling, is answered before any of the body is
+read: a client that waits for `100 Continue` is never asked for its body, and what
+a client sends anyway is read and dropped, not stored. The ceiling is `meta.json`'s
+1 MiB, plus the `texts` limit at `TOPICS_MAX_POINTS` points, plus
+`TOPICS_MAX_POINTS·1024·4` bytes of vectors, plus 64 KiB of multipart framing:
+1,152,385,024 bytes at the default. An admitted fit holds the one slot from the
+first byte of its body until its response is sent; the body is counted as it
+arrives, chunked or not, and cut off with a 413 past the ceiling or a 408 after
+300 s. Through the full stack's router this spares the service but not the router,
+which takes every multipart body in full before it forwards it. The disk a body
+takes, the router's share, and the memory a fit needs for a given
 `TOPICS_MAX_POINTS`, are in
 [configuration.md](configuration.md#topic-model-fit-limits).
 

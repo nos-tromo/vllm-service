@@ -103,7 +103,10 @@ TOPICS_MEM_LIMIT=7g        # default; the container's memory limit (compose mem_
 
 `TOPICS_MAX_POINTS` bounds `n`: above it a request is refused with a 413, decided
 from `meta.json` alone. It also caps `n × dim` at `TOPICS_MAX_POINTS × 1024` (a 413
-too), so a wider vector means fewer points, not a larger peak. A value that is not
+too), so a wider vector means fewer points, not a larger peak. And it sets the
+largest body a request may send: `meta.json`'s 1 MiB, plus the `texts` limit at that
+many points, plus `TOPICS_MAX_POINTS × 1024 × 4` bytes of vectors, plus 64 KiB of
+multipart framing, which is 1,152,385,024 bytes at the default. A value that is not
 a positive integer stops the server at startup.
 
 **Memory.** A fit's peak grows with the number of points and with what each one
@@ -145,17 +148,26 @@ full stack the fit shares the host with chat, embed and gliner; raise either
 setting only as far as the host's headroom allows.
 
 **Disk.** Starlette spools each uploaded part to a temporary file once it passes
-1 MiB, and does so before the handler runs, so a request is received in full
-before any check is made. A 503 for a busy service is no exception. `/tmp` is the
-disk-backed `media-tmp` volume (shared with the router, `asr`, `diarize` and `vad`
-in the full stack). At the default limit the `vectors` part alone is about 600 MB
-(150000 × 1024 × 4 bytes), and in the full stack the router spools the body as
-well, onto the same volume, so a request in flight occupies it twice. The router
-also holds the body in memory: LiteLLM reads every file part into memory and
-re-encodes the multipart body with a new boundary for the backend (the part names,
-filenames and content types survive). At the caps that is about 1.1 GB of router
-memory per request in flight (the vectors plus a 512 MiB `texts` part), including
-a request the service will refuse with a 503.
+1 MiB, in `/tmp`, the disk-backed `media-tmp` volume (shared with the router, `asr`,
+`diarize` and `vad` in the full stack). The service lets one body in at a time and
+bounds it before it is parsed. A fit request that arrives while another is being
+received or run gets its 503, and a declared length over the ceiling above gets its
+413, before any of the body is read; what such a client sends anyway is read and
+dropped, never stored. An admitted body is counted as it arrives, chunked or not,
+and cut off with a 413 past the ceiling or a 408 after 300 s, so a stalled client
+cannot hold the slot. At the default limit the `vectors` part alone is up to about
+600 MB (150000 × 1024 × 4 bytes).
+
+The router is not bounded that way. LiteLLM v1.97.0 reads every multipart body in
+full before it checks the key, on every route: it spools the parts onto the same
+volume, then reads every file part into memory and re-encodes the multipart body
+with a new boundary for the backend (the part names, filenames and content types
+survive). In the full stack a request in flight therefore occupies `media-tmp`
+twice, and at the caps about 1.1 GB of router memory (the vectors plus a 512 MiB
+`texts` part), including a request the service then refuses with a 503 or a 413.
+LiteLLM's own request-size limit (`max_request_size_mb`) takes effect only with an
+enterprise license; a router-wide limit is tracked in
+[issue #158](https://github.com/nos-tromo/vllm-service/issues/158).
 
 **Startup.** The server runs a self-check before it listens: it compiles the numba
 code, fits a synthetic set twice, and stops if the two results differ. `/health`

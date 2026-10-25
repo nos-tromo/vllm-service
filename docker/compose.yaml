@@ -117,12 +117,13 @@ services:
     <<: *hardened
     read_only: true
     # LiteLLM's multipart pass-through spools the ENTIRE request body to
-    # /tmp before forwarding (starlette SpooledTemporaryFile), so /tmp must
-    # hold whole media uploads (Nextext allows multi-GB files). A RAM tmpfs
-    # sized for that would eat host memory, so this is a disk-backed scratch
-    # volume (media-tmp, shared with asr/diarize/vad/topics) like the Nextext
-    # backend's tmp-jobs; it never holds durable state and `down -v` may
-    # delete it.
+    # /tmp before forwarding (starlette SpooledTemporaryFile), even before it
+    # checks the key, and caps no size without an enterprise license (issue
+    # #158). So /tmp must hold whole media uploads (Nextext allows multi-GB
+    # files). A RAM tmpfs sized for that would eat host memory, so this is a
+    # disk-backed scratch volume (media-tmp, shared with asr/diarize/vad/topics)
+    # like the Nextext backend's tmp-jobs; it never holds durable state and
+    # `down -v` may delete it.
     volumes:
       - ./litellm.config.yaml:/app/config.yaml:ro
       - media-tmp:/tmp
@@ -688,10 +689,11 @@ services:
   topics:
     <<: *hardened
     read_only: true
-    # /tmp spools whole multipart uploads (starlette moves each part to a temp
-    # file on disk once it passes 1 MiB, before the handler runs), so it is a
-    # disk-backed scratch volume (media-tmp, in `volumes:` below), same
-    # rationale as router-tmp.
+    # /tmp spools multipart uploads (starlette moves each part to a temp file
+    # on disk once it passes 1 MiB): one request's body at a time, at most
+    # about 1.15 GB at the default TOPICS_MAX_POINTS. So it is a disk-backed
+    # scratch volume (media-tmp, in `volumes:` below), same rationale as
+    # router-tmp.
     # Topic-model fit via FastAPI. Like vad, NOT a vLLM container — a
     # stateless CPU service (src/topics_server.py) that fits on the vectors
     # and texts the caller sends, so it embeds nothing and has no weights:
@@ -699,9 +701,10 @@ services:
     # Endpoint shape:
     #   POST /topics/fit multipart meta=<json> texts=<json> vectors=<float32>
     #     -> {"labels": [...], "outliers", "topics": [{"id", "size", "keywords"}], ...}
-    # One fit runs at a time (a second request gets 503); TOPICS_MAX_POINTS
-    # bounds a request, and mem_limit contains one that outgrows the
-    # measured peak: the kernel kills this container, not a GPU backend.
+    # One fit runs at a time (a second request gets 503 before its body is
+    # read); TOPICS_MAX_POINTS bounds a request, and mem_limit contains one
+    # that outgrows the measured peak: the kernel kills this container, not a
+    # GPU backend.
     # Nothing waits for it to be healthy (the router needs it started only),
     # so it sits outside the GPU startup chain above.
     image: vllm-service-topics:${VLLM_SERVICE_VERSION:-latest}
