@@ -38,11 +38,9 @@ backends with a single LiteLLM Proxy router. The Docker assets live under
 `docker/Dockerfile.clip.cpu`, `docker/Dockerfile.embed.cpu`,
 `docker/Dockerfile.diarize.cuda`,
 `docker/Dockerfile.diarize.cpu`, `docker/Dockerfile.asr.cpu`,
-`docker/Dockerfile.vad.cpu`, `docker/Dockerfile.topics.cpu`,
+`docker/Dockerfile.vad.cpu`, `docker/Dockerfile.topics.cpu`, `docker/topics/`,
 `docker/litellm.config.yaml`) plus `.env`
-and `.dockerignore` at the repo root, and `docker/topics/`, the topics
-image's own locked project (`pyproject.toml` + `uv.lock`). The only Python
-sources are
+and `.dockerignore` at the repo root. The only Python sources are
 `src/rerank_server.py`, `src/clip_server.py`, `src/embed_server.py`,
 `src/diarize_server.py` (and its `src/diarize_audio.py`,
 `src/diarize_pipeline.py`, `src/diarize_compat.py`, and
@@ -55,8 +53,7 @@ is no off-the-shelf server that speaks the Jina-shape `/rerank`, `/clip`,
 full stack exposes. (`asr_server.py` is
 the exception — it speaks the standard OpenAI `/v1/audio/transcriptions`
 contract, but exists to serve Whisper on CPU via openai-whisper where the
-full stack uses vLLM.) (`topics_server.py` loads no model — it fits BERTopic
-to vectors the caller posts.) (`diarize_compat.py`
+full stack uses vLLM.) (`diarize_compat.py`
 holds the two pyannote-vs-base-image compat shims, applied before
 pyannote is imported: it restores the handful of `torchaudio` symbols
 that torchaudio 2.9+ removed (each stub is `hasattr`-guarded, so it's a
@@ -80,17 +77,15 @@ is baked into every image and set in `x-vllm-env` as belt-and-braces, and
 and `clip` get a 64m tmpfs, while the five services that receive whole
 uploads (`router`, `asr`, `diarize`, `vad`, `topics`) share the disk-backed
 `media-tmp` volume instead — starlette spools multipart bodies to `/tmp`, and
-Nextext allows multi-GB files (`topics` takes vectors, about 600 MB at its
-default limit), which a RAM tmpfs would have to hold. The `read_only`
+Nextext allows multi-GB files, which a RAM tmpfs would have to hold. The `read_only`
 vLLM backends additionally carry a 256m tmpfs at `~/.cache/vllm`, which vLLM
 0.26 writes to even on pooling runners. Two documented deferrals keep a
 writable rootfs: `chat` (vLLM's torch-compile cache under `~/.cache/vllm`)
 and `gliner` (Ray session dirs under `/tmp/ray`).
 
 **Ownership is self-healing:** the `volume-permissions` one-shot present in
-every compose shape but `topics-only` (the full stack and the other seven
-`-only` shapes; `topics-only` has no weights, so no huggingface-cache) chowns
-any wrong-owner entries under the huggingface-cache mountpoint to `10001:10001`
+every compose shape but `topics-only` (the other eight) chowns any
+wrong-owner entries under the huggingface-cache mountpoint to `10001:10001`
 before any backend starts, at every `up` — so a fresh, root-owned volume and
 an already-owned multi-GB cache both boot cleanly with no separate migration
 step. Cautious operators on airgapped hosts may still want to snapshot the
@@ -108,8 +103,7 @@ Nine independent compose projects, picked per host:
   `http://vllm-router:4000/...` on `inference-net`. GLiNER is routed via the
   router's `/gliner` pass-through, diarization via `/diarize`, voice activity
   detection via `/vad`, topic-model fits via `/topics/fit`. (`vad` is a tiny
-  CPU Silero service even in the full stack — Silero gains nothing from CUDA;
-  `topics` is CPU too, and has no weights.)
+  CPU Silero service even in the full stack — Silero gains nothing from CUDA.)
 
   The gliner container is supervised by `scripts/gliner_watchdog.sh` (installed as
   `/usr/local/bin/gliner-watchdog`): it probes `POST /gliner` and self-exits after
@@ -211,10 +205,8 @@ Nine independent compose projects, picked per host:
   `src/topics_server.py` the full-stack `topics` service does (a BERTopic fit
   over caller-supplied vectors), so it speaks the identical multipart
   `/topics/fit` contract. Reached as `http://topics-only:8000/topics/fit`.
-  Uses `Dockerfile.topics.cpu`, installed from the locked closure in
-  `docker/topics/`. It loads no model, so nothing is downloaded and — unlike
-  every other shape — it mounts no `huggingface-cache` and has no
-  `volume-permissions` job; its `/tmp` is the `media-tmp` volume (upload spool).
+  Uses `Dockerfile.topics.cpu` (Python 3.11, installed from the locked closure
+  in `docker/topics/`).
 
 The shapes are **not profiles of one compose file** — they have different
 images, different topologies, and (gliner-only, rerank-only, clip-only,
@@ -334,8 +326,7 @@ make stop-vad-only
 make bundle-vad-only      # versioned .tar.gz of the vad-cpu image
 ```
 
-Or, for the Topics-only shape (no CUDA, no router, no weights — a topic-model
-fit over vectors the caller sends; needs only `make network`):
+Or, for the Topics-only shape (no CUDA, no router — topic-model fit):
 
 ```bash
 make build-topics-only    # builds vllm-service-topics-cpu
@@ -464,11 +455,10 @@ The other five do not run vLLM:
   audio + optional tuning form fields), reached via the router's `/vad`
   pass-through.
 - `topics` — topic-model fit via FastAPI: BERTopic over vectors the caller
-  posts, stateless, no weights. Uses **`docker/Dockerfile.topics.cpu`** and runs
-  `src/topics_server.py` (the fit itself is `src/topics_fit.py`); CPU-only in
-  both the full stack and `topics-only`. The endpoint is `POST /topics/fit`
-  (multipart file parts `meta`, `texts`, `vectors`), reached via the router's
-  `/topics/fit` pass-through.
+  posts. Uses **`docker/Dockerfile.topics.cpu`** and runs `src/topics_server.py`
+  (the fit itself is `src/topics_fit.py`); CPU-only. The endpoint is
+  `POST /topics/fit` (multipart `meta`, `texts`, `vectors`), reached via the
+  router's `/topics/fit` pass-through.
 
 Each buildable service in `docker/compose.yaml` carries
 `image: vllm-service-<svc>:${VLLM_SERVICE_VERSION:-latest}`. A raw `docker
@@ -525,9 +515,7 @@ free when it starts, not a fixed reservation like the vLLM backends'
 ad-hoc `diarize` footprint included — must be healthy before it comes up, or
 it would claim the remaining memory and starve them. `vad` is a CPU service
 (no GPU reservation), so its place in the chain is just ordering, not memory
-contention. `topics` is outside the chain: the router waits only for it to
-start (`service_started`), so a failed topics self-check never keeps inference
-down. Healthchecks hit `http://localhost:8000/health` (vLLM backends,
+contention. Healthchecks hit `http://localhost:8000/health` (vLLM backends,
 `clip`, `diarize`, `vad`, and `topics`) and `/health/liveliness` (router).
 `gliner` has no `/health` route: its healthcheck is the same functional probe
 the watchdog uses — `POST /gliner` with a one-word payload — so a wedged Ray
