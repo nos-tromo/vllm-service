@@ -1960,7 +1960,7 @@ wheels = [
 
 [[package]]
 name = "vllm-service"
-version = "0.5.10"
+version = "0.6.0"
 source = { virtual = "." }
 dependencies = [
     { name = "fastapi" },

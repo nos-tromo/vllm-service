@@ -3,7 +3,7 @@
 # Two deployment shapes:
 #
 # 1. Full stack (CUDA host) — chat, embed, rerank, clip, asr, diarize, vad,
-#    gliner, router. Lives in docker/compose.yaml.
+#    gliner, topics, router. Lives in docker/compose.yaml.
 #    Targets: build, up, stop, bundle.
 #
 # 2. NER-only (Mac, CPU-only, ROCm host running Ollama for chat/embed) —

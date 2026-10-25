@@ -87,6 +87,60 @@ directions measured worse. Validate on labelled clips with `eval/` (the
 transcript metric + `--fb` sweep) before deploying a different value; an
 unparseable value warns and is ignored rather than crashing startup.
 
+## Topic-model fit limits
+
+Applies to both the full-stack `topics` service and the `topics-only` shape. A fit
+holds its whole request in memory for as long as it runs, and the request arrives
+on disk first, so a few settings decide what one request may cost. Override
+defaults via `.env`:
+
+```bash
+TOPICS_MAX_POINTS=150000   # default; the most points one request may carry
+# TOPICS_HOST_PORT=8008    # host publish port for dev (topics-only)
+# TOPICS_WARMUP=true       # image default, not in .env.example; false skips the startup self-check
+```
+
+`TOPICS_MAX_POINTS` bounds `n`: above it a request is refused with a 413, decided
+from `meta.json` alone. It also caps `n × dim` at `TOPICS_MAX_POINTS × 1024` (a 413
+too), so a wider vector means fewer points, not a larger peak. A value that is not
+a positive integer stops the server at startup.
+
+**Memory.** A fit peaks near 3.6 GB per 100k points at 1024 dimensions. That is
+measured on synthetic data, for the whole process with the vectors in it: about
+0.8 GB at 10k points, 1.9 GB at 50k and 3.6 GB at 100k. The default limit
+extrapolates to about 5.4 GB. An input with exact-duplicate vectors adds a second
+copy of the vectors (the distinct rows), up to about 0.4 GB per 100k points.
+Compose sets no memory limit on the service, as on every other service in this
+repo, so
+`TOPICS_MAX_POINTS` is the only guard: size it to the headroom the host has. In the
+full stack the fit shares the host with chat, embed and gliner.
+
+**Disk.** Starlette spools each uploaded part to a temporary file once it passes
+1 MiB, and does so before the handler runs, so a request is received in full
+before any check is made. A 503 for a busy service is no exception. `/tmp` is the
+disk-backed `media-tmp` volume (shared with the router, `asr`, `diarize` and `vad`
+in the full stack). At the default limit the `vectors` part alone is about 600 MB
+(150000 × 1024 × 4 bytes), and in the full stack the router spools the body as
+well, onto the same volume, so a request in flight occupies it twice.
+
+**Startup.** The server runs a self-check before it listens: it compiles the numba
+code, fits a synthetic set twice, and stops if the two results differ. `/health`
+therefore passes only about 11 to 15 s after the container starts, as measured (the
+compose `start_period` is 180 s, for slower hosts), and a failing check makes the
+container restart instead of serve. The first fit above 4096 rows compiles
+pynndescent's numba code once more, about 6–7 s on that request. `TOPICS_WARMUP`
+defaults to `true` in the image; `false`, `0`, `no` or `off` skip the check.
+Skipping it moves the compile onto the first request and leaves nothing showing
+that fits repeat on the host, so it is meant for tests, not for a deployment.
+
+**Threads.** A fit runs on one core. `OPENBLAS_NUM_THREADS`, `OMP_NUM_THREADS`,
+`MKL_NUM_THREADS` and `NUMBA_NUM_THREADS` are set to 1 in the image, which keeps a
+result independent of the host's core count; leave them at 1. Every response
+reports them under `runtime.threads`.
+
+The request and response bodies, and the errors these limits produce, are in
+[api-reference.md](api-reference.md#topics).
+
 ## Updating the model catalog
 
 `docker/litellm.config.yaml` is model-agnostic: all model names are read at

@@ -1,32 +1,33 @@
 # CPU-only deployment shapes
 
 For hosts that cannot run the CUDA stack (Mac dev boxes, ROCm or CPU-only
-Linux running Ollama for chat/embed), this repo also ships seven standalone
+Linux running Ollama for chat/embed), this repo also ships eight standalone
 CPU deployments — one container each, no LiteLLM router, no GPU
 reservation.
 
-The seven can be co-deployed on the same host so the consuming app has all
+The eight can be co-deployed on the same host so the consuming app has all
 of `/gliner`, `/rerank`, `/clip/*`, `/v1/embeddings`, `/pooling`,
-`/tokenize`, `/diarize`, `/v1/audio/transcriptions`, and `/vad` available
-without the full CUDA stack.
+`/tokenize`, `/diarize`, `/v1/audio/transcriptions`, `/vad`, and
+`/topics/fit` available without the full CUDA stack.
 
 Each is its own compose project (`docker/compose.<shape>.yaml`), not a profile
 of the full stack, and each is built and run through its own `make` targets.
 
 ## How every shape works
 
-The seven are seven instances of one template. Everything in this section
-applies to all of them; the per-shape sections below cover only what differs.
+The eight are eight instances of one template. Everything in this section
+applies to all of them, except where it names the shape that deviates; the
+per-shape sections below cover only what differs.
 
 ### Bring-up
 
 Substitute the shape's `make` suffix from the table below (`gliner-only`,
 `rerank-only`, `clip-only`, `embed-only`, `diarize-only`, `asr-only`,
-`vad-only`):
+`vad-only`, `topics-only`):
 
 ```bash
 make network            # if not already created
-make volumes            # if not already created
+make volumes            # if not already created (topics-only mounts no cache: skip it)
 make build-<shape>      # builds the shape's image
 make up-<shape>         # starts the container on inference-net
 ```
@@ -50,11 +51,12 @@ nothing is downloaded at start. To populate the cache on a networked host,
 temporarily set `HF_HUB_OFFLINE=0` and `TRANSFORMERS_OFFLINE=0` in `.env` for
 the first start, then flip both back.
 
-Three shapes deviate: **diarize-only** needs gated weights and an `HF_TOKEN`
+Four shapes deviate: **diarize-only** needs gated weights and an `HF_TOKEN`
 (see [Diarize-only](#diarize-only)), **asr-only** downloads from
 openai-whisper's own CDN rather than the HF Hub (see [ASR-only](#asr-only)),
-and **vad-only** downloads nothing at all (see [VAD-only](#vad-only)).
-Per-shape download sizes are in the table below.
+and **vad-only** and **topics-only** download nothing at all (see
+[VAD-only](#vad-only) and [Topics-only](#topics-only); the latter has no weights
+and mounts no cache). Per-shape download sizes are in the table below.
 
 ### Auth posture
 
@@ -63,21 +65,25 @@ Bearer-token gate, and `inference-net` is a private Docker network shared
 only between trusted compose projects (the same posture `data-net` uses
 for Qdrant).
 
-That holds for all seven — none of them runs a router, so none of them has a
+That holds for all eight — none of them runs a router, so none of them has a
 gate. The full stack's master-key gate is described in
 [api-reference.md](api-reference.md#authentication).
 
 ### Pairing shapes on one host
 
 Shapes share the `huggingface-cache` volume and the `make network` / `make
-volumes` prerequisites, so pairing costs nothing beyond the extra
-`build-`/`up-` pair. Two pairings matter in practice:
+volumes` prerequisites (all but `topics-only`, which needs no weights), so
+pairing costs nothing beyond the extra `build-`/`up-` pair. Two pairings matter
+in practice:
 
 - **diarize-only + vad-only** — the diarizer VAD-gates its output against
   `vad-only` when both are up. Without `vad-only` the gate fails open. See
   [api-reference.md](api-reference.md#diarization).
 - **embed-only replaces Ollama's `bge-m3`** rather than sitting alongside it
   on a dev host — see [Embed-only](#embed-only).
+
+**topics-only** has no pairing requirement: the caller supplies the vectors, so
+it needs no embedding endpoint and no other shape beside it.
 
 ### Overriding defaults
 
@@ -87,7 +93,7 @@ inert in that shape. The per-shape blocks below list the knobs, and
 semantics — the embed batch budget and the diarize speaker-granularity
 weights — are explained in [configuration.md](configuration.md).
 
-## The seven shapes
+## The eight shapes
 
 | Shape | `make` suffix | Image | Exposes, reached at |
 |---|---|---|---|
@@ -98,6 +104,7 @@ weights — are explained in [configuration.md](configuration.md).
 | Diarize-only | `diarize-only` | `vllm-service-diarize-cpu` | `/diarize` at `http://diarize-only:8000` |
 | ASR-only | `asr-only` | `vllm-service-asr-cpu` | `/v1/audio/transcriptions`, `/v1/audio/translations` at `http://asr-only:8000` |
 | VAD-only | `vad-only` | `vllm-service-vad-cpu` | `/vad` at `http://vad-only:8000` |
+| Topics-only | `topics-only` | `vllm-service-topics-cpu` | `/topics/fit` at `http://topics-only:8000` |
 
 Every container listens on port 8000 inside `inference-net`; the compose file
 is `docker/compose.<make suffix>.yaml` and the dev overlay
@@ -112,6 +119,7 @@ is `docker/compose.<make suffix>.yaml` and the dev overlay
 | Diarize-only | `DIARIZE_*` | `DIARIZE_HOST_PORT` | HF Hub, ~30 MB segmentation + ~26 MB embedding | **yes** |
 | ASR-only | `WHISPER_MODEL`, `ASR_*` | `ASR_HOST_PORT` | openai-whisper CDN, ~3 GB (`large-v3`) | no |
 | VAD-only | `VAD_*` | `VAD_HOST_PORT` | bundled in the `silero-vad` package | n/a |
+| Topics-only | `TOPICS_*` | `TOPICS_HOST_PORT` | none (the caller supplies the vectors) | n/a |
 
 ## NER-only
 
@@ -383,3 +391,56 @@ Silero VAD is by far the fastest of the standalone shapes — a fraction of real
 time per audio minute on CPU.
 
 Request and response shapes: [api-reference.md](api-reference.md#vad).
+
+## Topics-only
+
+`docker/compose.topics-only.yaml` is a standalone compose project for the same
+audience as the other `-only` shapes. It runs one container, `topics-only`,
+built from `Dockerfile.topics.cpu` (the uv base image's Python 3.11, installed
+from the locked closure in `docker/topics/`). No LiteLLM router, no GPU
+reservation. The container ships `src/topics_server.py` — the same FastAPI app
+the full-stack `topics` service runs, around the fit in `src/topics_fit.py` — so
+it exposes the **same multipart `/topics/fit` contract**, and consumers target
+either backend by changing only the base URL.
+
+The service fits on the vectors and texts the caller sends, so it embeds nothing:
+there are **no weights**, nothing is downloaded, and this shape works fully
+offline on first start. For the same reason it mounts no `huggingface-cache` and
+has no `volume-permissions` job, so `make volumes` is not a prerequisite — only
+`make network` is. Its one writable path is `/tmp`, the disk-backed `media-tmp`
+volume, because multipart parts spool there.
+
+Override defaults via `.env` — only `TOPICS_*` knobs apply in this shape:
+
+```bash
+TOPICS_MAX_POINTS=150000   # default; the most points one request may carry
+# TOPICS_HOST_PORT=8008    # host publish port for dev
+```
+
+`TOPICS_MAX_POINTS` also decides how much memory and disk one request can take:
+about 3.6 GB of memory per 100k points at 1024 dimensions, and about 600 MB of
+spool for the vectors of a request at the default limit. Compose sets no memory
+limit. The figures, and the startup self-check, are in
+[configuration.md](configuration.md#topic-model-fit-limits).
+
+**Startup.** The container reports healthy about 11 to 15 s after it starts, as
+measured: the server fits a synthetic set twice before it listens. The first fit
+above 4096 rows compiles pynndescent's numba code once, about 6–7 s on that
+request.
+
+**Build and pinning.** The other CPU images install the ranges their Dockerfiles
+name; this one installs from a lock of its own, because a fixed-seed fit changes
+when a library does. `docker/topics/pyproject.toml` and `docker/topics/uv.lock`
+are a project apart from the root one, whose lock resolves the eval environments,
+so neither moves the other's pins. The Dockerfile exports the lock with
+`uv export --locked`, which refuses a lock that has drifted from its
+`pyproject.toml`, and installs it with `--no-deps --require-hashes`. `torch`,
+`sentence-transformers` and `plotly` are not in the closure, and the image is
+about 1.2 GB. On aarch64 `hdbscan` has no wheel and builds from its sdist in a
+builder stage; that build's requirements (`setuptools`, `wheel`, `cython`,
+`numpy`) are fetched at build time, within the ranges `hdbscan` sets, and sit
+outside the lock's hashes. On x86_64 the locked wheel is installed. Dependabot
+watches `docker/topics` but leaves out major and minor bumps of the fit's
+libraries, since those can change its results; security updates still open.
+
+Request and response shapes: [api-reference.md](api-reference.md#topics).

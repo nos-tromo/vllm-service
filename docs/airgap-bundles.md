@@ -10,7 +10,7 @@ can ship alongside the `docker/` directory (which holds `compose.yaml` and
 On a build host with internet:
 
 ```bash
-make bundle              # full stack (chat, embed, rerank, gliner, clip, asr, diarize, vad, router)
+make bundle              # full stack (chat, embed, rerank, gliner, clip, asr, diarize, vad, topics, router)
 make bundle-dev          # full stack, from the current working tree (dev iteration / soak)
 make bundle-gliner-only     # NER-only shape (just vllm-service-gliner-cpu)
 make bundle-rerank-only  # Rerank-only shape (just vllm-service-rerank-only)
@@ -19,6 +19,7 @@ make bundle-embed-only   # Embed-only shape (just vllm-service-embed-only)
 make bundle-diarize-only # Diarize-only shape (just vllm-service-diarize-cpu)
 make bundle-asr-only     # ASR-only shape (just vllm-service-asr-cpu)
 make bundle-vad-only     # VAD-only shape (just vllm-service-vad-cpu)
+make bundle-topics-only  # Topics-only shape (just vllm-service-topics-cpu)
 ```
 
 Each target builds the locally-buildable services with a version tag, pulls the
@@ -46,7 +47,7 @@ outside a git repo). Use it for dev iteration and staging soak; a release
 candidate promoted to production must come from `make bundle`.
 
 Exporting `VLLM_SERVICE_VERSION_OVERRIDE` short-circuits both paths: it bundles
-the working tree as-is under the version you name. The seven
+the working tree as-is under the version you name. The eight
 `make bundle-<shape>` targets take the production path as well — there is no
 `bundle-dev-<shape>` target, so use `VLLM_SERVICE_VERSION_OVERRIDE` for a
 working-tree bundle of a single shape.
@@ -64,6 +65,13 @@ The compose file references the version through
 `image: vllm-service-<svc>:${VLLM_SERVICE_VERSION:-latest}`, so it falls
 back to `:latest` for normal dev workflows and uses the pinned tag whenever
 the variable is set.
+
+The topics image installs from its own hash-checked lock, `docker/topics/uv.lock`.
+The one build step outside it is on aarch64, where `hdbscan` compiles from its
+sdist and fetches that build's requirements (`setuptools`, `wheel`, `cython`,
+`numpy`) unpinned, so build it on the networked build host like every other
+image; the tarball then carries everything the target needs. See
+[Topics-only](deployment-shapes.md#topics-only).
 
 ## Loading and running the bundle
 
