@@ -67,6 +67,12 @@ services:
     environment:
       <<: *no-proxy-env
       TOPICS_MAX_POINTS: ${TOPICS_MAX_POINTS:-150000}
+      # The image pins these too; env_file would override the image, so they
+      # are set here, where a shared .env cannot change them.
+      OPENBLAS_NUM_THREADS: "1"
+      OMP_NUM_THREADS: "1"
+      MKL_NUM_THREADS: "1"
+      NUMBA_NUM_THREADS: "1"
     # Contains a request that outgrows the measured peak: the kernel kills
     # this container, which then restarts, and nothing else on the host.
     mem_limit: ${TOPICS_MEM_LIMIT:-7g}

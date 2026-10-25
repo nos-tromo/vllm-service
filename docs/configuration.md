@@ -137,9 +137,11 @@ showing that fits repeat on the host, so it is meant for tests, not for a
 deployment.
 
 **Threads.** A fit runs on one core. `OPENBLAS_NUM_THREADS`, `OMP_NUM_THREADS`,
-`MKL_NUM_THREADS` and `NUMBA_NUM_THREADS` are set to 1 in the image, which keeps a
-result independent of the host's core count; leave them at 1. Every response
-reports them under `runtime.threads`.
+`MKL_NUM_THREADS` and `NUMBA_NUM_THREADS` are set to 1, which keeps a result
+independent of the host's core count. The image sets them, and both compose files
+set them again under `environment:`, because a value in the shared `.env` would
+override the image's (`env_file` takes precedence over the image) but cannot
+override `environment:`. Every response reports them under `runtime.threads`.
 
 The request and response bodies, and the errors these limits produce, are in
 [api-reference.md](api-reference.md#topics).
