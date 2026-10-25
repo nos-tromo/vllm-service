@@ -54,7 +54,7 @@ Errors:
 | `503` + `Retry-After` | A fit is already running (one at a time; requests are not queued) |
 | `500` | The fit itself failed |
 
-Exact-duplicate vectors are clustered once; copies inherit their representative's label. The fit runs on the distinct vectors in first-occurrence order, each paired with its first occurrence's text, so a duplicated text counts once towards keywords and `min_df`, while a topic's `size` counts every input row (`sum(size) + outliers == n`). Inputs with fewer distinct vectors than that minimum get a `200`, not a `422`: every label is `-1` and `topics` is empty, and UMAP and HDBSCAN do not run on them.
+Exact-duplicate vectors are clustered once; copies inherit their representative's label. The fit runs on the distinct vectors in first-occurrence order, each paired with its first occurrence's text. The texts of the copies are not used, for keywords or for `min_df`, while a topic's `size` counts every input row (`sum(size) + outliers == n`). Inputs with fewer distinct vectors than that minimum get a `200`, not a `422`: every label is `-1` and `topics` is empty, and UMAP and HDBSCAN do not run on them.
 
 `TOPICS_MAX_POINTS` defaults to `150000`. A fit's peak memory is about 3.6 GB per 100k points at 1024 dimensions, measured on synthetic data. Because `n·dim` is capped at `TOPICS_MAX_POINTS·1024`, a wider vector means fewer points, not a larger peak.
 

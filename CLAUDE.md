@@ -213,9 +213,8 @@ images, different topologies, and (gliner-only, rerank-only, clip-only,
 embed-only, diarize-only, asr-only, vad-only, topics-only) no router. Pick one
 per host. They reuse the same external `inference-net` network and
 `huggingface-cache` volume, so the one-time `make network` / `make volumes`
-prerequisites apply to all of them (`topics-only` needs only the network). The
-eight CPU-only shapes can coexist on a single host because they target
-different network aliases and host ports.
+prerequisites apply to all of them. The eight CPU-only shapes can coexist on a
+single host because they target different network aliases and host ports.
 
 ## Common commands
 

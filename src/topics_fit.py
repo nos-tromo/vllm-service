@@ -27,10 +27,10 @@ scores alphabetically.
 
 Duplicates: exact-duplicate vectors are clustered once; copies inherit their
 representative's label. The fit runs on the distinct vectors in first-occurrence order,
-each paired with its first occurrence's text, so a duplicated text counts once towards
-keywords and ``min_df``, while a topic's size counts every input row, copies included. Fitting
-every row instead would scatter copies: UMAP's approximate neighbour search, used from
-4096 rows, spreads them over many clusters, and HDBSCAN labels even identical points
+each paired with its first occurrence's text. The texts of the copies are not used, for
+keywords or for ``min_df``, while a topic's size counts every input row, copies included.
+Fitting every row instead would scatter copies: UMAP's approximate neighbour search, used
+from 4096 rows, spreads them over many clusters, and HDBSCAN labels even identical points
 inconsistently. When fewer than :func:`min_points` of the vectors are distinct, every
 input is returned as an outlier without running UMAP or HDBSCAN.
 """
