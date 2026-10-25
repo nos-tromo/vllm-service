@@ -42,6 +42,7 @@ The body is `multipart/form-data`. Every part is sent as a file part:
 
 - `labels[i]` is the topic of input `i`; `-1` means outlier.
 - `topics` lists the ids `>= 0` in ascending id order.
+- A topic's `keywords` are best first: the score rounded to 6 decimals, highest first, and words with equal scores in alphabetical order.
 
 Errors:
 
@@ -72,6 +73,7 @@ keywords.
 - **UMAP:** `n_neighbors=15, n_components=5, min_dist=0.0, metric="cosine", random_state=seed, n_jobs=1`. A fixed seed makes UMAP single-threaded, which `n_jobs=1` states explicitly.
 - **hdbscan:** `metric="euclidean", cluster_selection_method="eom", core_dist_n_jobs=1`, with `min_cluster_size = min_topic_size`.
 - **c-TF-IDF:** `ClassTfidfTransformer(reduce_frequent_words=True)`. A per-text `CountVectorizer(stop_words, min_df)` fixes the vocabulary before the fit, and BERTopic receives it fixed. So `min_df` counts texts, not topics, and the vocabulary cannot come out empty after clustering.
+- **Keywords:** the service ranks each topic's row of the fitted c-TF-IDF matrix itself: by the score rounded to 6 decimals, then alphabetically, then cut to `top_n_words`. BERTopic's own lists leave the order of equal scores, and so which tied words survive the cut, to numpy's sort, which differs between platforms.
 - **Text:** BERTopic runs with `language=None`, so texts are not stripped to ASCII. When fewer than two words survive `stop_words` and `min_df`, every text is replaced by a two-word sentinel. The clustering is unchanged, and every topic's keywords are empty.
 - **Threads:** `OPENBLAS_NUM_THREADS`, `OMP_NUM_THREADS`, `MKL_NUM_THREADS` and `NUMBA_NUM_THREADS` are all set to 1. A multi-threaded BLAS reduction inside UMAP's spectral initialisation would otherwise make results depend on the host's core count.
 - **No randomness in sampling:** BERTopic's representative-document sampling uses its own fixed seed, and the service returns no representative documents.
