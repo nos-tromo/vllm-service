@@ -46,8 +46,8 @@ Starlette spools each uploaded part to a temporary file, which moves to disk bey
 request body is received without being held in memory. That happens before the handler runs, so
 a request refused with a 503 has been received in full. A part is read into memory only once the
 checks before it have passed, and those judge sizes alone: ``meta``'s size, then ``n`` and
-``n * dim`` against the limits, then the sizes of ``texts`` and ``vectors``, and only then the
-reads (``vectors``, then ``texts``).
+``n * dim`` against the limits and ``n`` against the fit's minimum, then the sizes of ``texts``
+and ``vectors``, and only then the reads (``vectors``, then ``texts``).
 
 The server logs counts and timings only, never texts, vectors or keywords.
 """
@@ -293,10 +293,6 @@ def fit(
                 status_code=413,
                 detail=f"n*dim={settings.n * settings.dim} exceeds TOPICS_MAX_POINTS*{_VALUES_PER_POINT}={budget}",
             )
-        texts_limit = min(settings.n * _TEXTS_BYTES_PER_POINT + _TEXTS_BYTES_SLACK, _TEXTS_MAX_BYTES)
-        _require_size_at_most(texts, texts_limit, "texts")
-        points = _read_vectors(vectors, settings)
-        documents = _read_texts(texts, settings.n)
         params = topics_fit.FitParams(
             seed=settings.seed,
             min_topic_size=settings.min_topic_size,
@@ -311,6 +307,10 @@ def fit(
                 status_code=422,
                 detail=f"need at least {minimum} points for min_topic_size={settings.min_topic_size}, got {settings.n}",
             )
+        texts_limit = min(settings.n * _TEXTS_BYTES_PER_POINT + _TEXTS_BYTES_SLACK, _TEXTS_MAX_BYTES)
+        _require_size_at_most(texts, texts_limit, "texts")
+        points = _read_vectors(vectors, settings)
+        documents = _read_texts(texts, settings.n)
         try:
             result = topics_fit.fit_topics(documents, points, params)
         except Exception as exc:

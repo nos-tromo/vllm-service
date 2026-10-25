@@ -503,6 +503,16 @@ def test_too_few_points_is_422(min_topic_size: int, minimum: int, fit_calls: Fit
     assert len(fit_calls) == 1
 
 
+def test_too_few_points_is_decided_from_meta_alone(fit_calls: FitCalls) -> None:
+    """The minimum needs only meta, so it is checked before either large part is judged or read."""
+    oversize_texts = b"x" * (15 * 16_384 + 65_536 + 1)  # over the texts limit for 15 points
+    for texts in (b"not json", oversize_texts):
+        response = _post(_meta(n=15), texts, b"\x00")
+        assert response.status_code == 422
+        assert "at least 16" in response.json()["detail"]
+    assert fit_calls == []
+
+
 @pytest.mark.parametrize("missing", ["meta", "texts", "vectors"])
 def test_missing_part_is_422(missing: str, fit_calls: FitCalls) -> None:
     """Each of the three parts is required."""
