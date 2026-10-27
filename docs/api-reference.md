@@ -23,7 +23,7 @@ the `hosted_vllm` provider) and picked by the request's `model` field like any
 other — see `docker/litellm.config.yaml:39-48`.
 
 **By path**, for the backends whose contracts are not OpenAI-shaped.
-`pass_through_endpoints` (`docker/litellm.config.yaml:95-153`) forwards the
+`pass_through_endpoints` (`docker/litellm.config.yaml:95-165`) forwards the
 request body verbatim; a `model` field means nothing on these:
 
 | Path | Backend |
@@ -33,6 +33,7 @@ request body verbatim; a `model` field means nothing on these:
 | `/clip/embed_image`, `/clip/embed_text`, `/clip/dimension` | `clip` — CLIP image+text tower |
 | `/diarize` | `diarize` — pyannote speaker diarization |
 | `/vad` | `vad` — Silero voice activity detection |
+| `/topics/fit` | `topics` — topic-model fit over caller-supplied vectors (CPU) |
 
 ## Authentication
 
@@ -351,3 +352,180 @@ and `NER_DEVICE=cpu` in `.env`. See `.env.example` for the full list of
 
 The `gliner-only` shape exposes the same contract at
 `http://gliner-only:8000/gliner` with no Bearer auth.
+
+## Topics
+
+The `topics` service fits a topic model to vectors the caller already holds. The
+caller posts the vectors and the matching texts and gets back one topic label per
+input and a keyword list per topic. The fit is
+[BERTopic](https://maartengr.github.io/BERTopic/) (UMAP → HDBSCAN → c-TF-IDF)
+with no embedding model, so nothing is embedded, downloaded or stored: the
+service keeps no state between requests. Like `gliner`, `clip`, `diarize` and
+`vad` it is **not** vLLM and does **not** expose OpenAI-compatible routes — it is
+reached through the router's `/topics/fit` pass-through. Both addresses take the
+same request and return the same response:
+
+- **Full stack** — `POST http://vllm-router:4000/topics/fit` with
+  `Authorization: Bearer $OPENAI_API_KEY`.
+- **`topics-only` shape** — `POST http://topics-only:8000/topics/fit`, no Bearer
+  auth.
+
+### Request
+
+The body is `multipart/form-data`, and every part must be a **file part** (sent
+with a filename, as `curl -F name=@file` does):
+
+| Part | Filename | Content |
+|---|---|---|
+| `meta` | `meta.json` | The settings below; every field is required |
+| `texts` | `texts.json` | A JSON array of `n` strings — the c-TF-IDF input |
+| `vectors` | `vectors.f32` | `n × dim` little-endian float32, row-major |
+
+| `meta` field | Meaning | Bounds |
+|---|---|---|
+| `n` | Number of points: the length of `texts` and the row count of `vectors` | ≥ 1 |
+| `dim` | Vector dimension | 1 to 8192 |
+| `seed` | UMAP's random state | 0 to 2³² − 1 |
+| `min_topic_size` | HDBSCAN's `min_cluster_size`; HDBSCAN's `min_samples` is half of it, at least 1 and at most 100 | ≥ 2 |
+| `nr_topics` | Topic-reduction target, or `0` for none; BERTopic counts the outlier class as one of the topics | `0` or ≥ 2 |
+| `top_n_words` | Keywords kept per topic | 1 to 30 |
+| `min_df` | The fewest texts a word must occur in to become a keyword | ≥ 1 |
+| `stop_words` | Words never used as keywords; they are matched against the lowercased tokens, so send them lowercase | at most 10000, each at most 64 characters |
+
+```bash
+curl http://vllm-router:4000/topics/fit \
+  -H "Authorization: Bearer $OPENAI_API_KEY" \
+  -F "meta=@meta.json;type=application/json" \
+  -F "texts=@texts.json;type=application/json" \
+  -F "vectors=@vectors.f32;type=application/octet-stream"
+```
+
+with, for example, this `meta.json`:
+
+```json
+{"n": 20000, "dim": 1024, "seed": 42, "min_topic_size": 20, "nr_topics": 0,
+ "top_n_words": 10, "min_df": 2, "stop_words": []}
+```
+
+### Response
+
+```json
+{
+  "labels": [0, -1, 2, ...],
+  "outliers": 123,
+  "topics": [{"id": 0, "size": 410, "keywords": [["word", 0.031], ...]}, ...],
+  "versions": {"bertopic": "0.17.4", "umap-learn": "0.5.12", "hdbscan": "0.8.44", ...},
+  "runtime": {"machine": "x86_64", "python": "3.11.x", "threads": {"OPENBLAS_NUM_THREADS": "1", ...}},
+  "timings": {"fit_s": 12.3}
+}
+```
+
+- `labels[i]` is the topic of input `i`, in the order sent. `-1` marks an
+  outlier, and `outliers` counts them.
+- `topics` lists the ids ≥ 0 in ascending **id** order. Ids are not ordered by
+  size, so a consumer that wants the largest topic first sorts on `size` itself.
+- A topic's `size` counts every input row that carries its id, copies of a
+  duplicated vector included, so `sum(size) + outliers == n`.
+- `keywords` are `[word, score]` pairs, best first: the c-TF-IDF score rounded to
+  6 decimals, highest first, and words with equal scores in code-point order of
+  the word.
+- `versions` names the installed versions of the fit's libraries, `runtime` the
+  CPU architecture, the Python version and the thread pins, and `timings.fit_s`
+  the wall time of the fit itself, in seconds.
+
+### Fit behaviour
+
+- **Minimum input.** A fit needs at least `max(8, 2·min_topic_size)` points: UMAP's
+  spectral layout of its 5 dimensions needs a few more points than that, and HDBSCAN
+  room for two topics. UMAP looks at 15 neighbours of each point; a fit of fewer than
+  16 distinct vectors looks at every other point instead, and is otherwise unchanged.
+- **Exact duplicates are clustered once.** The fit runs on the distinct vectors in
+  first-occurrence order (`-0.0` and `0.0` are the same value), each paired with
+  its first occurrence's text, and copies inherit their representative's label.
+  The texts of the copies are not used, for keywords or for `min_df`, while
+  `size` counts every row. `min_topic_size` counts distinct vectors, so copies of
+  one vector never add up to a topic. If the points meet the minimum above but
+  the distinct vectors do not, the answer is a `200`, not a `422`: every label is
+  `-1`, `topics` is empty, and UMAP and HDBSCAN do not run.
+- **Texts are used as sent.** They are not stripped to ASCII, so non-Latin scripts
+  and diacritics reach the keywords unchanged. Words are scikit-learn tokens:
+  lowercased, two or more word characters. The vocabulary is fitted on the
+  individual texts, so `min_df` counts texts rather than topics, and is fixed
+  before clustering. When fewer than two words survive `stop_words` and `min_df`,
+  every topic's `keywords` is empty; the clustering is unchanged.
+- **One fit at a time.** A fit request that arrives while another fit is being
+  received or run gets a 503 with `Retry-After: 30` before any of its body is
+  read; requests are not queued.
+- **Duration.** A fit takes seconds to minutes. Measured on synthetic data at 1024
+  dimensions on one Apple Silicon core: about 90 s for 100k points with six-word
+  texts, and 57 s for 50k and 180 s for 100k with texts of about 2,000 characters.
+  It grows faster than `n`, and the shape of the data moves it as well: one
+  512-dimensional set of 50k points took 244 s. The first fit with 4096 or more
+  distinct vectors in a process also compiles pynndescent's numba code once,
+  adding about 6–7 s to that request.
+  Clients need a read timeout to match; the router's pass-through timeout is 4 h.
+
+### Errors
+
+| Status | When |
+|---|---|
+| `400` | A malformed `meta.json` (including a `dim` above 8192 or a stop word over 64 characters), or a multipart body that names no boundary |
+| `408` | An admitted fit's body has not arrived within 300 s; the connection is closed |
+| `413` | A body over the request ceiling (below), declared in `Content-Length` or counted as it arrives; `n > TOPICS_MAX_POINTS`, `n·dim > TOPICS_MAX_POINTS·1024`, a `meta.json` over 1 MiB, or a `texts` part over `min(n·16384 + 65536, 536870912)` bytes. Each is decided from the body's length, `meta.json` and the parts' sizes alone, before a large part is read into memory |
+| `422` | A missing part (including a body that is not multipart), a `texts` part that is not a JSON array of strings, `len(texts) != n`, a vector byte count other than `n·dim·4`, non-finite values, or fewer points than the minimum, `max(8, 2·min_topic_size)` |
+| `503` + `Retry-After` | Another fit is being received or run (one at a time; requests are not queued). Answered before any of the body is read |
+| `500` | The fit itself failed; the body is a fixed message and quotes nothing from the request |
+
+An error body is `{"detail": ...}`. A 422's `detail` is a string from the service
+(`texts holds 19 items, expected n = 20`), or FastAPI's list form for a missing
+part (`[{"type": "missing", "loc": ["body", "vectors"], "msg": "Field required", ...}]`),
+so a client has to handle both. A multipart body with no boundary is a 400 from
+Starlette (`Missing boundary in multipart.`).
+
+A part sent without a filename reaches the server as a form field, not a file.
+Above 1 MiB Starlette refuses it with a 400 (`Part exceeded maximum size of
+1024KB.`); below that it is a 422 in FastAPI's list form
+(`"msg": "Value error, Expected UploadFile, received: <class 'str'>"`).
+
+The upload is bounded before it is parsed. A 503, or a 413 for a declared
+`Content-Length` over the request ceiling, is answered before any of the body is
+read: a client that waits for `100 Continue` is never asked for its body, and what
+a client sends anyway is read and dropped, not stored. The ceiling is `meta.json`'s
+1 MiB, plus the `texts` limit at `TOPICS_MAX_POINTS` points, plus
+`TOPICS_MAX_POINTS·1024·4` bytes of vectors, plus 64 KiB of multipart framing:
+1,152,385,024 bytes at the default. An admitted fit holds the one slot from the
+first byte of its body until its response is sent; the body is counted as it
+arrives, chunked or not, and cut off with a 413 past the ceiling or a 408 after
+300 s. Through the full stack's router this spares the service but not the router,
+which takes every multipart body in full before it forwards it. The disk a body
+takes, the router's share, and the memory a fit needs for a given
+`TOPICS_MAX_POINTS`, are in
+[configuration.md](configuration.md#topic-model-fit-limits).
+
+A request whose fit outgrows the container's memory limit (`TOPICS_MEM_LIMIT`)
+gets none of these answers. The kernel kills the topics container, so a direct
+call sees the connection close with no response, and a call through the router
+gets a 500 from LiteLLM, `{"error": {"message": "Server disconnected", ...}}`,
+not the service's `{"detail": ...}`. The container then restarts and passes its
+self-check again before it answers.
+
+### Determinism
+
+The same input bytes, settings, image and CPU class give the same labels and
+keywords. The service never reorders or samples the input, so its order is the
+caller's. A fixed `seed` makes UMAP single-threaded (`n_jobs=1`), HDBSCAN
+computes core distances on one thread, and the image pins the BLAS and numba
+thread pools to 1 (`runtime.threads` reports the four variables), so a result
+does not depend on the host's core count. numba runs its `workqueue` threading
+layer because the image has no libgomp; that is harmless with the pins at 1.
+
+Checked: identical output with the container pinned to 1, 2, 4 and 8 cores
+(`--cpuset-cpus`), each with the thread variables at 1, 2, 4 and 8. Across
+architectures the output can differ: an arm64 image and an emulated amd64 one
+agree on 2,000 points of 64 dimensions, but on 6,000 points of 1024 dimensions,
+which take the approximate-neighbour path, they found 105 and 106 topics. That,
+and the x86_64 CPU models left unchecked, is why the guarantee is scoped to a CPU
+class. The server also fits a synthetic set twice at start and refuses to serve
+if the two results differ, so `GET /health`
+(`{"status": "ok", "versions": {...}}`, the container's healthcheck target)
+answers only once that check has passed.

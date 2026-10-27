@@ -3,7 +3,7 @@
 # Two deployment shapes:
 #
 # 1. Full stack (CUDA host) — chat, embed, rerank, clip, asr, diarize, vad,
-#    gliner, router. Lives in docker/compose.yaml.
+#    gliner, topics, router. Lives in docker/compose.yaml.
 #    Targets: build, up, stop, bundle.
 #
 # 2. NER-only (Mac, CPU-only, ROCm host running Ollama for chat/embed) —
@@ -56,6 +56,15 @@
 #    repoint its embedding base and SPARSE_API_BASE.
 #    Targets: build-embed-only, up-embed-only, stop-embed-only,
 #             bundle-embed-only.
+#
+# 9. Topics-only (same hosts as the other -only shapes) — a single
+#    FastAPI topic-model fit container on inference-net, no router, no GPU
+#    requirement. Lives in docker/compose.topics-only.yaml. Same multipart
+#    /topics/fit contract as the full-stack `topics` service. It fits on the
+#    vectors the caller sends, so it has no weights and needs no embedding
+#    endpoint.
+#    Targets: build-topics-only, up-topics-only, stop-topics-only,
+#             bundle-topics-only.
 
 .DEFAULT_GOAL := help
 
@@ -66,11 +75,12 @@
         build-diarize-only bundle-diarize-only up-diarize-only up-dev-diarize-only stop-diarize-only down-diarize-only \
         build-asr-only bundle-asr-only up-asr-only up-dev-asr-only stop-asr-only down-asr-only \
         build-vad-only bundle-vad-only up-vad-only up-dev-vad-only stop-vad-only down-vad-only \
-        build-embed-only bundle-embed-only up-embed-only up-dev-embed-only stop-embed-only down-embed-only
+        build-embed-only bundle-embed-only up-embed-only up-dev-embed-only stop-embed-only down-embed-only \
+        build-topics-only bundle-topics-only up-topics-only up-dev-topics-only stop-topics-only down-topics-only
 
 # The full-stack compose lifecycle (network/volumes/build/bundle/up/up-dev/
 # stop/down/pre-commit) + the versioned image tag come from make/common.mk,
-# vendored from nos-tromo/.github. The seven CPU `-only` shapes below are
+# vendored from nos-tromo/.github. The eight CPU `-only` shapes below are
 # vllm-service-specific and stay here.
 REPO     := vllm-service
 NETWORKS := inference-net
@@ -92,6 +102,8 @@ COMPOSE_VAD_ONLY        := docker compose --env-file .env -f docker/compose.vad-
 COMPOSE_VAD_ONLY_DEV    := docker compose --env-file .env -f docker/compose.vad-only.yaml -f docker/compose.vad-only.override.yaml
 COMPOSE_EMBED_ONLY      := docker compose --env-file .env -f docker/compose.embed-only.yaml
 COMPOSE_EMBED_ONLY_DEV  := docker compose --env-file .env -f docker/compose.embed-only.yaml -f docker/compose.embed-only.override.yaml
+COMPOSE_TOPICS_ONLY     := docker compose --env-file .env -f docker/compose.topics-only.yaml
+COMPOSE_TOPICS_ONLY_DEV := docker compose --env-file .env -f docker/compose.topics-only.yaml -f docker/compose.topics-only.override.yaml
 
 help:
 	@echo "vllm-service — build-host helpers."
@@ -168,6 +180,14 @@ help:
 	@echo "  make up-dev-embed-only    like 'up-embed-only', but publishes the port on the host"
 	@echo "  make stop-embed-only      stop the dense+sparse embedding service"
 	@echo "  make down-embed-only      stop + remove the dense+sparse embedding service"
+	@echo
+	@echo "Topics-only stack (CPU; for hosts without the full CUDA stack):"
+	@echo "  make build-topics-only    build the topics-cpu image"
+	@echo "  make bundle-topics-only   ship the topics-cpu image as a versioned .tar.gz"
+	@echo "  make up-topics-only       run the topics service on inference-net (detached, no host port)"
+	@echo "  make up-dev-topics-only   like 'up-topics-only', but publishes the port on the host"
+	@echo "  make stop-topics-only     stop the topics service"
+	@echo "  make down-topics-only     stop + remove the topics service"
 
 
 # --- NER-only stack -----------------------------------------------------
@@ -356,4 +376,31 @@ stop-embed-only:
 # Stop + remove the embed service. External huggingface-cache survives.
 down-embed-only:
 	$(COMPOSE_EMBED_ONLY) down
+
+# --- Topics-only stack --------------------------------------------------
+#
+# Uses the same external inference-net as the full stack, so `make network`
+# remains the one-time prerequisite. The service fits on the vectors the
+# caller sends, so it has no weights: no model download and no
+# huggingface-cache volume.
+
+build-topics-only:
+	DOCKER_BUILDKIT=1 $(COMPOSE_TOPICS_ONLY) build
+
+bundle-topics-only:
+	./scripts/bundle_images.sh topics-only
+
+up-topics-only:
+	$(COMPOSE_TOPICS_ONLY) up -d --no-build
+
+# Like 'up-topics-only' but publishes the topics port on the host.
+up-dev-topics-only:
+	$(COMPOSE_TOPICS_ONLY_DEV) up -d --no-build
+
+stop-topics-only:
+	$(COMPOSE_TOPICS_ONLY) stop
+
+# Stop + remove the topics service. The media-tmp scratch volume survives.
+down-topics-only:
+	$(COMPOSE_TOPICS_ONLY) down
 

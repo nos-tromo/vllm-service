@@ -1,0 +1,28 @@
+[project]
+name = "vllm-service-topics"
+version = "0.0.0"
+requires-python = ">=3.11,<3.12"
+dependencies = [
+    "bertopic==0.17.4",
+    "umap-learn==0.5.12",
+    "hdbscan==0.8.44",
+    "numpy>=2.0,<2.6",
+    "pandas>=2.2,<3",
+    "scikit-learn>=1.6",
+    "pyyaml>=6",
+    "packaging>=24",
+    "fastapi>=0.141.1",
+    "uvicorn[standard]>=0.32.0",
+    "python-multipart>=0.0.9",
+    "pydantic>=2.0",
+    "anyio>=4",
+]
+
+[dependency-groups]
+dev = ["pytest>=8", "httpx>=0.27"]
+
+[tool.uv]
+package = false
+environments = ["sys_platform == 'linux'", "sys_platform == 'darwin'"]
+# BERTopic hard-requires both, but imports neither without an embedding model or plots.
+exclude-dependencies = ["sentence-transformers", "plotly"]

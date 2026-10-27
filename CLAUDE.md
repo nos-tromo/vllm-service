@@ -31,23 +31,26 @@ backends with a single LiteLLM Proxy router. The Docker assets live under
 `docker/compose.clip-only.yaml`, `docker/compose.embed-only.yaml`,
 `docker/compose.diarize-only.yaml`,
 `docker/compose.asr-only.yaml`, `docker/compose.vad-only.yaml`,
+`docker/compose.topics-only.yaml`,
 `docker/Dockerfile.vllm`,
 `docker/Dockerfile.gliner.cuda`, `docker/Dockerfile.gliner.cpu`,
 `docker/Dockerfile.rerank.cpu`, `docker/Dockerfile.clip.cuda`,
 `docker/Dockerfile.clip.cpu`, `docker/Dockerfile.embed.cpu`,
 `docker/Dockerfile.diarize.cuda`,
 `docker/Dockerfile.diarize.cpu`, `docker/Dockerfile.asr.cpu`,
-`docker/Dockerfile.vad.cpu`, `docker/litellm.config.yaml`) plus `.env`
+`docker/Dockerfile.vad.cpu`, `docker/Dockerfile.topics.cpu`, `docker/topics/`,
+`docker/litellm.config.yaml`) plus `.env`
 and `.dockerignore` at the repo root. The only Python sources are
 `src/rerank_server.py`, `src/clip_server.py`, `src/embed_server.py`,
 `src/diarize_server.py` (and its `src/diarize_audio.py`,
 `src/diarize_pipeline.py`, `src/diarize_compat.py`, and
 `src/diarize_gate.py` helpers),
-`src/asr_server.py`, and `src/vad_server.py` —
+`src/asr_server.py`, `src/vad_server.py`, and `src/topics_server.py`
+(and its `src/topics_fit.py`) —
 small FastAPI wrappers around Hugging Face models that ship because there
 is no off-the-shelf server that speaks the Jina-shape `/rerank`, `/clip`,
-`/pooling`/`/tokenize`, `/diarize`, or `/vad` contracts the full stack
-exposes. (`asr_server.py` is
+`/pooling`/`/tokenize`, `/diarize`, `/vad`, or `/topics/fit` contracts the
+full stack exposes. (`asr_server.py` is
 the exception — it speaks the standard OpenAI `/v1/audio/transcriptions`
 contract, but exists to serve Whisper on CPU via openai-whisper where the
 full stack uses vLLM.) (`diarize_compat.py`
@@ -71,17 +74,17 @@ is baked into every image and set in `x-vllm-env` as belt-and-braces, and
 `ASR_DOWNLOAD_ROOT`/`PYANNOTE_CACHE` follow the same path. Compose applies
 `no-new-privileges` + `cap_drop: ALL` everywhere; most services also run
 `read_only`. Two shapes of writable `/tmp`: `embed`, `embed-sparse`, `rerank`
-and `clip` get a 64m tmpfs, while the four services that receive whole media
-uploads (`router`, `asr`, `diarize`, `vad`) share the disk-backed `media-tmp`
-volume instead — starlette spools multipart bodies to `/tmp`, and Nextext
-allows multi-GB files, which a RAM tmpfs would have to hold. The `read_only`
+and `clip` get a 64m tmpfs, while the five services that receive whole
+uploads (`router`, `asr`, `diarize`, `vad`, `topics`) share the disk-backed
+`media-tmp` volume instead — starlette spools multipart bodies to `/tmp`, and
+Nextext allows multi-GB files, which a RAM tmpfs would have to hold. The `read_only`
 vLLM backends additionally carry a 256m tmpfs at `~/.cache/vllm`, which vLLM
 0.26 writes to even on pooling runners. Two documented deferrals keep a
 writable rootfs: `chat` (vLLM's torch-compile cache under `~/.cache/vllm`)
 and `gliner` (Ray session dirs under `/tmp/ray`).
 
 **Ownership is self-healing:** the `volume-permissions` one-shot present in
-every compose shape (full stack and all seven `-only` shapes) chowns any
+every compose shape but `topics-only` (the other eight) chowns any
 wrong-owner entries under the huggingface-cache mountpoint to `10001:10001`
 before any backend starts, at every `up` — so a fresh, root-owned volume and
 an already-owned multi-GB cache both boot cleanly with no separate migration
@@ -92,15 +95,15 @@ with docint's mounts of this volume, so the fix applies uniformly there too.
 
 ## Deployment shapes
 
-Eight independent compose projects, picked per host:
+Nine independent compose projects, picked per host:
 
 - **Full stack** (`docker/compose.yaml`, CUDA-required) — chat, embed,
-  embed-sparse, rerank, clip, asr, diarize, vad, gliner, router, plus the
-  one-shot `volume-permissions` init job. The original shape; reached as
+  embed-sparse, rerank, clip, asr, diarize, vad, gliner, topics, router, plus
+  the one-shot `volume-permissions` init job. The original shape; reached as
   `http://vllm-router:4000/...` on `inference-net`. GLiNER is routed via the
   router's `/gliner` pass-through, diarization via `/diarize`, voice activity
-  detection via `/vad`. (`vad` is a tiny CPU Silero service even in the full
-  stack — Silero gains nothing from CUDA.)
+  detection via `/vad`, topic-model fits via `/topics/fit`. (`vad` is a tiny
+  CPU Silero service even in the full stack — Silero gains nothing from CUDA.)
 
   The gliner container is supervised by `scripts/gliner_watchdog.sh` (installed as
   `/usr/local/bin/gliner-watchdog`): it probes `POST /gliner` and self-exits after
@@ -197,21 +200,28 @@ Eight independent compose projects, picked per host:
   Python 3.11, CPU torch + torchaudio, `silero-vad`, `ffmpeg`). The
   `silero-vad` package bundles its weights, so — unlike diarize-only —
   nothing is downloaded; airgap-clean out of the box.
+- **Topics-only** (`docker/compose.topics-only.yaml`, CPU OK) — a single
+  `topics-only` container on `inference-net`, no router, no GPU. Runs the same
+  `src/topics_server.py` the full-stack `topics` service does (a BERTopic fit
+  over caller-supplied vectors), so it speaks the identical multipart
+  `/topics/fit` contract. Reached as `http://topics-only:8000/topics/fit`.
+  Uses `Dockerfile.topics.cpu` (Python 3.11, installed from the locked closure
+  in `docker/topics/`).
 
 The shapes are **not profiles of one compose file** — they have different
 images, different topologies, and (gliner-only, rerank-only, clip-only,
-embed-only, diarize-only, asr-only, vad-only) no router. Pick one per host.
-They reuse the same external `inference-net` network and `huggingface-cache`
-volume, so the one-time `make network` / `make volumes` prerequisites apply
-to all of them. The seven CPU-only shapes can coexist on a single host
-because they target different network aliases and host ports.
+embed-only, diarize-only, asr-only, vad-only, topics-only) no router. Pick one
+per host. They reuse the same external `inference-net` network and
+`huggingface-cache` volume, so the one-time `make network` / `make volumes`
+prerequisites apply to all of them. The eight CPU-only shapes can coexist on a
+single host because they target different network aliases and host ports.
 
 ## Common commands
 
 The `Makefile` is the entry point — it points Compose at `docker/compose.yaml`,
 since a bare `docker compose` from the repo root no longer finds the compose
 file. It builds and runs the full stack (chat, embed, embed-sparse, rerank,
-clip, asr, diarize, vad, gliner, router) — there are no optional profiles.
+clip, asr, diarize, vad, gliner, topics, router) — there are no optional profiles.
 
 Prerequisites (one-time per host):
 
@@ -315,6 +325,16 @@ make stop-vad-only
 make bundle-vad-only      # versioned .tar.gz of the vad-cpu image
 ```
 
+Or, for the Topics-only shape (no CUDA, no router — topic-model fit):
+
+```bash
+make build-topics-only    # builds vllm-service-topics-cpu
+make up-topics-only       # one topics-only container on inference-net (no host port)
+make up-dev-topics-only   # like 'up-topics-only', but publishes the topics port on the host
+make stop-topics-only
+make bundle-topics-only   # versioned .tar.gz of the topics-cpu image
+```
+
 Other useful operations use the raw compose form, pointed at the compose file:
 
 ```bash
@@ -339,17 +359,19 @@ org-wide strict regime — ruff + pyrefly via `.pre-commit-config.yaml`, mirrori
 differs → `py311`). CI enforces it in the `python-lint` job, which first runs
 that repo's `validate_strict_config.py` to fail on any drift from the canonical
 config. Run locally with `uv sync` then `uv run pre-commit run --all-files`. The
-heavy ML backends (torch, transformers, openai-whisper, pyannote, silero) are
+heavy ML backends (torch, transformers, openai-whisper, pyannote, silero,
+bertopic, umap-learn, hdbscan, scikit-learn) are
 not installed for linting — `pyrefly` treats them as `Any` (`ignore-missing-imports`);
 only the light typed deps (`fastapi`, `pydantic`, `numpy`) are declared so
 strict mode can check the first-party code.
 
 The servers (`src/rerank_server.py`, `src/clip_server.py`,
 `src/embed_server.py`, `src/diarize_server.py`, `src/asr_server.py`,
-`src/vad_server.py`) are also small enough to verify by curl — rerank, clip,
-embed, asr, and vad against their running standalone containers, diarize
-through the full-stack router — see the Architecture / Rerank-only, CLIP-only,
-Embed-only, Diarization, ASR-only, and VAD sections below.
+`src/vad_server.py`, `src/topics_server.py`) are also small enough to verify by
+curl — rerank, clip, embed, asr, vad, and topics against their running
+standalone containers, diarize through the full-stack router — see the
+Architecture / Rerank-only, CLIP-only, Embed-only, Diarization, ASR-only, and
+VAD sections below (topics: `docs/api-reference.md`).
 
 ## Architecture
 
@@ -375,9 +397,10 @@ like `chat`, `embed` and `asr`.
 
 The paths that ARE forwarded by `pass_through_endpoints` are `/pooling` and
 `/tokenize` (to `embed-sparse`), GLiNER's `/gliner`, CLIP's `/clip/*`,
-diarization's `/diarize`, and VAD's `/vad`. All but `/pooling` and `/tokenize`
-have upstreams that are *not* vLLM containers — they go to the `gliner` (Ray
-Serve), `clip` (FastAPI), `diarize` (FastAPI), and `vad` (FastAPI) services.
+diarization's `/diarize`, VAD's `/vad`, and the topic-model fit's
+`/topics/fit`. All but `/pooling` and `/tokenize` have upstreams that are *not*
+vLLM containers — they go to the `gliner` (Ray Serve), `clip` (FastAPI),
+`diarize` (FastAPI), `vad` (FastAPI), and `topics` (FastAPI) services.
 
 Every pass-through entry carries `auth: true`, so the master key gates them
 exactly like the OpenAI-shaped routes. LiteLLM made that the default in
@@ -390,7 +413,7 @@ defaults.
 
 ### Backends
 
-Five of the nine workers share the same `docker/Dockerfile.vllm` image,
+Five of the ten workers share the same `docker/Dockerfile.vllm` image,
 launched with a different model and per-service env-driven flags:
 
 - `chat` — general LLM (`TEXT_MODEL`)
@@ -402,7 +425,7 @@ launched with a different model and per-service env-driven flags:
 - `rerank` — reranker, `--runner pooling` (`RERANK_MODEL`)
 - `asr` — Whisper (`WHISPER_MODEL`)
 
-The other four do not run vLLM:
+The other five do not run vLLM:
 
 - `gliner` — GLiNER zero-shot NER via Ray Serve (`NER_MODEL`, default
   `gliner-community/gliner_large-v2.5` on CUDA; set `NER_DEVICE=cpu` with
@@ -431,6 +454,11 @@ The other four do not run vLLM:
   runs on CPU even in the full stack. The endpoint is `POST /vad` (multipart
   audio + optional tuning form fields), reached via the router's `/vad`
   pass-through.
+- `topics` — topic-model fit via FastAPI: BERTopic over vectors the caller
+  posts. Uses **`docker/Dockerfile.topics.cpu`** and runs `src/topics_server.py`
+  (the fit itself is `src/topics_fit.py`); CPU-only. The endpoint is
+  `POST /topics/fit` (multipart `meta`, `texts`, `vectors`), reached via the
+  router's `/topics/fit` pass-through.
 
 Each buildable service in `docker/compose.yaml` carries
 `image: vllm-service-<svc>:${VLLM_SERVICE_VERSION:-latest}`. A raw `docker
@@ -443,8 +471,8 @@ tarballs for offline shipping.
 All backends listen on internal port 8000 and join both `vllm-net` and the
 external `inference-net` — the latter so `obs-plane` can reach them by service
 name; they are not an app-facing entry point. Only the vLLM backends serve
-`/metrics`; the FastAPI wrappers (`clip`, `diarize`, `vad`) expose their
-contract route and `/health` and nothing else. Apps still reach the stack
+`/metrics`; the FastAPI wrappers (`clip`, `diarize`, `vad`, `topics`) expose
+their contract route and `/health` and nothing else. Apps still reach the stack
 exclusively through `router`, which keeps the `vllm-router` alias on
 `inference-net` for cross-project consumers.
 
@@ -470,7 +498,9 @@ absent, so it's a perf bump rather than a hard requirement).
 No lockfile, no `uv`, no `pyproject.toml` — the overlay is one line. If you
 add another dependency later and want transitive pinning, that's the moment
 to reintroduce a lockfile-driven workflow; for one extras specifier the
-ergonomics aren't worth it.
+ergonomics aren't worth it. The topics image is the exception: it installs
+from its own lock (`docker/topics/uv.lock`), because a fixed-seed fit needs
+exact pins.
 
 ### Service startup ordering
 
@@ -486,11 +516,12 @@ ad-hoc `diarize` footprint included — must be healthy before it comes up, or
 it would claim the remaining memory and starve them. `vad` is a CPU service
 (no GPU reservation), so its place in the chain is just ordering, not memory
 contention. Healthchecks hit `http://localhost:8000/health` (vLLM backends,
-`clip`, `diarize`, and `vad`) and `/health/liveliness` (router). `gliner` has
-no `/health` route: its healthcheck is the same functional probe the watchdog
-uses — `POST /gliner` with a one-word payload — so a wedged Ray Serve
-deployment reads as unhealthy rather than merely unreachable. `start_period`
-is 120s for the backends, 180s for `gliner`, 60s for the router.
+`clip`, `diarize`, `vad`, and `topics`) and `/health/liveliness` (router).
+`gliner` has no `/health` route: its healthcheck is the same functional probe
+the watchdog uses — `POST /gliner` with a one-word payload — so a wedged Ray
+Serve deployment reads as unhealthy rather than merely unreachable.
+`start_period` is 120s for the backends, 180s for `gliner` and `topics`, 60s
+for the router.
 
 Every GPU service runs `restart: unless-stopped`, and `x-cuda-deploy` carries
 resources only (Compose v2's `deploy.restart_policy` would override `restart:`).
