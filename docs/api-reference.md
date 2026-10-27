@@ -435,8 +435,10 @@ with, for example, this `meta.json`:
 
 ### Fit behaviour
 
-- **Minimum input.** A fit needs at least `max(16, 2·min_topic_size)` points: UMAP
-  needs more points than its 15 neighbours, and HDBSCAN room for two topics.
+- **Minimum input.** A fit needs at least `max(8, 2·min_topic_size)` points: UMAP's
+  spectral layout of its 5 dimensions needs a few more points than that, and HDBSCAN
+  room for two topics. UMAP looks at 15 neighbours of each point; a fit of fewer than
+  16 distinct vectors looks at every other point instead, and is otherwise unchanged.
 - **Exact duplicates are clustered once.** The fit runs on the distinct vectors in
   first-occurrence order (`-0.0` and `0.0` are the same value), each paired with
   its first occurrence's text, and copies inherit their representative's label.
@@ -470,7 +472,7 @@ with, for example, this `meta.json`:
 | `400` | A malformed `meta.json` (including a `dim` above 8192 or a stop word over 64 characters), or a multipart body that names no boundary |
 | `408` | An admitted fit's body has not arrived within 300 s; the connection is closed |
 | `413` | A body over the request ceiling (below), declared in `Content-Length` or counted as it arrives; `n > TOPICS_MAX_POINTS`, `n·dim > TOPICS_MAX_POINTS·1024`, a `meta.json` over 1 MiB, or a `texts` part over `min(n·16384 + 65536, 536870912)` bytes. Each is decided from the body's length, `meta.json` and the parts' sizes alone, before a large part is read into memory |
-| `422` | A missing part (including a body that is not multipart), a `texts` part that is not a JSON array of strings, `len(texts) != n`, a vector byte count other than `n·dim·4`, non-finite values, or fewer points than the minimum, `max(16, 2·min_topic_size)` |
+| `422` | A missing part (including a body that is not multipart), a `texts` part that is not a JSON array of strings, `len(texts) != n`, a vector byte count other than `n·dim·4`, non-finite values, or fewer points than the minimum, `max(8, 2·min_topic_size)` |
 | `503` + `Retry-After` | Another fit is being received or run (one at a time; requests are not queued). Answered before any of the body is read |
 | `500` | The fit itself failed; the body is a fixed message and quotes nothing from the request |
 

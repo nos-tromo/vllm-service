@@ -519,7 +519,7 @@ def test_text_count_mismatch_is_422(texts: object, fit_calls: FitCalls) -> None:
 @pytest.mark.parametrize(
     ("min_topic_size", "minimum"),
     [
-        pytest.param(2, 16, id="floor-of-16"),
+        pytest.param(2, 8, id="floor-of-8"),
         pytest.param(10, 20, id="twice-the-topic-size"),
         pytest.param(30, 60, id="large-topic-size"),
     ],
@@ -538,16 +538,16 @@ def test_too_few_points_is_422(min_topic_size: int, minimum: int, fit_calls: Fit
 
 def test_too_few_points_is_decided_from_meta_alone(fit_calls: FitCalls) -> None:
     """The minimum needs only meta, so it is checked before either large part is read."""
-    response = _post(_meta(n=15), b"not json", b"\x00")
+    response = _post(_meta(n=7, min_topic_size=2), b"not json", b"\x00")
     assert response.status_code == 422
-    assert "at least 16" in response.json()["detail"]
+    assert "at least 8" in response.json()["detail"]
     assert fit_calls == []
 
 
 def test_texts_size_is_judged_before_the_point_minimum(fit_calls: FitCalls) -> None:
     """Every size refusal comes before every content refusal: oversize texts are a 413 even with too few points."""
-    oversize_texts = b"x" * (15 * 16_384 + 65_536 + 1)  # over the texts limit for 15 points
-    assert _post(_meta(n=15), oversize_texts, b"\x00").status_code == 413
+    oversize_texts = b"x" * (7 * 16_384 + 65_536 + 1)  # over the texts limit for 7 points
+    assert _post(_meta(n=7, min_topic_size=2), oversize_texts, b"\x00").status_code == 413
     assert fit_calls == []
 
 

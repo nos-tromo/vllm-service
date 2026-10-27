@@ -31,7 +31,7 @@ from bertopic import BERTopic
 sys.path.insert(0, str(Path(__file__).resolve().parents[2] / "src"))
 
 import topics_fit
-from topics_fit import FitParams, FitResult, TopicInfo, fit_topics, min_points, self_check
+from topics_fit import FitParams, FitResult, TopicInfo, fit_topics, min_points, n_neighbors, self_check
 
 PREFIXES = ("alpha", "beta", "gamma")
 PARAMS = FitParams(seed=7, min_topic_size=10, nr_topics=0, top_n_words=10, min_df=1, stop_words=())
@@ -344,12 +344,46 @@ def test_min_samples_cap_leaves_small_topic_sizes_unchanged(
 
 
 def test_min_points(blobs: Blobs) -> None:
-    """The minimum is twice the topic size, never below 16, and smaller inputs are refused."""
+    """The minimum is twice the topic size, never below 8, and smaller inputs are refused."""
     assert min_points(PARAMS) == 20
-    assert min_points(replace(PARAMS, min_topic_size=5)) == 16
+    assert min_points(replace(PARAMS, min_topic_size=5)) == 10
+    assert min_points(replace(PARAMS, min_topic_size=2)) == 8
     texts, vectors, _ = blobs
     with pytest.raises(ValueError, match="at least 20"):
         fit_topics(texts[:15], vectors[:15], PARAMS)
+
+
+def test_the_neighbourhood_shrinks_only_below_sixteen_points() -> None:
+    """UMAP keeps its 15 neighbours from 16 points on and takes every other point below that."""
+    assert [n_neighbors(d) for d in (8, 12, 15, 16, 100, 150_000)] == [7, 11, 14, 15, 15, 15]
+
+
+@pytest.mark.parametrize("n_per", [3, 4, 5])
+def test_a_fit_below_sixteen_points_recovers_planted_blobs(n_per: int) -> None:
+    """Nine to fifteen points in three blobs fit into three topics, one per blob, the same way twice.
+
+    Args:
+        n_per: Points per blob.
+    """
+    texts, vectors, planted = _make_blobs(n_per=n_per)
+    params = replace(PARAMS, min_topic_size=2)
+    first = fit_topics(texts, vectors, params)
+    second = fit_topics(texts, vectors, params)
+    assert first.labels == second.labels and first.topics == second.topics
+    assert len(first.topics) == 3 and first.outliers == 0
+    labels = [_majority(first.labels, planted, blob) for blob in range(3)]
+    assert all(share == 1.0 for _, share in labels)
+    assert len({label for label, _ in labels}) == 3
+
+
+def test_eight_points_fit_and_seven_are_refused() -> None:
+    """The smallest fit is 8 points; one fewer is refused before UMAP runs."""
+    texts, vectors, _ = _make_blobs(n_per=3)
+    params = replace(PARAMS, min_topic_size=2)
+    result = fit_topics(texts[:8], vectors[:8], params)
+    assert len(result.labels) == 8 and result.topics
+    with pytest.raises(ValueError, match="at least 8"):
+        fit_topics(texts[:7], vectors[:7], params)
 
 
 def test_length_mismatch_raises(blobs: Blobs) -> None:

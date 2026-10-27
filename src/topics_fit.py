@@ -66,6 +66,12 @@ _SENTINEL_WORDS = ("topicsemptyone", "topicsemptytwo")
 # HDBSCAN's min_samples; its core-distance query holds min_samples + 1 neighbours of every point.
 _MIN_SAMPLES_CAP = 100
 
+# The fewest points a fit accepts. UMAP's spectral layout of its 5 dimensions needs at least 7.
+_MIN_POINTS = 8
+
+# UMAP's neighbourhood; a fit of fewer distinct points takes every other point instead.
+_N_NEIGHBORS = 15
+
 
 @dataclass(frozen=True)
 class FitParams:
@@ -126,8 +132,9 @@ class FitResult:
 def min_points(params: FitParams) -> int:
     """Return the fewest inputs a fit accepts with these settings.
 
-    UMAP needs more points than its 15 neighbours, and HDBSCAN needs room for two clusters
-    of ``min_topic_size``.
+    UMAP's spectral layout needs a few points more than its 5 dimensions, and HDBSCAN needs
+    room for two clusters of ``min_topic_size``. Below 16 points UMAP's neighbourhood is every
+    other point (:func:`n_neighbors`).
 
     Args:
         params: The fit settings.
@@ -135,7 +142,20 @@ def min_points(params: FitParams) -> int:
     Returns:
         The minimum number of inputs.
     """
-    return max(16, 2 * params.min_topic_size)
+    return max(_MIN_POINTS, 2 * params.min_topic_size)
+
+
+def n_neighbors(distinct: int) -> int:
+    """Return UMAP's neighbourhood for a fit of ``distinct`` points.
+
+    Args:
+        distinct: The number of distinct vectors the fit runs on.
+
+    Returns:
+        15, or one fewer than the points when there are fewer than 16, so the neighbourhood
+        never outgrows the data. From 16 points on the fit is unchanged.
+    """
+    return min(_N_NEIGHBORS, distinct - 1)
 
 
 def fit_topics(texts: Sequence[str], vectors: np.ndarray, params: FitParams) -> FitResult:
@@ -200,7 +220,12 @@ def fit_topics(texts: Sequence[str], vectors: np.ndarray, params: FitParams) -> 
         language=None,
         # n_jobs=1 is what the seed forces anyway; spelling it out avoids UMAP's warning.
         umap_model=UMAP(
-            n_neighbors=15, n_components=5, min_dist=0.0, metric="cosine", random_state=params.seed, n_jobs=1
+            n_neighbors=n_neighbors(len(first)),
+            n_components=5,
+            min_dist=0.0,
+            metric="cosine",
+            random_state=params.seed,
+            n_jobs=1,
         ),
         hdbscan_model=hdbscan.HDBSCAN(
             min_cluster_size=params.min_topic_size,
