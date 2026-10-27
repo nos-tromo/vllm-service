@@ -1,4 +1,4 @@
-FROM ghcr.io/astral-sh/uv:python3.11-trixie-slim@sha256:e1726dc72f5a45d6fde5814c9bdb87cfdf46ea4fd8a5fd806fdda378fffb4ae5
+FROM ghcr.io/astral-sh/uv:python3.11-trixie-slim@sha256:fc291ad9d72c018670df760bc0611e13b52725d895bf1889d036ca86aa62523e
 
 # curl is needed for the docker-compose healthcheck against Ray Serve's
 # /-/healthz endpoint. build-essential covers transitive deps that build
