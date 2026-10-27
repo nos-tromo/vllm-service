@@ -31,7 +31,16 @@ from bertopic import BERTopic
 sys.path.insert(0, str(Path(__file__).resolve().parents[2] / "src"))
 
 import topics_fit
-from topics_fit import FitParams, FitResult, TopicInfo, fit_topics, min_points, n_neighbors, self_check
+from topics_fit import (
+    FitParams,
+    FitResult,
+    TopicInfo,
+    fit_topics,
+    min_points,
+    min_samples_for,
+    n_neighbors,
+    self_check,
+)
 
 PREFIXES = ("alpha", "beta", "gamma")
 PARAMS = FitParams(seed=7, min_topic_size=10, nr_topics=0, top_n_words=10, min_df=1, stop_words=())
@@ -322,25 +331,38 @@ def test_min_samples_is_capped_at_100(hdbscan_fits: HdbscanFits) -> None:
     assert peak < 32 * 2**20
 
 
+def test_min_samples_is_half_the_topic_size() -> None:
+    """HDBSCAN's ``min_samples`` is half of ``min_topic_size``, at least 1 and at most 100."""
+    assert [min_samples_for(size) for size in (2, 3, 4, 10, 100, 201, 2000)] == [1, 1, 2, 5, 50, 100, 100]
+
+
 @pytest.mark.parametrize(("min_topic_size", "n_per"), [(10, 60), (100, 150)], ids=["10", "100"])
-def test_min_samples_cap_leaves_small_topic_sizes_unchanged(
+def test_half_min_samples_finds_the_same_topics_on_separated_data(
     min_topic_size: int, n_per: int, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    """Up to ``min_topic_size=100`` the cap changes nothing: the fit matches hdbscan's own ``min_samples``."""
+    """On clearly separated blobs, half the topic size fits exactly as hdbscan's own default does."""
     texts, vectors, _ = _make_blobs(n_per=n_per)
     params = replace(PARAMS, min_topic_size=min_topic_size)
-    capped = fit_topics(texts, vectors, params)
+    seen: list[int | None] = []
     fit = hdbscan.HDBSCAN.fit
 
-    def _uncapped(self: hdbscan.HDBSCAN, *args: object, **kwargs: object) -> object:
+    def _recorded(self: hdbscan.HDBSCAN, *args: object, **kwargs: object) -> object:
+        seen.append(self.min_samples)
+        return fit(self, *args, **kwargs)
+
+    monkeypatch.setattr(hdbscan.HDBSCAN, "fit", _recorded)
+    halved = fit_topics(texts, vectors, params)
+
+    def _default(self: hdbscan.HDBSCAN, *args: object, **kwargs: object) -> object:
         self.min_samples = None  # hdbscan then uses min_cluster_size
         return fit(self, *args, **kwargs)
 
-    monkeypatch.setattr(hdbscan.HDBSCAN, "fit", _uncapped)
-    uncapped = fit_topics(texts, vectors, params)
-    assert capped.topics
-    assert capped.labels == uncapped.labels
-    assert capped.topics == uncapped.topics
+    monkeypatch.setattr(hdbscan.HDBSCAN, "fit", _default)
+    default = fit_topics(texts, vectors, params)
+    assert seen == [min_topic_size // 2]
+    assert halved.topics
+    assert halved.labels == default.labels
+    assert halved.topics == default.topics
 
 
 def test_min_points(blobs: Blobs) -> None:

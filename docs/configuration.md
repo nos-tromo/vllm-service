@@ -130,7 +130,7 @@ points peaks at about 5.4 GB. What drives it, measured at 50,000 points:
 - **Duplicates:** roughly neutral at 10%. Copies are not fitted, but the distinct
   rows are copied out of the request; the same 50,000 points with no duplicates
   peaked 0.18 GB higher.
-- **`min_topic_size`:** bounded. HDBSCAN's `min_samples` is capped at 100, so its
+- **`min_topic_size`:** bounded. HDBSCAN's `min_samples`, half of it, is capped at 100, so its
   neighbour table stays under `n × 101 × 16` bytes, about 0.24 GB at 150,000
   points.
 

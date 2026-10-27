@@ -386,7 +386,7 @@ with a filename, as `curl -F name=@file` does):
 | `n` | Number of points: the length of `texts` and the row count of `vectors` | ≥ 1 |
 | `dim` | Vector dimension | 1 to 8192 |
 | `seed` | UMAP's random state | 0 to 2³² − 1 |
-| `min_topic_size` | HDBSCAN's `min_cluster_size`; HDBSCAN's `min_samples` is the same value capped at 100 | ≥ 2 |
+| `min_topic_size` | HDBSCAN's `min_cluster_size`; HDBSCAN's `min_samples` is half of it, at least 1 and at most 100 | ≥ 2 |
 | `nr_topics` | Topic-reduction target, or `0` for none; BERTopic counts the outlier class as one of the topics | `0` or ≥ 2 |
 | `top_n_words` | Keywords kept per topic | 1 to 30 |
 | `min_df` | The fewest texts a word must occur in to become a keyword | ≥ 1 |

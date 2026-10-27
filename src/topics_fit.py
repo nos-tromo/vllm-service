@@ -37,10 +37,9 @@ from 4096 rows, spreads them over many clusters, and HDBSCAN labels even identic
 inconsistently. When fewer than :func:`min_points` of the vectors are distinct, every
 input is returned as an outlier without running UMAP or HDBSCAN.
 
-Memory: hdbscan's ``min_samples`` defaults to ``min_cluster_size``, and its core-distance
-query keeps ``min_samples + 1`` neighbours of every distinct vector, 16 bytes each. The fit
-caps ``min_samples`` at 100, so a large ``min_topic_size`` cannot multiply that; up to 100
-the clustering is exactly hdbscan's default.
+Memory: HDBSCAN's core-distance query keeps ``min_samples + 1`` neighbours of every distinct
+vector, 16 bytes each. The fit sets ``min_samples`` to half of ``min_topic_size``, capped at
+100 (:func:`min_samples_for`), so a large ``min_topic_size`` cannot multiply that.
 """
 
 from __future__ import annotations
@@ -79,8 +78,8 @@ class FitParams:
 
     Attributes:
         seed: UMAP's random state.
-        min_topic_size: HDBSCAN's ``min_cluster_size``. HDBSCAN's ``min_samples`` is the same value
-            capped at 100, which leaves fits up to 100 as hdbscan's own default would.
+        min_topic_size: HDBSCAN's ``min_cluster_size``. HDBSCAN's ``min_samples`` is half of it,
+            at least 1 and at most 100 (:func:`min_samples_for`).
         nr_topics: BERTopic's topic-reduction target, or 0 for no reduction. BERTopic
             counts the outlier class as one of these topics.
         top_n_words: Keywords kept per topic.
@@ -158,6 +157,23 @@ def n_neighbors(distinct: int) -> int:
     return min(_N_NEIGHBORS, distinct - 1)
 
 
+def min_samples_for(min_topic_size: int) -> int:
+    """Return HDBSCAN's ``min_samples`` for a minimum topic size.
+
+    hdbscan's own default, the full ``min_cluster_size``, let a fit of a hundred-odd points of
+    one homogeneous collection come back as two broad topics or as half a dozen depending on
+    the seed alone. Half of it gives steady topics there, and the same topics on clearly
+    separated data.
+
+    Args:
+        min_topic_size: The minimum topic size, HDBSCAN's ``min_cluster_size``.
+
+    Returns:
+        Half of it, at least 1 and at most 100.
+    """
+    return max(1, min(min_topic_size // 2, _MIN_SAMPLES_CAP))
+
+
 def fit_topics(texts: Sequence[str], vectors: np.ndarray, params: FitParams) -> FitResult:
     """Fit BERTopic to precomputed vectors and return the labels and keywords.
 
@@ -229,7 +245,7 @@ def fit_topics(texts: Sequence[str], vectors: np.ndarray, params: FitParams) -> 
         ),
         hdbscan_model=hdbscan.HDBSCAN(
             min_cluster_size=params.min_topic_size,
-            min_samples=min(params.min_topic_size, _MIN_SAMPLES_CAP),
+            min_samples=min_samples_for(params.min_topic_size),
             metric="euclidean",
             cluster_selection_method="eom",
             core_dist_n_jobs=1,
