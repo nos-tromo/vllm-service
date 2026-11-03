@@ -30,7 +30,7 @@ and `shutdown` when the worker stops. Each model call adds one event:
 | `operation` | `router.<call type>`: LiteLLM's call type without its async prefix, see [Routes](#routes) |
 | `outcome` | `ok`, or `error` for a call that failed after it was sent |
 | `actor` | `{"user": null, "via": "service"}`: every caller shares the master key, so the router cannot tell them apart; an Open WebUI user only with a valid signed token, see [Open WebUI's users](#open-webuis-users) |
-| `request_id` | the caller's `X-Request-ID`, which the apps forward from the gateway; unset when absent or malformed |
+| `request_id` | the caller's `X-Request-ID`, which the apps forward from the gateway; unset when absent or malformed. It is taken only from the request headers as the proxy received them, never from a request body |
 | `recipient` | `model:<deployment>`, the compose service that received the data: `chat`, `embed`, `rerank`, `asr`, or the pass-through backend (`embed-sparse`, `gliner`, `clip`, `diarize`, `vad`, `topics`) |
 | `ai.model_alias` | the model the caller requested; the request path for a pass-through route |
 | `ai.model_id` | the deployment that served the call (`model_info.id` in `docker/litellm.config.yaml`) |
@@ -45,6 +45,7 @@ and `shutdown` when the worker stops. Each model call adds one event:
 | `criteria.batch`, `criteria.documents` | the number of embedding inputs, of rerank documents |
 | `criteria.error` | the error's class name, for `outcome: "error"`, or `client_disconnected` |
 | `criteria.caller`, `criteria.forwarded_identity`, `criteria.chat_id` | how a forwarded user identity was handled, see below |
+| `criteria.incomplete` | `true` when a fact could not be read (a malformed response, header or setting): the event is written without that fact rather than not at all |
 
 There is no `purpose`: the apps never send it to the router, they record it
 with their own events. There is no `target`: the router does not know which
@@ -76,6 +77,11 @@ Not audited:
   audit gate below): nothing was transferred.
 - The router's own calls to a deployment that no client request caused
   (LiteLLM health checks): they carry no client data.
+
+A pass-through call that fails before LiteLLM has recorded the request's
+headers (the backend cannot be reached, for example) is still recorded, but
+without a request id: the payload LiteLLM passes on then is the client's own
+body, which cannot vouch for any header.
 
 ## Fail closed
 
@@ -109,8 +115,10 @@ ENABLE_FORWARD_USER_INFO_HEADERS=true
 FORWARD_USER_INFO_HEADER_JWT_SECRET=<a long random secret>
 ```
 
-and the same secret here as `AUDIT_OPENWEBUI_JWT_SECRET`. A valid token
-(issuer `open-webui`, unexpired, ±30 s clock skew) gives
+and the same secret here as `AUDIT_OPENWEBUI_JWT_SECRET`. The router checks
+the token's HS256 signature before it parses anything the token carries, and
+a token it cannot decode counts as not verified. A valid token (issuer
+`open-webui`, unexpired, ±30 s clock skew) gives
 `actor: {"user": "<email>", "via": "service"}` and
 `criteria: {"caller": "open-webui", "forwarded_identity": "signed"}`, plus
 Open WebUI's chat id as `criteria.chat_id`. The email is the account key

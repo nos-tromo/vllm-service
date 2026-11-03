@@ -525,9 +525,22 @@ Design points that are load-bearing, all verified against the pinned
   can still fail the call; any failed write also closes a gate that both
   pre-call hooks enforce (so the router's retries are refused too) until an
   `admin`/`audit.recovered` event records the gap.
+- **Facts are read defensively, the write is not:** every fact (headers,
+  token, deployment details, response, stream chunks, pass-through targets)
+  goes through `_read`, so whatever fails while reading it the event is still
+  written, marked `incomplete`; any failure of the write itself counts as an
+  unwritten event and fails closed.
+- **Headers only from what the proxy records:** model-list calls read
+  `proxy_server_request.headers`, which LiteLLM builds itself; pass-through
+  calls read the response-headers hook's `request_headers` argument, or on
+  failure only the Starlette `Headers` LiteLLM puts under
+  `litellm_params.proxy_server_request` — a pass-through payload is the
+  client's JSON body, which can carry header-shaped fields but never a
+  `Headers` object.
 - **Identity:** callers share the master key, so the actor is
   `Actor(None, "service")` unless Open WebUI's HS256-signed
-  `X-OpenWebUI-User-Jwt` verifies against `AUDIT_OPENWEBUI_JWT_SECRET`; plain
+  `X-OpenWebUI-User-Jwt` verifies against `AUDIT_OPENWEBUI_JWT_SECRET` (the
+  signature is checked before any JSON in it is parsed); plain
   `X-OpenWebUI-User-*` headers are never trusted.
 - **Recipient = deployment:** `model_info.id` in `docker/litellm.config.yaml`
   names the compose service (`chat`, `embed`, `rerank`, `asr`); pass-through

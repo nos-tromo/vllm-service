@@ -20,6 +20,12 @@ part of a stream already sent) a failed write closes a gate instead: every
 later audited call is refused before anything reaches a model, until a write
 succeeds again and the trail records how many events could not be written.
 ``docs/audit.md`` lists what each path does.
+
+Facts are read defensively: whatever fails while one is read (a malformed
+response, a hostile token), the event is still written, without that fact
+and marked ``incomplete``. Request headers are taken only from what the proxy
+itself records, never from a request body: a pass-through route's payload is
+the client's body.
 """
 
 from __future__ import annotations
@@ -38,13 +44,14 @@ import threading
 import time
 from collections.abc import AsyncGenerator, Callable, Mapping
 from dataclasses import dataclass, field
-from typing import Any, Final
+from typing import Any, Final, TypeVar
 from urllib.parse import urlsplit
 
-from audit_event import Actor, AiCall, AuditEmitter, AuditWriteError, sha256_text
+from audit_event import Actor, AiCall, AuditEmitter, sha256_text
 from audit_runtime import REQUEST_ID_HEADER, clean_request_id, open_audit_stream
 from litellm.integrations.custom_logger import CustomLogger
 from litellm.types.utils import CallTypes
+from starlette.datastructures import Headers
 
 #: The compose project, which the audit store's verifier binds chains to.
 SERVICE: Final = "vllm-service"
@@ -79,7 +86,7 @@ MAX_JWT_LENGTH: Final = 4096
 
 _B64URL: Final = re.compile(r"[A-Za-z0-9_-]+")
 _RELEASE_TAG: Final = re.compile(r"v\d")
-_WRITE_ERRORS: Final = (AuditWriteError, RuntimeError, OSError, ValueError)
+_T = TypeVar("_T")
 _SYSTEM: Final = Actor(user=None, via="system")
 _CALLER: Final = Actor(user=None, via="service")
 _CALL_TYPE_VALUES: Final = frozenset(str(member.value) for member in CallTypes)
@@ -190,6 +197,7 @@ class _Call:
     attempts: int = 0
     deployment: str | None = None
     revision: str | None = None
+    incomplete: bool = False
     written: bool = False
     lost: bool = False
 
@@ -197,6 +205,28 @@ class _Call:
 #: The audited call of the current request. Set by the proxy's pre-call hook
 #: in the request's task; the router's tasks for that request inherit it.
 _CURRENT: Final[contextvars.ContextVar[_Call | None]] = contextvars.ContextVar("router_audit_call", default=None)
+
+
+def _read(call: _Call, read: Callable[[], _T], fallback: _T) -> _T:
+    """Read one fact for a call's event without risking the event.
+
+    Whatever goes wrong while a fact is read, the call keeps its record: the
+    fact falls back and the event is marked ``incomplete``. Only facts are
+    read this way, never the write.
+
+    Args:
+        call: The call the fact belongs to.
+        read: Reads the fact.
+        fallback: The value to use when reading fails.
+
+    Returns:
+        The fact, or ``fallback``.
+    """
+    try:
+        return read()
+    except Exception:  # any failure, e.g. a RecursionError from hostile input
+        call.incomplete = True
+        return fallback
 
 
 def _get(obj: object, name: str) -> Any:
@@ -302,25 +332,66 @@ def _output_text(call_type: str, response: object) -> str | None:
     return text if isinstance(text, str) and text else None
 
 
-def _request_headers(data: Mapping[str, Any]) -> Mapping[str, Any] | None:
-    """Find the client's request headers in a hook's payload.
+def _hidden_model_id(response: object) -> str | None:
+    """Return the deployment id LiteLLM attached to a response.
 
     Args:
-        data: The request data or call kwargs LiteLLM passed to a hook.
+        response: The response LiteLLM returned.
+
+    Returns:
+        The id, or ``None`` when the response carries none.
+    """
+    model_id = _get(_get(response, "_hidden_params"), "model_id")
+    return model_id if isinstance(model_id, str) and model_id else None
+
+
+def _route(user_api_key_dict: object) -> str | None:
+    """Return the request path, which LiteLLM's key check records.
+
+    Args:
+        user_api_key_dict: The caller's key object.
+
+    Returns:
+        The path, or ``None``.
+    """
+    route = getattr(user_api_key_dict, "request_route", None)
+    return route if isinstance(route, str) and route else None
+
+
+def _proxy_headers(data: Mapping[str, Any]) -> Mapping[str, Any] | None:
+    """Return the request headers the proxy recorded for a model-list call.
+
+    LiteLLM builds ``proxy_server_request`` itself for these routes, after
+    it has dropped any value the client sent under that name, so its headers
+    are the request's own. Never use this on a pass-through payload: that
+    starts as the client's body.
+
+    Args:
+        data: The request data of a chat, embedding, rerank, ... call.
 
     Returns:
         The headers, keyed by lowercase name, or ``None`` when absent.
     """
-    params = _get(data, "litellm_params")
-    for source in (_get(data, "proxy_server_request"), _get(params, "proxy_server_request")):
-        headers = _get(source, "headers")
-        if isinstance(headers, Mapping):
-            return headers
-    for key in ("metadata", "litellm_metadata"):
-        headers = _get(_get(data, key), "headers")
-        if isinstance(headers, Mapping):
-            return headers
-    return None
+    headers = _get(_get(data, "proxy_server_request"), "headers")
+    return headers if isinstance(headers, Mapping) else None
+
+
+def _passthrough_failure_headers(request_data: Mapping[str, Any]) -> Headers | None:
+    """Return the request headers LiteLLM recorded for a failed pass-through call.
+
+    The failure payload of a pass-through route is the client's body with
+    LiteLLM's own fields added, so only what a JSON body cannot contain is
+    trusted: the Starlette ``Headers`` of the request, which LiteLLM puts
+    under ``litellm_params.proxy_server_request`` once it has read the body.
+
+    Args:
+        request_data: The failure hook's payload.
+
+    Returns:
+        The headers, or ``None`` when LiteLLM did not get that far.
+    """
+    headers = _get(_get(_get(request_data, "litellm_params"), "proxy_server_request"), "headers")
+    return headers if isinstance(headers, Headers) else None
 
 
 def _header(headers: Mapping[str, Any] | None, name: str) -> str | None:
@@ -356,6 +427,23 @@ def _model_info(kwargs: Mapping[str, Any]) -> Mapping[str, Any]:
     return {}
 
 
+def _deployment_of(kwargs: Mapping[str, Any]) -> tuple[str | None, str | None]:
+    """Return the id and revision of the deployment the router picked.
+
+    Args:
+        kwargs: The kwargs of the router's call to a deployment.
+
+    Returns:
+        ``(id, revision)`` from its ``model_info``, each ``None`` when unset.
+    """
+    info = _model_info(kwargs)
+    deployment, revision = info.get("id"), info.get("revision")
+    return (
+        deployment if isinstance(deployment, str) and deployment else None,
+        revision.strip() if isinstance(revision, str) and revision.strip() else None,
+    )
+
+
 def _b64url(segment: str) -> bytes:
     """Decode one unpadded base64url segment of a token.
 
@@ -378,7 +466,10 @@ def verify_openwebui_token(token: str, secret: bytes, *, now: float) -> dict[str
 
     Open WebUI signs its token with HS256 and the shared secret
     (``FORWARD_USER_INFO_HEADER_JWT_SECRET``), naming itself as issuer and
-    expiring the token after a few minutes. Only that algorithm is accepted.
+    expiring the token after a few minutes. The signature is checked with
+    HS256 before anything the token carries is parsed, so unsigned input
+    never reaches the JSON decoder; whatever fails while the token is
+    decoded, it is simply not verified.
 
     Args:
         token: The ``X-OpenWebUI-User-Jwt`` header value.
@@ -390,20 +481,36 @@ def verify_openwebui_token(token: str, secret: bytes, *, now: float) -> dict[str
         another key or algorithm, from another issuer, expired, or issued in
         the future.
     """
+    try:
+        return _verify_openwebui_token(token, secret, now)
+    except Exception:  # e.g. a RecursionError from deeply nested JSON
+        return None
+
+
+def _verify_openwebui_token(token: str, secret: bytes, now: float) -> dict[str, Any] | None:
+    """Check a token as :func:`verify_openwebui_token` describes; may raise.
+
+    Args:
+        token: The token.
+        secret: The shared secret.
+        now: The current Unix time.
+
+    Returns:
+        The claims of a valid token, else ``None``.
+    """
+    if len(token) > MAX_JWT_LENGTH:
+        return None
     parts = token.split(".")
-    if len(token) > MAX_JWT_LENGTH or len(parts) != 3:
+    if len(parts) != 3 or not all(_B64URL.fullmatch(part) for part in parts):
         return None
     head, body, signature = parts
-    try:
-        header = json.loads(_b64url(head))
-        claims = json.loads(_b64url(body))
-        given = _b64url(signature)
-    except ValueError:  # also binascii.Error and malformed JSON or UTF-8
-        return None
-    if not isinstance(header, dict) or header.get("alg") != "HS256":
-        return None
     expected = hmac.new(secret, f"{head}.{body}".encode("ascii"), hashlib.sha256).digest()
-    if not hmac.compare_digest(expected, given) or not isinstance(claims, dict):
+    if not hmac.compare_digest(expected, _b64url(signature)):
+        return None
+    # Signed with the shared secret: only now is what it signed parsed.
+    header = json.loads(_b64url(head))
+    claims = json.loads(_b64url(body))
+    if not isinstance(header, dict) or header.get("alg") != "HS256" or not isinstance(claims, dict):
         return None
     if claims.get("iss") != OPENWEBUI_ISSUER:
         return None
@@ -476,6 +583,12 @@ class _StreamTally:
         if completion is not None:
             self.output_tokens = completion
         return finished
+
+    def discard(self) -> None:
+        """Give up on the output facts after a chunk could not be read."""
+        self._ambiguous = True
+        self.input_tokens = None
+        self.output_tokens = None
 
     @property
     def output_sha256(self) -> str | None:
@@ -576,7 +689,7 @@ class RouterAudit(CustomLogger):
             try:
                 emitter.emit("admin", "config.audit", _SYSTEM, criteria=self._mode())
             except BaseException:
-                with contextlib.suppress(*_WRITE_ERRORS):
+                with contextlib.suppress(Exception):
                     emitter.close()
                 raise
             self._emitter, self._emitter_pid = emitter, pid
@@ -617,7 +730,7 @@ class RouterAudit(CustomLogger):
             emitter = self.open()
             with self._lock:
                 self._record_gap(emitter)
-        except _WRITE_ERRORS as exc:
+        except Exception as exc:  # whatever stops the write stops the call
             raise AuditUnavailable(refused=True) from exc
 
     def _write(self, call: _Call, *, outcome: str, criteria: dict[str, object], ai: AiCall, recipient: str) -> None:
@@ -648,7 +761,7 @@ class RouterAudit(CustomLogger):
                     recipient=recipient,
                     ai=ai,
                 )
-        except _WRITE_ERRORS as exc:
+        except Exception as exc:  # never swallowed: counted, then the call fails
             with self._lock:
                 self._unwritten += 1
             call.lost = True
@@ -708,8 +821,8 @@ class RouterAudit(CustomLogger):
         if call.headers_seen or headers is None:
             return
         call.headers_seen = True
-        call.request_id = clean_request_id(_header(headers, REQUEST_ID_HEADER.lower()))
-        call.actor, call.identity = self._identity(headers)
+        call.request_id = _read(call, lambda: clean_request_id(_header(headers, REQUEST_ID_HEADER.lower())), None)
+        call.actor, call.identity = _read(call, lambda: self._identity(headers), (_CALLER, {}))
 
     def _target(self, route: str | None) -> str | None:
         """Return the backend host a pass-through route forwards to.
@@ -751,23 +864,44 @@ class RouterAudit(CustomLogger):
         """
         if call.written:
             return
-        criteria: dict[str, object] = {"duration_ms": round((self._monotonic() - call.started) * 1000)}
-        if call.route is not None:
-            criteria["route"] = call.route
-        if status is not None:
-            criteria["status"] = status
-        if error is not None:
-            criteria["error"] = error
-        input_tokens = output_tokens = None
-        output_sha256 = None
+        try:
+            criteria, ai, recipient = self._facts(call, status=status, response=response, tally=tally, error=error)
+        except Exception:  # backstop: the facts are read defensively already
+            call.incomplete = True
+            criteria, ai, recipient = self._bare_facts(call, status=status, error=error)
+        self._write(call, outcome=outcome, criteria=criteria, ai=ai, recipient=recipient)
+
+    def _facts(
+        self,
+        call: _Call,
+        *,
+        status: int | None,
+        response: object,
+        tally: _StreamTally | None,
+        error: str | None,
+    ) -> tuple[dict[str, object], AiCall, str]:
+        """Collect a call's event fields; a fact that cannot be read is left out.
+
+        Args:
+            call: The call.
+            status: The HTTP status of the call, when known.
+            response: The response, for its token counts and text output.
+            tally: What a stream carried, instead of a response.
+            error: The error's class name.
+
+        Returns:
+            The criteria, the model provenance and the recipient.
+        """
+        criteria = self._base_criteria(call, status=status, error=error)
+        input_tokens: int | None = None
+        output_tokens: int | None = None
+        output_sha256: str | None = None
         if call.call_type == PASS_THROUGH:
-            deployment = self._target(call.route)
+            deployment = _read(call, lambda: self._target(call.route), None)
         else:
             deployment = call.deployment
             if deployment is None:
-                hidden = _get(response, "_hidden_params")
-                model_id = _get(hidden, "model_id")
-                deployment = model_id if isinstance(model_id, str) and model_id else None
+                deployment = _read(call, lambda: _hidden_model_id(response), None)
             criteria["stream"] = call.stream
             criteria["attempts"] = call.attempts
             if tally is not None:
@@ -777,8 +911,8 @@ class RouterAudit(CustomLogger):
                     tally.output_sha256,
                 )
             elif response is not None:
-                input_tokens, output_tokens = _tokens(_get(response, "usage"))
-                text = _output_text(call.call_type, response)
+                input_tokens, output_tokens = _read(call, lambda: _tokens(_get(response, "usage")), (None, None))
+                text = _read(call, lambda: _output_text(call.call_type, response), None)
                 output_sha256 = sha256_text(text) if text is not None else None
             if call.call_type not in _TEXT_OUTPUT_TYPES:
                 output_tokens = None
@@ -787,6 +921,8 @@ class RouterAudit(CustomLogger):
         if call.documents is not None:
             criteria["documents"] = call.documents
         criteria.update(call.identity)
+        if call.incomplete:
+            criteria["incomplete"] = True
         ai = AiCall(
             model_alias=call.model_alias,
             model_id=deployment,
@@ -795,7 +931,45 @@ class RouterAudit(CustomLogger):
             input_tokens=input_tokens,
             output_tokens=output_tokens,
         )
-        self._write(call, outcome=outcome, criteria=criteria, ai=ai, recipient=f"model:{deployment or 'unknown'}")
+        return criteria, ai, f"model:{deployment or 'unknown'}"
+
+    def _base_criteria(self, call: _Call, *, status: int | None, error: str | None) -> dict[str, object]:
+        """Return the criteria every event of a call carries.
+
+        Args:
+            call: The call.
+            status: The HTTP status of the call, when known.
+            error: The error's class name.
+
+        Returns:
+            Duration, route, status and error, as known.
+        """
+        criteria: dict[str, object] = {"duration_ms": round((self._monotonic() - call.started) * 1000)}
+        if call.route is not None:
+            criteria["route"] = call.route
+        if status is not None:
+            criteria["status"] = status
+        if error is not None:
+            criteria["error"] = error
+        return criteria
+
+    def _bare_facts(
+        self, call: _Call, *, status: int | None, error: str | None
+    ) -> tuple[dict[str, object], AiCall, str]:
+        """Return the event fields known without reading anything further.
+
+        Args:
+            call: The call.
+            status: The HTTP status of the call, when known.
+            error: The error's class name.
+
+        Returns:
+            The criteria, marked incomplete, the model provenance and the
+            recipient.
+        """
+        criteria = {**self._base_criteria(call, status=status, error=error), "incomplete": True}
+        ai = AiCall(model_alias=call.model_alias, model_id=call.deployment, revision=call.revision)
+        return criteria, ai, f"model:{call.deployment or 'unknown'}"
 
     # -- LiteLLM hooks -------------------------------------------------------
 
@@ -814,37 +988,34 @@ class RouterAudit(CustomLogger):
         Args:
             user_api_key_dict: The caller's key; carries the request path.
             cache: LiteLLM's cache (unused).
-            data: The request data: the body plus LiteLLM's metadata and the
-                request headers; a pass-through route's body alone.
+            data: The request data: the body plus what the proxy adds, among
+                it the request headers; for a pass-through route, the
+                client's body alone, from which nothing but its counts is
+                read.
             call_type: The proxy's call type, e.g. ``acompletion``.
 
         Raises:
             AuditUnavailable: While the audit log cannot be written.
         """
-        kind = normalize_call_type(str(call_type))
+        value = getattr(call_type, "value", call_type)
+        kind = normalize_call_type(value) if isinstance(value, str) and value else "unknown"
         if not self._audits(kind):
             return
         self._admit()
-        route = getattr(user_api_key_dict, "request_route", None)
-        route = route if isinstance(route, str) and route else None
-        model = data.get("model")
-        if kind == PASS_THROUGH or not isinstance(model, str) or not model:
-            alias = route or kind
-        else:
-            alias = model
-        call = _Call(
-            call_type=kind,
-            route=route,
-            model_alias=alias,
-            stream=kind != PASS_THROUGH and data.get("stream") is True,
-            started=self._monotonic(),
-        )
-        if kind == "embedding":
-            call.batch = _count(data.get("input"))
-        elif kind == "rerank":
-            call.documents = _count(data.get("documents"))
-        self._see_headers(call, _request_headers(data))
+        call = _Call(call_type=kind, route=None, model_alias=kind, stream=False, started=self._monotonic())
         _CURRENT.set(call)
+        call.route = _read(call, lambda: _route(user_api_key_dict), None)
+        if kind == PASS_THROUGH:
+            call.model_alias = call.route or kind
+            return  # its headers arrive with a later hook; the body never supplies them
+        model = _read(call, lambda: data.get("model"), None)
+        call.model_alias = model if isinstance(model, str) and model else call.route or kind
+        call.stream = _read(call, lambda: data.get("stream") is True, False)
+        if kind == "embedding":
+            call.batch = _read(call, lambda: _count(data.get("input")), None)
+        elif kind == "rerank":
+            call.documents = _read(call, lambda: _count(data.get("documents")), None)
+        self._see_headers(call, _read(call, lambda: _proxy_headers(data), None))
 
     async def async_pre_call_deployment_hook(self, kwargs: dict[str, Any], call_type: Any) -> None:
         """Count a call to a deployment, retries included; gate each one.
@@ -862,12 +1033,10 @@ class RouterAudit(CustomLogger):
             return  # not a client call, e.g. a health check
         self._admit()
         call.attempts += 1
-        info = _model_info(kwargs)
-        deployment = info.get("id")
-        if isinstance(deployment, str) and deployment:
+        deployment, revision = _read(call, lambda: _deployment_of(kwargs), (None, None))
+        if deployment is not None:
             call.deployment = deployment
-        revision = info.get("revision")
-        call.revision = revision.strip() if isinstance(revision, str) and revision.strip() else None
+        call.revision = revision
 
     async def async_post_call_success_deployment_hook(
         self,
@@ -941,7 +1110,13 @@ class RouterAudit(CustomLogger):
         held: list[Any] = []
         try:
             async for chunk in response:
-                if tally.observe(chunk) or held:
+                try:
+                    finished = tally.observe(chunk)
+                except Exception:  # a chunk that cannot be read still goes out
+                    call.incomplete = True
+                    tally.discard()
+                    finished = False
+                if finished or held:
                     held.append(chunk)
                 else:
                     yield chunk
@@ -967,17 +1142,18 @@ class RouterAudit(CustomLogger):
         this response; it closes the gate for the calls after it.
 
         Args:
-            data: The request body.
+            data: The client's request body (not read).
             user_api_key_dict: The caller's key.
             response: The backend's response.
-            request_headers: The request headers.
+            request_headers: The request's headers, as the proxy received
+                them.
             litellm_call_info: LiteLLM's routing details (unused).
         """
         call = _CURRENT.get()
         if call is None or call.written or call.call_type != PASS_THROUGH:
             return
         self._see_headers(call, request_headers)
-        status = _int(getattr(response, "status_code", None))
+        status = _read(call, lambda: _int(getattr(response, "status_code", None)), None)
         outcome = "error" if status is not None and status >= 400 else "ok"
         with contextlib.suppress(AuditUnavailable):
             self._finish(call, outcome=outcome, status=status)
@@ -1016,8 +1192,12 @@ class RouterAudit(CustomLogger):
                 with self._lock:
                     self._unwritten += 1
             return
-        self._see_headers(call, _request_headers(request_data))
-        status = _int(getattr(original_exception, "status_code", None))
+        if call.call_type == PASS_THROUGH:
+            headers = _read(call, lambda: _passthrough_failure_headers(request_data), None)
+        else:
+            headers = _read(call, lambda: _proxy_headers(request_data), None)
+        self._see_headers(call, headers)
+        status = _read(call, lambda: _int(getattr(original_exception, "status_code", None)), None)
         if status is None or not 400 <= status <= 599:
             status = 500
         with contextlib.suppress(AuditUnavailable):

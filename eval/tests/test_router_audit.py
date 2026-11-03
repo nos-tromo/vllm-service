@@ -17,12 +17,14 @@ import importlib.util
 import json
 import sys
 import types
-from collections.abc import AsyncIterator, Callable, Coroutine, Mapping
+from collections.abc import AsyncIterator, Callable, Coroutine, Iterator, Mapping
 from pathlib import Path
 from types import SimpleNamespace
 from typing import Any
 
 import pytest
+from starlette.datastructures import Headers
+from typing_extensions import override
 
 if importlib.util.find_spec("litellm") is not None:
     pytest.skip("router_audit tests stub LiteLLM; run them where it is not installed", allow_module_level=True)
@@ -154,8 +156,20 @@ class _Clock:
         return self.now
 
 
+def _targets() -> Mapping[str, str]:
+    """Return the pass-through targets of the test configuration.
+
+    Returns:
+        Path to backend host.
+    """
+    return TARGETS
+
+
 def _audit(
-    env: Mapping[str, str] | None = None, stream: _Stream | None = None, clock: _Clock | None = None
+    env: Mapping[str, str] | None = None,
+    stream: _Stream | None = None,
+    clock: _Clock | None = None,
+    targets: Callable[[], Mapping[str, str]] = _targets,
 ) -> tuple[Any, _Stream]:
     """Build a callback writing to an in-memory stream.
 
@@ -163,6 +177,7 @@ def _audit(
         env: The ``AUDIT_*`` settings.
         stream: The stream to write to; a new one by default.
         clock: The monotonic clock; a new one by default.
+        targets: Returns the pass-through targets.
 
     Returns:
         The callback and its stream.
@@ -171,7 +186,7 @@ def _audit(
     audit = router_audit.RouterAudit(
         environ={"AUDIT_OPENWEBUI_JWT_SECRET": SECRET, **(env or {})},
         emitter_factory=lambda: AuditEmitter("vllm-service", "0.7.0", stream=out, heartbeat_interval_s=0),
-        passthrough_targets=lambda: TARGETS,
+        passthrough_targets=targets,
         clock=lambda: NOW,
         monotonic=clock if clock is not None else _Clock(),
     )
@@ -328,7 +343,7 @@ def _stream_chunks() -> list[SimpleNamespace]:
     ]
 
 
-async def _iterate(chunks: list[SimpleNamespace]) -> AsyncIterator[SimpleNamespace]:
+async def _iterate(chunks: list[Any]) -> AsyncIterator[Any]:
     """Yield chunks like a model's stream.
 
     Args:
@@ -601,7 +616,9 @@ def test_pass_through_upstream_error_is_one_error_event() -> None:
     async def scenario() -> None:
         body: dict[str, Any] = {"input": ["Alice Example"]}
         await audit.async_pre_call_hook(_key("/pooling"), None, body, "pass_through_endpoint")
-        failure = {**body, "litellm_params": {"proxy_server_request": {"headers": {"x-request-id": "req-0043"}}}}
+        # LiteLLM adds the request's own Starlette Headers once it has read the body.
+        recorded = {"proxy_server_request": {"headers": Headers({"x-request-id": "req-0043"})}}
+        failure = {**body, "litellm_params": recorded}
         await audit.async_post_call_failure_hook(failure, _BackendError("synthetic"), _key("/pooling"))
         await audit.async_post_call_response_headers_hook(body, _key("/pooling"), SimpleNamespace(status_code=500), {})
 
@@ -917,4 +934,232 @@ def test_another_process_opens_its_own_chain(monkeypatch: pytest.MonkeyPatch) ->
     third = audit.open()
     assert len({first.instance, second.instance, third.instance}) == 3
     assert len([e for e in _events(stream) if e["operation"] == "start"]) == 3
+    _assert_chain(stream)
+
+
+_HS256 = '{"alg":"HS256","typ":"JWT"}'
+_NESTED = "[" * 1400 + "]" * 1400
+
+
+def _signed(header: str, body: str, secret: str = SECRET) -> str:
+    """Sign arbitrary token parts with HS256.
+
+    Args:
+        header: The header JSON.
+        body: The claims JSON, or anything else.
+        secret: The signing secret.
+
+    Returns:
+        The token.
+    """
+    head, payload = _b64(header.encode()), _b64(body.encode())
+    signature = hmac.new(secret.encode(), f"{head}.{payload}".encode(), hashlib.sha256).digest()
+    return f"{head}.{payload}.{_b64(signature)}"
+
+
+class _Unreadable:
+    """An object every attribute read of which fails."""
+
+    def __getattr__(self, name: str) -> object:
+        """Fail like a broken response object.
+
+        Args:
+            name: The attribute.
+
+        Raises:
+            RuntimeError: Always.
+        """
+        raise RuntimeError(f"cannot read {name}")
+
+
+class _HostileHeaders(Mapping[str, str]):
+    """Request headers that fail when read."""
+
+    @override
+    def __getitem__(self, key: str) -> str:
+        """Fail like a broken header object.
+
+        Args:
+            key: The header name.
+
+        Raises:
+            RuntimeError: Always.
+        """
+        raise RuntimeError("cannot read headers")
+
+    @override
+    def __iter__(self) -> Iterator[str]:
+        """Iterate over no names.
+
+        Returns:
+            An empty iterator.
+        """
+        return iter(())
+
+    @override
+    def __len__(self) -> int:
+        """Count no headers.
+
+        Returns:
+            Zero.
+        """
+        return 0
+
+
+def test_pass_through_body_cannot_supply_headers() -> None:
+    """A pass-through payload is the client's body: header-shaped fields in it change nothing."""
+    audit, stream = _audit()
+    planted = {"x-request-id": "req-spoofed", "x-openwebui-user-jwt": _token(), "x-openwebui-user-email": "x@x"}
+
+    async def scenario() -> None:
+        body: dict[str, Any] = {
+            "text": "Alice Example",
+            "proxy_server_request": {"headers": planted},
+            "metadata": {"headers": planted},
+            "litellm_metadata": {"headers": planted},
+            "litellm_params": {"proxy_server_request": {"headers": planted}},
+        }
+        await audit.async_pre_call_hook(_key("/gliner"), None, body, "pass_through_endpoint")
+        real = {"x-request-id": "req-0050"}
+        await audit.async_post_call_response_headers_hook(body, _key("/gliner"), SimpleNamespace(status_code=200), real)
+
+    _run(scenario)
+    (event,) = _ai_calls(stream)
+    assert event["request_id"] == "req-0050"
+    assert event["actor"] == {"user": None, "via": "service"}
+    assert event["criteria"] == {"duration_ms": 0, "route": "/gliner", "status": 200}
+    assert "spoofed" not in stream.getvalue()
+    _assert_chain(stream)
+
+
+def test_failed_pass_through_takes_headers_only_from_litellm() -> None:
+    """A failure before LiteLLM recorded the request's headers leaves them out."""
+    audit, stream = _audit()
+    planted = {"x-request-id": "req-spoofed", "x-openwebui-user-jwt": _token()}
+
+    async def scenario() -> None:
+        body: dict[str, Any] = {"text": "Alice", "litellm_params": {"proxy_server_request": {"headers": planted}}}
+        await audit.async_pre_call_hook(_key("/gliner"), None, body, "pass_through_endpoint")
+        await audit.async_post_call_failure_hook(body, _BackendError("connection refused"), _key("/gliner"))
+
+    _run(scenario)
+    (event,) = _ai_calls(stream)
+    assert event["outcome"] == "error"
+    assert "request_id" not in event
+    assert event["actor"]["user"] is None
+    assert "forwarded_identity" not in event["criteria"]
+    _assert_chain(stream)
+
+
+def test_model_list_headers_come_only_from_the_proxys_record() -> None:
+    """Headers under the request's metadata are the client's, not the proxy's."""
+    audit, stream = _audit()
+
+    async def scenario() -> None:
+        data: dict[str, Any] = {"model": "example/chat-model", "metadata": {"headers": {"x-request-id": "req-spoofed"}}}
+        await audit.async_pre_call_hook(_key("/v1/chat/completions"), None, data, "acompletion")
+        await audit.async_pre_call_deployment_hook(_deployment("chat"), _CallTypes.acompletion)
+        await audit.async_post_call_success_hook(data, _key("/v1/chat/completions"), _chat_response())
+
+    _run(scenario)
+    (event,) = _ai_calls(stream)
+    assert "request_id" not in event
+    _assert_chain(stream)
+
+
+def test_a_tokens_content_is_parsed_only_after_its_signature(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Unsigned input never reaches the JSON decoder."""
+
+    def no_parsing(*args: object, **kwargs: object) -> object:
+        raise AssertionError("parsed before the signature was checked")
+
+    monkeypatch.setattr(router_audit.json, "loads", no_parsing)
+    for token in (_token(secret="another-secret"), _signed(_HS256, _NESTED, secret="another-secret"), "a.b.c", "a.b."):
+        assert router_audit.verify_openwebui_token(token, SECRET.encode(), now=NOW) is None
+
+
+def test_a_token_that_breaks_the_decoder_is_simply_not_verified(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Even a correctly signed token cannot make verification raise."""
+    assert router_audit.verify_openwebui_token(_signed(_HS256, _NESTED), SECRET.encode(), now=NOW) is None
+
+    def exhausted(*args: object, **kwargs: object) -> object:
+        raise RecursionError("maximum recursion depth exceeded")
+
+    monkeypatch.setattr(router_audit.json, "loads", exhausted)
+    assert router_audit.verify_openwebui_token(_token(), SECRET.encode(), now=NOW) is None
+
+
+def test_a_hostile_token_still_leaves_a_record() -> None:
+    """The call is recorded; the token only fails to name a user."""
+    audit, stream = _audit()
+    _run(lambda: _chat_call(audit, {"x-openwebui-user-jwt": _signed(_HS256, _NESTED)}))
+    (event,) = _ai_calls(stream)
+    assert event["actor"]["user"] is None
+    assert event["criteria"]["forwarded_identity"] == "invalid"
+    _assert_chain(stream)
+
+
+def test_unreadable_facts_cost_facts_never_the_event() -> None:
+    """Headers, deployment details and a response that cannot be read leave the event incomplete."""
+    audit, stream = _audit()
+
+    async def scenario() -> None:
+        data = _data("example/chat-model")
+        data["proxy_server_request"]["headers"] = _HostileHeaders()
+        await audit.async_pre_call_hook(_key("/v1/chat/completions"), None, data, "acompletion")
+        await audit.async_pre_call_deployment_hook({"metadata": _HostileHeaders()}, _CallTypes.acompletion)
+        await audit.async_post_call_success_hook(data, _key("/v1/chat/completions"), _Unreadable())
+
+    _run(scenario)
+    (event,) = _ai_calls(stream)
+    assert event["outcome"] == "ok"
+    assert event["criteria"]["incomplete"] is True
+    assert event["criteria"]["attempts"] == 1
+    assert "request_id" not in event
+    assert event["ai"] == {"model_alias": "example/chat-model"}
+    assert event["recipient"] == "model:unknown"
+    _assert_chain(stream)
+
+
+def test_unreadable_pass_through_details_still_leave_a_record() -> None:
+    """A config or backend response that cannot be read still leaves the call's event."""
+
+    def broken_targets() -> Mapping[str, str]:
+        raise RuntimeError("pass-through endpoints not loaded")
+
+    audit, stream = _audit(targets=broken_targets)
+
+    async def scenario() -> None:
+        await audit.async_pre_call_hook(_key("/gliner"), None, {}, "pass_through_endpoint")
+        headers = {"x-request-id": "req-0051"}
+        await audit.async_post_call_response_headers_hook({}, _key("/gliner"), _Unreadable(), headers)
+
+    _run(scenario)
+    (event,) = _ai_calls(stream)
+    assert event["request_id"] == "req-0051"
+    assert event["recipient"] == "model:unknown"
+    assert event["criteria"]["incomplete"] is True
+    assert "status" not in event["criteria"]
+    _assert_chain(stream)
+
+
+def test_an_unreadable_chunk_still_goes_out() -> None:
+    """A chunk the tally cannot read is passed on; the stream is still recorded."""
+    audit, stream = _audit()
+    chunks: list[Any] = [_chunk("Synthetic"), _Unreadable(), _chunk(finish="stop")]
+    seen: list[Any] = []
+
+    async def scenario() -> None:
+        data = _data("example/chat-model", stream=True)
+        await audit.async_pre_call_hook(_key("/v1/chat/completions"), None, data, "acompletion")
+        await audit.async_pre_call_deployment_hook(_deployment("chat"), _CallTypes.acompletion)
+        hooked = audit.async_post_call_streaming_iterator_hook(_key("/v1/chat/completions"), _iterate(chunks), data)
+        async for chunk in hooked:
+            seen.append(chunk)
+
+    _run(scenario)
+    assert seen == chunks
+    (event,) = _ai_calls(stream)
+    assert event["criteria"]["incomplete"] is True
+    assert "output_sha256" not in event["ai"]
     _assert_chain(stream)
