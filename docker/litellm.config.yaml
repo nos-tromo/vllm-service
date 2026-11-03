@@ -9,6 +9,14 @@
 # further changes required here.
 # Note: the LLM fallback alias in docker-compose is not visible to
 # LiteLLM — always set TEXT_MODEL explicitly in .env.
+#
+# Each deployment's model_info names it for the data-protection audit log
+# (docs/audit.md): `id` is the deployment id LiteLLM reports and the audit
+# event records as model_id and recipient (model:<id>), so it matches the
+# compose service that receives the data. `revision` is the model commit the
+# backend serves, taken from <MODEL>_REVISION in .env; unset leaves it out of
+# the event. It is recorded, not enforced: the backends still load whatever
+# revision the cache holds.
 
 model_list:
   # General-purpose chat
@@ -18,6 +26,9 @@ model_list:
       custom_llm_provider: openai
       api_base: http://chat:8000/v1
       api_key: os.environ/OPENAI_API_KEY
+    model_info:
+      id: chat
+      revision: os.environ/TEXT_MODEL_REVISION
 
   # Embeddings
   - model_name: os.environ/EMBED_MODEL
@@ -35,6 +46,9 @@ model_list:
       # OpenAI path to "float" itself, so this is now belt-and-braces rather than
       # load-bearing — keep it, since the pin costs nothing and states the intent.
       encoding_format: float
+    model_info:
+      id: embed
+      revision: os.environ/EMBED_MODEL_REVISION
 
   # Reranking — must use hosted_vllm provider; LiteLLM's native /v1/rerank
   # route takes precedence over pass_through_endpoints and rejects openai.
@@ -46,6 +60,9 @@ model_list:
       custom_llm_provider: hosted_vllm
       api_base: http://rerank:8000
       api_key: os.environ/OPENAI_API_KEY
+    model_info:
+      id: rerank
+      revision: os.environ/RERANK_MODEL_REVISION
 
   # Audio transcription / translation — must use hosted_vllm, not openai.
   # WHISPER_MODEL is openai/whisper-large-v3, and the openai provider treats
@@ -62,6 +79,9 @@ model_list:
       custom_llm_provider: hosted_vllm
       api_base: http://asr:8000/v1
       api_key: os.environ/OPENAI_API_KEY
+    model_info:
+      id: asr
+      revision: os.environ/WHISPER_MODEL_REVISION
 
 general_settings:
   # The master key gates access to the proxy. Clients must present it as
@@ -177,7 +197,12 @@ litellm_settings:
   # These measure the routing layer, which the backends cannot report on:
   # per-model request counts, end-to-end latency including routing, and
   # failures that never reached a backend.
-  callbacks: ["prometheus"]
+  #
+  # router_audit.handler writes the data-protection audit log: one ai_call
+  # event per model call (docker/router/router_audit.py, docs/audit.md). The
+  # module is mounted from docker/router/ and found through PYTHONPATH
+  # (docker/compose.yaml); without it the router does not start.
+  callbacks: ["prometheus", "router_audit.handler"]
 
   # Serve `/metrics` unauthenticated, opting out of the auth default LiteLLM
   # introduced in v1.85.0. Deliberate, not an oversight: the vLLM backends'
