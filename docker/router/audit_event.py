@@ -381,6 +381,7 @@ class AuditEmitter:
         self._seq = 0
         self._prev_hash: str = GENESIS_HASH
         self._started = False
+        self._closing = False
         self._closed = False
         self._stop = threading.Event()
         self._heartbeat: threading.Thread | None = None
@@ -405,16 +406,24 @@ class AuditEmitter:
         return event
 
     def close(self) -> None:
-        """Close the chain with a ``shutdown`` event; later calls do nothing."""
+        """Close the chain with a ``shutdown`` event; later calls do nothing.
+
+        The shutdown event is written and the chain ended in one locked step,
+        so no other thread's event can follow it, and of concurrent calls (an
+        explicit close racing the interpreter-exit hook) only one writes it.
+        If the shutdown cannot be written, the chain still ends there.
+
+        Raises:
+            AuditWriteError: If the shutdown event could not be written.
+        """
         with self._lock:
-            if self._closed or not self._started:
+            if self._closing or not self._started:
                 return
+            self._closing = True
         self._stop.set()
         if self._heartbeat is not None and self._heartbeat is not threading.current_thread():
             self._heartbeat.join(timeout=5)
-        self.emit("lifecycle", "shutdown", Actor(user=None, via="system"))
-        with self._lock:
-            self._closed = True
+        self._append(self._body("lifecycle", "shutdown", Actor(user=None, via="system")), final=True)
 
     def _beat(self) -> None:
         """Heartbeat loop: one ``heartbeat`` event per interval until closed."""
@@ -466,6 +475,44 @@ class AuditEmitter:
             RuntimeError: If the emitter is not started or already closed.
             AuditWriteError: If the line could not be written.
         """
+        body = self._body(
+            action,
+            operation,
+            actor,
+            outcome=outcome,
+            request_id=request_id,
+            parent_event_id=parent_event_id,
+            purpose=purpose,
+            target=target,
+            criteria=criteria,
+            recipient=recipient,
+            ai=ai,
+        )
+        return self._append(body, final=False)
+
+    def _body(
+        self,
+        action: str,
+        operation: str,
+        actor: Actor,
+        *,
+        outcome: str = "ok",
+        request_id: str | None = None,
+        parent_event_id: str | None = None,
+        purpose: Purpose | None = None,
+        target: Target | None = None,
+        criteria: Mapping[str, object] | None = None,
+        recipient: str | None = None,
+        ai: AiCall | None = None,
+    ) -> dict[str, object]:
+        """Build an event without its chain fields; the arguments are :meth:`emit`'s.
+
+        Returns:
+            The event, still without ``seq``, ``prev_hash`` and ``hash``.
+
+        Raises:
+            ValueError: If ``action`` or ``outcome`` is unknown.
+        """
         if action not in ACTIONS:
             raise ValueError(f"unknown audit action {action!r}")
         if outcome not in OUTCOMES:
@@ -497,23 +544,45 @@ class AuditEmitter:
             body["recipient"] = _cap_text(recipient)
         if ai is not None:
             body["ai"] = ai.to_dict()
+        return body
+
+    def _append(self, body: dict[str, object], *, final: bool) -> dict[str, object]:
+        """Chain an event and write it, all under the emitter's lock.
+
+        Args:
+            body: The event from :meth:`_body`.
+            final: Whether this is the ``shutdown`` event. The chain then ends
+                in the same locked step, whether the line was written or not.
+
+        Returns:
+            The event as written, including ``seq``, ``prev_hash`` and
+            ``hash``.
+
+        Raises:
+            RuntimeError: If the emitter is not started or already closed.
+            AuditWriteError: If the line could not be written.
+        """
         with self._lock:
             if not self._started:
                 raise RuntimeError("audit emitter not started")
             if self._closed:
                 raise RuntimeError("audit emitter already closed")
-            body["seq"] = self._seq
-            body["prev_hash"] = self._prev_hash
-            body["hash"] = event_hash(body)
-            line = canonical_json(body)
-            out = self._stream if self._stream is not None else sys.stdout
             try:
-                out.write(line + "\n")
-                out.flush()
-            except (OSError, ValueError) as exc:
-                raise AuditWriteError("audit event could not be written") from exc
-            self._seq += 1
-            self._prev_hash = str(body["hash"])
+                body["seq"] = self._seq
+                body["prev_hash"] = self._prev_hash
+                body["hash"] = event_hash(body)
+                line = canonical_json(body)
+                out = self._stream if self._stream is not None else sys.stdout
+                try:
+                    out.write(line + "\n")
+                    out.flush()
+                except (OSError, ValueError) as exc:
+                    raise AuditWriteError("audit event could not be written") from exc
+                self._seq += 1
+                self._prev_hash = str(body["hash"])
+            finally:
+                if final:
+                    self._closed = True
         return body
 
 
