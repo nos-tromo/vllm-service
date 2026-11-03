@@ -39,8 +39,11 @@ backends with a single LiteLLM Proxy router. The Docker assets live under
 `docker/Dockerfile.diarize.cuda`,
 `docker/Dockerfile.diarize.cpu`, `docker/Dockerfile.asr.cpu`,
 `docker/Dockerfile.vad.cpu`, `docker/Dockerfile.topics.cpu`, `docker/topics/`,
-`docker/litellm.config.yaml`) plus `.env`
-and `.dockerignore` at the repo root. The only Python sources are
+`docker/litellm.config.yaml`, and `docker/router/` — the router's audit
+callback, mounted into the pinned LiteLLM image, see "Audit log" below) plus `.env`
+and `.dockerignore` at the repo root. Besides `docker/router/router_audit.py`
+(and its vendored `audit_event.py` / `audit_runtime.py`, which are never
+edited), the only Python sources are
 `src/rerank_server.py`, `src/clip_server.py`, `src/embed_server.py`,
 `src/diarize_server.py` (and its `src/diarize_audio.py`,
 `src/diarize_pipeline.py`, `src/diarize_compat.py`, and
@@ -77,7 +80,9 @@ is baked into every image and set in `x-vllm-env` as belt-and-braces, and
 and `clip` get a 64m tmpfs, while the five services that receive whole
 uploads (`router`, `asr`, `diarize`, `vad`, `topics`) share the disk-backed
 `media-tmp` volume instead — starlette spools multipart bodies to `/tmp`, and
-Nextext allows multi-GB files, which a RAM tmpfs would have to hold. The `read_only`
+Nextext allows multi-GB files, which a RAM tmpfs would have to hold. (The
+router's audit lock sits on a 1m tmpfs of its own at `/run/audit`, because
+`media-tmp` is reachable from the other four.) The `read_only`
 vLLM backends additionally carry a 256m tmpfs at `~/.cache/vllm`, which vLLM
 0.26 writes to even on pooling runners. Two documented deferrals keep a
 writable rootfs: `chat` (vLLM's torch-compile cache under `~/.cache/vllm`)
@@ -353,12 +358,16 @@ make bundle              # versioned .tar.gz pair from the latest annotated rele
 make bundle-dev          # .tar.gz pair of the current working tree (dev/soak)
 ```
 
-There is no test suite, but the Python sources in `src/` are linted with the
+CI runs no tests, but the Python sources in `src/`, `docker/router/` and
+`eval/` are linted with the
 org-wide strict regime — ruff + pyrefly via `.pre-commit-config.yaml`, mirroring
 `nos-tromo/.github`'s canonical `configs/python-strict/` (only `target-version`
 differs → `py311`). CI enforces it in the `python-lint` job, which first runs
 that repo's `validate_strict_config.py` to fail on any drift from the canonical
-config. Run locally with `uv sync` then `uv run pre-commit run --all-files`. The
+config. Run locally with `uv sync` then `uv run pre-commit run --all-files`
+(`make verify`). Unit tests live in `eval/tests/` and stub their heavy
+dependencies: `uv run --group eval pytest eval/tests/`; the router's audit
+callback alone is `eval/tests/test_router_audit.py`. The
 heavy ML backends (torch, transformers, openai-whisper, pyannote, silero,
 bertopic, umap-learn, hdbscan, scikit-learn) are
 not installed for linting — `pyrefly` treats them as `Any` (`ignore-missing-imports`);
@@ -476,7 +485,7 @@ their contract route and `/health` and nothing else. Apps still reach the stack
 exclusively through `router`, which keeps the `vllm-router` alias on
 `inference-net` for cross-project consumers.
 
-The router is scraped there too: `litellm_settings.callbacks: ["prometheus"]`
+The router is scraped there too: `"prometheus"` in `litellm_settings.callbacks`
 mounts its `/metrics` (without that callback the route does not exist and
 returns 404), and `require_auth_for_metrics_endpoint: false` keeps it
 unauthenticated like the backends' — the alternative would copy
@@ -484,6 +493,51 @@ unauthenticated like the backends' — the alternative would copy
 routing layer specifically (per-model request counts, end-to-end latency
 including routing, failures that never reached a backend), which is why they
 are worth having alongside the per-engine vLLM metrics.
+
+### Audit log (router callback)
+
+The router writes the federation's data-protection audit log transfer record:
+one `ai_call` event per model call (`docs/audit.md` is the reference — routes,
+fields, fail-closed table, knobs). The code is `docker/router/router_audit.py`,
+a LiteLLM `CustomLogger` mounted read-only at `/opt/router` with the vendored
+`audit_event.py` / `audit_runtime.py` (byte-identical to `nos-tromo/.github`
+`configs/audit/`; re-vendor, never edit) and the uvicorn log config.
+`PYTHONPATH=/opt/router` makes it importable by name:
+`LITELLM_WORKER_STARTUP_HOOKS=router_audit:start` opens each worker's chain
+after any fork, and `litellm_settings.callbacks` registers
+`router_audit.handler`. `/app` must not go on `PYTHONPATH` — the image keeps
+LiteLLM's source tree there, which would shadow the installed package.
+
+Design points that are load-bearing, all verified against the pinned
+`litellm-non_root:v1.97.0` — re-check them when bumping the router image:
+
+- **Per-request state lives in a `ContextVar`** set by `async_pre_call_hook`;
+  the router's tasks inherit it. Not keyed by `litellm_call_id`: rerank and
+  transcription get theirs only later, and pass-through bodies must not be
+  touched (they are forwarded verbatim).
+- **One event, written in the last hook before the result returns:** the proxy
+  success hook (chat, text completion, embedding), the deployment success hook
+  (rerank, transcription — their handlers run no later hook), the streaming
+  iterator hook (the finish and usage chunks are held until the event is
+  written), the response-headers hook (pass-through; LiteLLM swallows its
+  exceptions, so this path is not fail-closed), the failure hook (errors).
+- **Fail closed:** a failed write raises `AuditUnavailable` (503) where the hook
+  can still fail the call; any failed write also closes a gate that both
+  pre-call hooks enforce (so the router's retries are refused too) until an
+  `admin`/`audit.recovered` event records the gap.
+- **Identity:** callers share the master key, so the actor is
+  `Actor(None, "service")` unless Open WebUI's HS256-signed
+  `X-OpenWebUI-User-Jwt` verifies against `AUDIT_OPENWEBUI_JWT_SECRET`; plain
+  `X-OpenWebUI-User-*` headers are never trusted.
+- **Recipient = deployment:** `model_info.id` in `docker/litellm.config.yaml`
+  names the compose service (`chat`, `embed`, `rerank`, `asr`); pass-through
+  routes resolve their backend host from `pass_through_endpoints`.
+  `model_info.revision` comes from `<MODEL>_REVISION` and is recorded only.
+- **stdout is the audit stream:** uvicorn's access log goes to stderr
+  (`--log_config`), `LITELLM_LOG` is pinned to `WARNING` (debug prints bodies),
+  and the lock is on the router's own tmpfs, not on `media-tmp`.
+- **Airgap transfer:** the host needs `docker/router/` beside
+  `docker/litellm.config.yaml`; the bind mount refuses to start without it.
 
 ### Dependency overlay
 
@@ -566,7 +620,10 @@ model is gated).
 Update the relevant `*_MODEL` variable in `.env` and restart the stack. **No
 edits to `docker/litellm.config.yaml` are needed** — model names are resolved
 via `os.environ/<VAR>` at startup. Clients must send the exact model ID string
-in their request `model` field; `/v1/models` returns the active set.
+in their request `model` field; `/v1/models` returns the active set. Update the
+matching `<MODEL>_REVISION` (`TEXT_MODEL_REVISION`, `EMBED_MODEL_REVISION`,
+`RERANK_MODEL_REVISION`, `WHISPER_MODEL_REVISION`) with it: the audit log
+reports it as the served revision.
 
 `NER_MODEL`, `CLIP_MODEL`, `DIARIZE_MODEL`, and `VAD_MODEL` are the
 exceptions: their servers have no OpenAI-shaped routes, so they are not

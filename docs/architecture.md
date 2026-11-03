@@ -15,7 +15,7 @@ a Compose profile — the full stack runs all of them.
 
 | Service | Serving runtime | What it serves | Reached through |
 |---|---|---|---|
-| `router` | LiteLLM Proxy | dispatch, auth, metrics | it *is* the entry point |
+| `router` | LiteLLM Proxy | dispatch, auth, metrics, audit log | it *is* the entry point |
 | `chat` | vLLM | chat completions | `model` field |
 | `embed` | vLLM | dense embeddings | `model` field |
 | `embed-sparse` | vLLM | sparse/lexical weights + tokenization | `/pooling`, `/tokenize` |
@@ -60,6 +60,21 @@ which of the two applies is the "Reached through" column above:
 
 Both go through the router and both are master-key gated. The full endpoint
 surface is in [api-reference.md](api-reference.md).
+
+### The audit callback
+
+The router writes the transfer record of the data-protection audit log: one
+`ai_call` event per model call, with the requested model, the deployment and
+revision that served it, its size, duration and outcome, and the calling
+app's `X-Request-ID` (see [audit.md](audit.md)). It is a LiteLLM callback,
+`docker/router/router_audit.py`, mounted read-only into the pinned image at
+`/opt/router` together with the vendored audit library and put on
+`PYTHONPATH`; `litellm_settings.callbacks` registers it and
+`LITELLM_WORKER_STARTUP_HOOKS` opens each worker's audit chain at startup.
+Its events go to the container's stdout, which carries nothing else at
+runtime; every log line goes to stderr. Each deployment's `model_info.id` in
+`docker/litellm.config.yaml` names the compose service the event records as
+the recipient.
 
 ### The gliner watchdog
 

@@ -44,6 +44,14 @@ two exceptions are the operational endpoints `/health/liveliness` and
 `/metrics`, both deliberately served unauthenticated on `inference-net` for
 obs-plane — see [architecture.md](architecture.md#networking).
 
+## Request headers the router records
+
+The router writes one data-protection audit event per model call
+([audit.md](audit.md)). Send the request's `X-Request-ID` (the apps forward
+the gateway's) so the event can be matched to the calling app's own events.
+Open WebUI's signed `X-OpenWebUI-User-Jwt` names its user. Nothing else from a
+request is recorded.
+
 ## Two addresses for the same contract
 
 Every capability below can be reached two ways, and the request and response
