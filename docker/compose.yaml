@@ -203,6 +203,16 @@ services:
   # apps still talk to the router (alias vllm-router) exclusively, and any
   # backend --api-key enforcement (chat/embed/rerank/asr, all native
   # `vllm serve`) is unaffected.
+  #
+  # Each vLLM launch below loads its model at the commit its revision
+  # variable names: TEXT_MODEL_REVISION, EMBED_MODEL_REVISION (embed and
+  # embed-sparse), RERANK_MODEL_REVISION, WHISPER_MODEL_REVISION. They are
+  # the variables the router records (model_info.revision in
+  # litellm.config.yaml; PASS_THROUGH_REVISIONS in router/router_audit.py for
+  # embed-sparse), read from the same env_file, so the audit log's ai.revision
+  # is the revision served. With HF_HUB_OFFLINE=1 vLLM resolves the model id
+  # to that snapshot in the cache and does not start without it. Unset passes
+  # no flag: the cache's refs/main, as before.
   chat:
     <<: *hardened
     # read_only deferred (deploy ADR 0001): torch-compile cache under ~/.cache/vllm needs a writable rootfs.
@@ -229,6 +239,9 @@ services:
         --max-model-len "$${CHAT_MAX_MODEL_LEN:-8192}"
         --max-num-seqs "$${CHAT_MAX_NUM_SEQS:-8}"
         --max-num-batched-tokens "$${CHAT_MAX_NUM_BATCHED_TOKENS:-16384}";
+        if [ -n "$${TEXT_MODEL_REVISION:-}" ]; then
+          set -- "$@" --revision "$${TEXT_MODEL_REVISION}" --tokenizer-revision "$${TEXT_MODEL_REVISION}";
+        fi;
         if [ -n "$${CHAT_ENFORCE_EAGER:-}" ]; then
           set -- "$@" --enforce-eager;
         fi;
@@ -311,6 +324,9 @@ services:
         --convert "$${EMBED_CONVERT:-embed}"
         --pooler-config.task "$${EMBED_POOLER_TASK:-embed}"
         --gpu-memory-utilization "$${EMBED_GPU_MEMORY_UTILIZATION:-0.15}";
+        if [ -n "$${EMBED_MODEL_REVISION:-}" ]; then
+          set -- "$@" --revision "$${EMBED_MODEL_REVISION}" --tokenizer-revision "$${EMBED_MODEL_REVISION}";
+        fi;
         if [ -n "$${EMBED_HF_OVERRIDES:-}" ]; then
           set -- "$@" --hf-overrides "$${EMBED_HF_OVERRIDES}";
         elif [ "$${EMBED_MODEL:-BAAI/bge-m3}" = "BAAI/bge-m3" ]; then
@@ -365,6 +381,9 @@ services:
         --convert "$${EMBED_CONVERT:-embed}"
         --pooler-config.task token_classify
         --gpu-memory-utilization "$${EMBED_SPARSE_GPU_MEMORY_UTILIZATION:-0.10}";
+        if [ -n "$${EMBED_MODEL_REVISION:-}" ]; then
+          set -- "$@" --revision "$${EMBED_MODEL_REVISION}" --tokenizer-revision "$${EMBED_MODEL_REVISION}";
+        fi;
         if [ -n "$${EMBED_HF_OVERRIDES:-}" ]; then
           set -- "$@" --hf-overrides "$${EMBED_HF_OVERRIDES}";
         elif [ "$${EMBED_MODEL:-BAAI/bge-m3}" = "BAAI/bge-m3" ]; then
@@ -405,13 +424,17 @@ services:
     command:
       - >-
         export CUDA_VISIBLE_DEVICES="$${RERANK_CUDA_VISIBLE_DEVICES:-0}";
-        exec vllm serve "$${RERANK_MODEL:-BAAI/bge-reranker-v2-m3}"
+        set -- vllm serve "$${RERANK_MODEL:-BAAI/bge-reranker-v2-m3}"
         --api-key "$${OPENAI_API_KEY:-sk-no-key-required}"
         --host 0.0.0.0
         --port 8000
         --runner "$${RERANK_RUNNER:-pooling}"
         --pooler-config.task "$${RERANK_POOLER_TASK:-classify}"
-        --gpu-memory-utilization "$${RERANK_GPU_MEMORY_UTILIZATION:-0.15}"
+        --gpu-memory-utilization "$${RERANK_GPU_MEMORY_UTILIZATION:-0.15}";
+        if [ -n "$${RERANK_MODEL_REVISION:-}" ]; then
+          set -- "$@" --revision "$${RERANK_MODEL_REVISION}" --tokenizer-revision "$${RERANK_MODEL_REVISION}";
+        fi;
+        exec "$@"
     environment: *vllm-env
     volumes: *vllm-volumes
     healthcheck: *vllm-healthcheck
@@ -497,11 +520,15 @@ services:
     command:
       - >-
         export CUDA_VISIBLE_DEVICES="$${ASR_CUDA_VISIBLE_DEVICES:-0}";
-        exec vllm serve "$${WHISPER_MODEL:-openai/whisper-large-v3}"
+        set -- vllm serve "$${WHISPER_MODEL:-openai/whisper-large-v3}"
         --api-key "$${OPENAI_API_KEY:-sk-no-key-required}"
         --host 0.0.0.0
         --port 8000
-        --gpu-memory-utilization "$${ASR_GPU_MEMORY_UTILIZATION:-0.15}"
+        --gpu-memory-utilization "$${ASR_GPU_MEMORY_UTILIZATION:-0.15}";
+        if [ -n "$${WHISPER_MODEL_REVISION:-}" ]; then
+          set -- "$@" --revision "$${WHISPER_MODEL_REVISION}" --tokenizer-revision "$${WHISPER_MODEL_REVISION}";
+        fi;
+        exec "$@"
     environment:
       <<: *vllm-env
       VLLM_MAX_AUDIO_CLIP_FILESIZE_MB: ${VLLM_MAX_AUDIO_CLIP_FILESIZE_MB:-200}

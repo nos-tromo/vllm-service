@@ -25,7 +25,8 @@ Endpoints:
         Liveness probe; returns ``{"status": "ok", "model": ...}``.
 
 Model identity is fixed at container startup via ``CLIP_MODEL`` (default
-``openai/clip-vit-base-patch32``). Loaded once at module import so the
+``openai/clip-vit-base-patch32``), at the commit ``CLIP_MODEL_REVISION``
+names when it is set. Loaded once at module import so the
 first request is hot. The image and text encoders both use the standard
 HuggingFace ``transformers`` CLIP pipeline:
 
@@ -52,12 +53,16 @@ from pydantic import BaseModel
 from transformers import AutoProcessor, CLIPModel
 
 MODEL_ID = os.environ.get("CLIP_MODEL", "openai/clip-vit-base-patch32")
+# The commit of MODEL_ID to load, as recorded with the release. Unset or
+# empty passes no revision: the cache's refs/main, as before.
+REVISION = os.environ.get("CLIP_MODEL_REVISION") or None
 DEVICE = os.environ.get("CLIP_DEVICE", "cpu")
 
 app = FastAPI(title="vllm-service clip", version="1.0")
 
-processor = AutoProcessor.from_pretrained(MODEL_ID)
-model = CLIPModel.from_pretrained(MODEL_ID)
+_REVISION_KWARGS: dict[str, str] = {"revision": REVISION} if REVISION else {}
+processor = AutoProcessor.from_pretrained(MODEL_ID, **_REVISION_KWARGS)
+model = CLIPModel.from_pretrained(MODEL_ID, **_REVISION_KWARGS)
 model.train(False)
 model.to(DEVICE)
 DIMENSION = int(model.config.projection_dim)

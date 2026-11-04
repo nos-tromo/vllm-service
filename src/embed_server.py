@@ -67,16 +67,21 @@ def _positive_int_env(name: str, default: int) -> int:
 
 
 MODEL_ID = os.environ.get("EMBED_MODEL", "BAAI/bge-m3")
+# The commit of MODEL_ID to load (encoder, tokenizer and sparse head alike),
+# as recorded with the release. Unset or empty passes no revision: the
+# cache's refs/main, as before.
+REVISION = os.environ.get("EMBED_MODEL_REVISION") or None
 MAX_LENGTH = _positive_int_env("EMBED_MAX_LENGTH", 8192)
 MAX_BATCH_TOKENS = _positive_int_env("EMBED_MAX_BATCH_TOKENS", 16384)
 SPARSE_LINEAR_FILE = os.environ.get("SPARSE_LINEAR_FILE", "sparse_linear.pt")
 
 app = FastAPI(title="vllm-service embed-only", version="1.0")
 
-tokenizer = AutoTokenizer.from_pretrained(MODEL_ID)
+_REVISION_KWARGS: dict[str, str] = {"revision": REVISION} if REVISION else {}
+tokenizer = AutoTokenizer.from_pretrained(MODEL_ID, **_REVISION_KWARGS)
 # Explicit dtype: the float32 default is exactly what a transformers
 # major bump changes, and dense CLS+L2 vectors drift silently if it moves.
-model = AutoModel.from_pretrained(MODEL_ID, torch_dtype=torch.float32)
+model = AutoModel.from_pretrained(MODEL_ID, torch_dtype=torch.float32, **_REVISION_KWARGS)
 model.train(False)
 
 # vLLM's BOSEOSFilter semantics: -1 disables the boundary strip when the
@@ -100,7 +105,7 @@ def _load_sparse_head(hidden_size: int) -> torch.nn.Linear:
     Returns:
         A ``Linear(hidden_size, 1)`` module in eval mode.
     """
-    weights_path = hf_hub_download(repo_id=MODEL_ID, filename=SPARSE_LINEAR_FILE)
+    weights_path = hf_hub_download(repo_id=MODEL_ID, filename=SPARSE_LINEAR_FILE, **_REVISION_KWARGS)
     head = torch.nn.Linear(hidden_size, 1)
     head.load_state_dict(torch.load(weights_path, map_location="cpu", weights_only=True))
     head.train(False)

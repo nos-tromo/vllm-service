@@ -526,8 +526,8 @@ Design points that are load-bearing, all verified against the pinned
   pre-call hooks enforce (so the router's retries are refused too) until an
   `admin`/`audit.recovered` event records the gap.
 - **Facts are read defensively, the write is not:** every fact (headers,
-  token, deployment details, response, stream chunks, pass-through targets)
-  goes through `_read`, so whatever fails while reading it the event is still
+  token, deployment details, response, stream chunks, pass-through targets
+  and revisions) goes through `_read`, so whatever fails while reading it the event is still
   written, marked `incomplete`; any failure of the write itself counts as an
   unwritten event and fails closed.
 - **Headers only from what the proxy records:** model-list calls read
@@ -545,7 +545,10 @@ Design points that are load-bearing, all verified against the pinned
 - **Recipient = deployment:** `model_info.id` in `docker/litellm.config.yaml`
   names the compose service (`chat`, `embed`, `rerank`, `asr`); pass-through
   routes resolve their backend host from `pass_through_endpoints`.
-  `model_info.revision` comes from `<MODEL>_REVISION` and is recorded only.
+  `model_info.revision` comes from `<MODEL>_REVISION`, the variable the
+  backend also loads by; a pass-through backend's revision comes from the
+  variable `PASS_THROUGH_REVISIONS` names (`embed-sparse`, `clip`,
+  `diarize`), read from the same environment (see "Revision pinning" below).
 - **stdout is the audit stream:** uvicorn's access log goes to stderr
   (`--log_config`), `LITELLM_LOG` is pinned to `WARNING` (debug prints bodies),
   and the lock is on the router's own tmpfs, not on `media-tmp`.
@@ -602,8 +605,9 @@ instead of keeping its multi-GiB activation cache on the GPU it shares with `cha
 
 All tuning is done via `.env` (see `.env.example`). Per-service env vars follow
 the pattern `<SERVICE>_<KNOB>` (e.g. `CHAT_GPU_MEMORY_UTILIZATION`,
-`EMBED_HF_OVERRIDES`, `NER_ENABLE_FLASHDEBERTA`). The `chat` and `gliner`
-entrypoints use a shell builder pattern (`set --
+`EMBED_HF_OVERRIDES`, `NER_ENABLE_FLASHDEBERTA`). Every vLLM entrypoint
+(`chat`, `embed`, `embed-sparse`, `rerank`, `asr`) and `gliner` use a shell
+builder pattern (`set --
 <cmd> …` then conditional `set -- "$@" --flag`) so optional flags are only
 passed when the corresponding env var is set — when adding a new optional flag,
 follow that same pattern rather than hard-coding it in `command:`. The `gliner`
@@ -635,16 +639,53 @@ edits to `docker/litellm.config.yaml` are needed** — model names are resolved
 via `os.environ/<VAR>` at startup. Clients must send the exact model ID string
 in their request `model` field; `/v1/models` returns the active set. Update the
 matching `<MODEL>_REVISION` (`TEXT_MODEL_REVISION`, `EMBED_MODEL_REVISION`,
-`RERANK_MODEL_REVISION`, `WHISPER_MODEL_REVISION`) with it: the audit log
-reports it as the served revision.
+`RERANK_MODEL_REVISION`, `WHISPER_MODEL_REVISION`) with it: the backend loads
+that commit and the audit log reports it as the served revision. A revision
+left over from the previous model stops the backend at startup.
 
 `NER_MODEL`, `CLIP_MODEL`, `DIARIZE_MODEL`, and `VAD_MODEL` are the
 exceptions: their servers have no OpenAI-shaped routes, so they are not
 declared in `model_list` and do not appear in `/v1/models`. Clients hit
 `/gliner`, `/clip/*`, `/diarize`, and `/vad` directly with service-native
-bodies and never use the `model` field. Switching one of these vars and
+bodies and never use the `model` field. Switching one of these vars (with
+`CLIP_MODEL_REVISION` or `DIARIZE_MODEL_REVISION` for the two that pin) and
 restarting the matching service still works. (`VAD_MODEL` is informational —
 the `silero-vad` package bundles a single model.)
+
+### Revision pinning
+
+Each launch that can be given a Hub revision loads the commit its
+`<MODEL>_REVISION` names (`docs/configuration.md#model-revisions` is the
+reference). Load-bearing points:
+
+- **One variable, one source.** The vLLM launches append `--revision` and
+  `--tokenizer-revision` from the same variable the router records:
+  `model_info.revision` for the model-list deployments, `PASS_THROUGH_REVISIONS`
+  in `router_audit.py` for the pinned pass-through backends (`embed-sparse`
+  shares `EMBED_MODEL_REVISION`; `clip` and `diarize` have their own). Router
+  and backends both get it from the shared `env_file` — not from
+  `environment:` interpolation, which reads the operator's shell first and
+  could hand the two different values. `eval/tests/test_revision_pinning.py`
+  runs each rendered command under `sh` with a stub `vllm` and reads
+  `PASS_THROUGH_REVISIONS` from the router's source. It fails when a
+  `vllm serve` service is in neither map, or a pass-through backend is
+  neither in `PASS_THROUGH_REVISIONS` nor in its list of unpinned backends.
+- **Offline resolution.** With `HF_HUB_OFFLINE=1`, vLLM (0.30) replaces the
+  repo id by `snapshot_download(local_files_only=True, revision=…)`, i.e. the
+  cache's `snapshots/<commit>`; a missing commit stops startup instead of
+  falling back to `refs/main`. `--revision` means nothing for a model id that
+  is a local path. In vLLM 0.30 the tokenizer revision follows `--revision`
+  anyway; the explicit flag keeps the two together if that default changes.
+- **First-party servers** pass `revision=` only when the variable is set
+  (`CLIP_MODEL_REVISION`, `RERANK_MODEL_REVISION` in rerank-only,
+  `EMBED_MODEL_REVISION` in embed-only incl. `sparse_linear.pt`,
+  `DIARIZE_MODEL_REVISION` via `build_pipeline`, which applies it only to the
+  env's `DIARIZE_MODEL` and puts it on the id as `<id>@<rev>` for pyannote 3.x).
+- **Not pinned:** `gliner` (`gliner.serve` has no revision option; the v2.5
+  encoder config also comes from a second repo), `vad` (weights in the
+  `silero-vad` wheel), `topics` (no weights), asr-only (openai-whisper
+  checkpoints are checksum-pinned by the package, not Hub commits). The
+  router's events for `gliner`, `vad` and `topics` carry no revision.
 
 ### Rerank-only shape (CPU)
 

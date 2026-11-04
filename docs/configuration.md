@@ -229,15 +229,76 @@ Clients must use the exact model ID set in `.env` as the `model` field in
 their requests (e.g. `"model": "BAAI/bge-m3"`). The `/v1/models` endpoint
 returns the currently active IDs.
 
-When you switch a model, update its revision with it: `TEXT_MODEL_REVISION`,
+When you switch a model, update its revision with it (see
+[Model revisions](#model-revisions)): `TEXT_MODEL_REVISION`,
 `EMBED_MODEL_REVISION`, `RERANK_MODEL_REVISION` and `WHISPER_MODEL_REVISION`
-name the commit the model id resolves to on this host (recorded with the
-release), and the audit log reports it for every call to that deployment. They
-are recorded, not enforced: the backends still load whatever revision the cache
-resolves the id to.
+name the commit the backend loads, and the audit log reports it for every call
+to that deployment. A revision left from the previous model stops the backend
+at startup, since the new model has no such commit.
 
 `NER_MODEL`, `CLIP_MODEL`, `DIARIZE_MODEL`, and `VAD_MODEL` are the exceptions:
 their servers have no OpenAI-shaped endpoints, so they are not in `model_list`
 and do not appear in `/v1/models`. Switching them still works by updating the
-variable in `.env` and restarting the matching service (`gliner`, `clip`,
-`diarize`, `vad`).
+variable in `.env` (with `CLIP_MODEL_REVISION` or `DIARIZE_MODEL_REVISION` for
+the two that load by revision) and restarting the matching service (`gliner`,
+`clip`, `diarize`, `vad`).
+
+## Model revisions
+
+The services below load the commit their revision variable names, so the
+weights a service serves are the ones recorded with the release. Unset or
+empty, a service gets no revision and serves whatever the cache's
+`refs/main` points at, as before.
+
+| Variable | Services | Passed as |
+|---|---|---|
+| `TEXT_MODEL_REVISION` | `chat` | vLLM `--revision` and `--tokenizer-revision` |
+| `EMBED_MODEL_REVISION` | `embed`, `embed-sparse`, `embed-only` | the vLLM flags; in `embed-only`, `revision=` for the encoder, its tokenizer and `sparse_linear.pt` |
+| `RERANK_MODEL_REVISION` | `rerank`, `rerank-only` | the vLLM flags; in `rerank-only`, `revision=` for the model and its tokenizer |
+| `WHISPER_MODEL_REVISION` | `asr` | the vLLM flags |
+| `CLIP_MODEL_REVISION` | `clip`, `clip-only` | `revision=` for the model and its processor |
+| `DIARIZE_MODEL_REVISION` | `diarize`, `diarize-only` | pyannote's `revision=` |
+
+The router records each as `ai.revision` in the audit events of the calls it
+forwards: the first four through `model_info.revision` in
+`docker/litellm.config.yaml`, those of the pass-through backends
+(`embed-sparse`, `clip`, `diarize`) through `PASS_THROUGH_REVISIONS` in
+`docker/router/router_audit.py`. Router and backends read them from the same
+`.env`, so the revision in an audit event is the one the deployment loaded.
+
+The value is the full 40-character commit id: what deploy's `fetch-model.sh`
+prints as `Revision:`, and the name of the model's `snapshots/<commit>`
+directory in the cache. With `HF_HUB_OFFLINE=1` (the default), vLLM turns the
+model id into that snapshot directory, and the Python servers read their files
+from it. A cache that does not hold the commit stops the service at startup
+rather than serving other weights. A branch or tag name works only if the cache
+has a `refs/` entry for it. A model id that is a local path has no revision:
+vLLM and transformers ignore it, and pyannote refuses to start.
+
+Not pinned, and why:
+
+- `gliner`, `gliner-only`: `gliner.serve` has no revision option and loads
+  the model id at the cache's `refs/main`. Its loader takes a revision, but the
+  server does not pass one, and the v2.5 checkpoints take their encoder config
+  from a second repo (`microsoft/deberta-v3-large`) that a revision of
+  `NER_MODEL` would not cover.
+- `vad`, `vad-only`: the weights ship inside the `silero-vad` package, so the
+  image fixes them.
+- `topics`, `topics-only`: there are no weights.
+- `asr-only`: openai-whisper downloads its checkpoints from its own CDN and
+  checks each against a SHA-256 built into the installed package, so the image
+  fixes them; a Hub commit does not apply.
+
+Some parts of a pinned service still load at their own repo's default
+revision:
+
+- a pyannote pipeline whose config names other repos. The 3.1 pipeline loads
+  `pyannote/segmentation-3.0` and its embedding model that way; the default
+  community-1 keeps its parts in its own repo, so one revision covers them.
+- a draft model in `CHAT_SPECULATIVE_CONFIG`: give it a `"revision"` key in
+  that JSON. An MTP drafter reads the chat model's own snapshot while
+  `HF_HUB_OFFLINE=1`; with downloads on, it needs the key too.
+
+Keep the comment off the variable's line in `.env`: after an empty value,
+Compose reads a trailing `# …` as the value, and that value would be passed
+as the revision.

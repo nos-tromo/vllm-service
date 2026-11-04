@@ -62,6 +62,17 @@ SERVICE: Final = "vllm-service"
 LOCK_PATH: Final = "/run/audit/audit-stream.lock"
 #: LiteLLM's call type for the ``pass_through_endpoints`` routes.
 PASS_THROUGH: Final = "pass_through_endpoint"
+#: The revision variable of each pass-through backend that loads a pinned
+#: model: the variable the backend loads by (``docker/compose.yaml``), read
+#: here from the router's own environment, which compose fills from the same
+#: ``.env``, so the event names the commit the backend serves. The other
+#: pass-through backends (``gliner``, ``vad``, ``topics``) load no pinned
+#: revision, and their events carry none.
+PASS_THROUGH_REVISIONS: Final[Mapping[str, str]] = {
+    "embed-sparse": "EMBED_MODEL_REVISION",
+    "clip": "CLIP_MODEL_REVISION",
+    "diarize": "DIARIZE_MODEL_REVISION",
+}
 #: Call types whose LiteLLM handler runs ``async_post_call_success_hook``
 #: before it returns a non-streaming result. Every other call type is recorded
 #: from the deployment hook, the last one its handler runs.
@@ -437,11 +448,21 @@ def _deployment_of(kwargs: Mapping[str, Any]) -> tuple[str | None, str | None]:
         ``(id, revision)`` from its ``model_info``, each ``None`` when unset.
     """
     info = _model_info(kwargs)
-    deployment, revision = info.get("id"), info.get("revision")
-    return (
-        deployment if isinstance(deployment, str) and deployment else None,
-        revision.strip() if isinstance(revision, str) and revision.strip() else None,
-    )
+    deployment = info.get("id")
+    return deployment if isinstance(deployment, str) and deployment else None, _revision(info.get("revision"))
+
+
+def _revision(value: object) -> str | None:
+    """Return a configured revision as the event records it.
+
+    Args:
+        value: A ``model_info.revision`` or a revision variable's value.
+
+    Returns:
+        The value without surrounding whitespace, or ``None`` when it is not
+        a string or empty.
+    """
+    return value.strip() if isinstance(value, str) and value.strip() else None
 
 
 def _b64url(segment: str) -> bytes:
@@ -616,8 +637,9 @@ class RouterAudit(CustomLogger):
         """Read the configuration; nothing is written until the first event.
 
         Args:
-            environ: The environment to read the ``AUDIT_*`` settings from;
-                the process environment by default.
+            environ: The environment to read the ``AUDIT_*`` settings and the
+                pass-through backends' revisions from; the process environment
+                by default, which also resolves ``model_info.revision``.
             emitter_factory: Builds this process's emitter; by default one
                 writing to the stream ``AUDIT_OUTPUT`` selects.
             passthrough_targets: Returns the backend host of each
@@ -631,6 +653,7 @@ class RouterAudit(CustomLogger):
         """
         super().__init__()
         env = os.environ if environ is None else environ
+        self._env = env
         self._call_types = parse_call_types(env.get("AUDIT_ROUTER_CALL_TYPES"))
         secret = (env.get("AUDIT_OPENWEBUI_JWT_SECRET") or "").strip()
         self._jwt_secret = secret.encode("utf-8") if secret else None
@@ -839,6 +862,20 @@ class RouterAudit(CustomLogger):
             self._targets = self._passthrough_targets()
         return self._targets.get(route)
 
+    def _passthrough_revision(self, backend: str | None) -> str | None:
+        """Return the revision a pass-through backend loads, if it pins one.
+
+        Args:
+            backend: The backend host the route forwards to.
+
+        Returns:
+            The value of the backend's ``PASS_THROUGH_REVISIONS`` variable,
+            cleaned like a ``model_info.revision``; ``None`` for a backend
+            without one, or while the variable is unset or empty.
+        """
+        variable = PASS_THROUGH_REVISIONS.get(backend) if backend is not None else None
+        return _revision(self._env.get(variable)) if variable is not None else None
+
     def _finish(
         self,
         call: _Call,
@@ -898,8 +935,10 @@ class RouterAudit(CustomLogger):
         output_sha256: str | None = None
         if call.call_type == PASS_THROUGH:
             deployment = _read(call, lambda: self._target(call.route), None)
+            revision = _read(call, lambda: self._passthrough_revision(deployment), None)
         else:
             deployment = call.deployment
+            revision = call.revision
             if deployment is None:
                 deployment = _read(call, lambda: _hidden_model_id(response), None)
             criteria["stream"] = call.stream
@@ -926,7 +965,7 @@ class RouterAudit(CustomLogger):
         ai = AiCall(
             model_alias=call.model_alias,
             model_id=deployment,
-            revision=call.revision,
+            revision=revision,
             output_sha256=output_sha256,
             input_tokens=input_tokens,
             output_tokens=output_tokens,
