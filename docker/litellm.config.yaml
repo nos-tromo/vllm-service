@@ -15,8 +15,9 @@
 # event records as model_id and recipient (model:<id>), so it matches the
 # compose service that receives the data. `revision` is the model commit the
 # backend serves, taken from <MODEL>_REVISION in .env; unset leaves it out of
-# the event. It is recorded, not enforced: the backends still load whatever
-# revision the cache holds.
+# the event. The backend loads the same variable as its --revision
+# (docker/compose.yaml), so the recorded and the served revision are one
+# value.
 
 model_list:
   # General-purpose chat
