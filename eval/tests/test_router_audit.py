@@ -21,8 +21,10 @@ from collections.abc import AsyncIterator, Callable, Coroutine, Iterator, Mappin
 from pathlib import Path
 from types import SimpleNamespace
 from typing import Any
+from urllib.parse import urlsplit
 
 import pytest
+import yaml
 from starlette.datastructures import Headers
 from typing_extensions import override
 
@@ -1162,4 +1164,169 @@ def test_an_unreadable_chunk_still_goes_out() -> None:
     (event,) = _ai_calls(stream)
     assert event["criteria"]["incomplete"] is True
     assert "output_sha256" not in event["ai"]
+    _assert_chain(stream)
+
+
+# -- pass-through revisions ----------------------------------------------------
+
+LITELLM_CONFIG = Path(__file__).resolve().parents[2] / "docker" / "litellm.config.yaml"
+#: A distinct synthetic commit per revision variable, so a route recorded with
+#: another backend's variable fails.
+PINNED: dict[str, str] = {
+    "EMBED_MODEL_REVISION": "1" * 40,
+    "CLIP_MODEL_REVISION": "2" * 40,
+    "DIARIZE_MODEL_REVISION": "3" * 40,
+}
+#: The variable each pass-through backend loads its model by; gliner, vad and
+#: topics load no pinned revision.
+LOADED_BY: dict[str, str] = {
+    "embed-sparse": "EMBED_MODEL_REVISION",
+    "clip": "CLIP_MODEL_REVISION",
+    "diarize": "DIARIZE_MODEL_REVISION",
+}
+
+
+def _config_targets() -> Mapping[str, str]:
+    """Return the pass-through targets ``docker/litellm.config.yaml`` configures.
+
+    Returns:
+        Each path to its backend host, as the running proxy maps them.
+    """
+    config = yaml.safe_load(LITELLM_CONFIG.read_text())
+    targets: dict[str, str] = {}
+    for entry in config["general_settings"]["pass_through_endpoints"]:
+        host = urlsplit(str(entry["target"])).hostname
+        assert host is not None
+        targets[str(entry["path"])] = host
+    return targets
+
+
+async def _pass_through_call(audit: Any, route: str) -> None:
+    """Send one pass-through call whose backend answers 200.
+
+    Args:
+        audit: The callback.
+        route: The pass-through path.
+    """
+    await audit.async_pre_call_hook(_key(route), None, {}, "pass_through_endpoint")
+    headers = {"x-request-id": "req-0061"}
+    await audit.async_post_call_response_headers_hook({}, _key(route), SimpleNamespace(status_code=200), headers)
+
+
+class _UnreadableRevisions(Mapping[str, str]):
+    """An environment whose revision variables fail when read; all else is unset."""
+
+    @override
+    def __getitem__(self, key: str) -> str:
+        """Fail for a revision variable; report any other name as unset.
+
+        Args:
+            key: The variable name.
+
+        Raises:
+            RuntimeError: For a ``*_REVISION`` variable.
+            KeyError: For any other.
+        """
+        if key.endswith("_REVISION"):
+            raise RuntimeError("cannot read the environment")
+        raise KeyError(key)
+
+    @override
+    def __iter__(self) -> Iterator[str]:
+        """Iterate over no names.
+
+        Returns:
+            An empty iterator.
+        """
+        return iter(())
+
+    @override
+    def __len__(self) -> int:
+        """Count no variables.
+
+        Returns:
+            Zero.
+        """
+        return 0
+
+
+@pytest.mark.parametrize("route", sorted(_config_targets()))
+def test_pass_through_records_its_backends_revision(route: str) -> None:
+    """Each configured route names the revision its backend loads, or none for an unpinned backend."""
+    audit, stream = _audit(env=PINNED, targets=_config_targets)
+    _run(lambda: _pass_through_call(audit, route))
+    (event,) = _ai_calls(stream)
+    backend = _config_targets()[route]
+    assert event["recipient"] == f"model:{backend}"
+    variable = LOADED_BY.get(backend)
+    if variable is None:
+        assert "revision" not in event["ai"]
+    else:
+        assert event["ai"]["revision"] == PINNED[variable]
+    assert "incomplete" not in event["criteria"]
+    _assert_chain(stream)
+
+
+@pytest.mark.parametrize("value", [None, "", "  "], ids=["unset", "empty", "blank"])
+@pytest.mark.parametrize("route", ["/pooling", "/clip/embed_text", "/diarize"])
+def test_pass_through_without_revision_records_none(route: str, value: str | None) -> None:
+    """Unset, empty or blank, a pinned backend's event names no revision, whatever the others pin."""
+    variable = LOADED_BY[_config_targets()[route]]
+    env = {name: sha for name, sha in PINNED.items() if name != variable}
+    if value is not None:
+        env[variable] = value
+    audit, stream = _audit(env=env, targets=_config_targets)
+    _run(lambda: _pass_through_call(audit, route))
+    (event,) = _ai_calls(stream)
+    assert "revision" not in event["ai"]
+    assert "incomplete" not in event["criteria"]
+    _assert_chain(stream)
+
+
+def test_unknown_pass_through_route_records_no_revision() -> None:
+    """A path the configuration does not forward has no known backend, so no revision either."""
+    audit, stream = _audit(env=PINNED, targets=_config_targets)
+    _run(lambda: _pass_through_call(audit, "/v1/unconfigured"))
+    (event,) = _ai_calls(stream)
+    assert event["recipient"] == "model:unknown"
+    assert event["ai"] == {"model_alias": "/v1/unconfigured"}
+    assert "incomplete" not in event["criteria"]
+    _assert_chain(stream)
+
+
+def test_failed_pass_through_records_the_revision() -> None:
+    """The error event of a pass-through call names the revision that received the data."""
+    audit, stream = _audit(env=PINNED, targets=_config_targets)
+
+    async def scenario() -> None:
+        await audit.async_pre_call_hook(_key("/diarize"), None, {}, "pass_through_endpoint")
+        recorded = {"proxy_server_request": {"headers": Headers({"x-request-id": "req-0062"})}}
+        await audit.async_post_call_failure_hook(
+            {"litellm_params": recorded}, _BackendError("synthetic"), _key("/diarize")
+        )
+
+    _run(scenario)
+    (event,) = _ai_calls(stream)
+    assert event["outcome"] == "error"
+    assert event["recipient"] == "model:diarize"
+    assert event["ai"]["revision"] == PINNED["DIARIZE_MODEL_REVISION"]
+    _assert_chain(stream)
+
+
+def test_unreadable_revision_costs_the_fact_never_the_event() -> None:
+    """A revision that cannot be read is left out and the event marked incomplete; it is still written."""
+    stream = _Stream()
+    audit = router_audit.RouterAudit(
+        environ=_UnreadableRevisions(),
+        emitter_factory=lambda: AuditEmitter("vllm-service", "0.8.0", stream=stream, heartbeat_interval_s=0),
+        passthrough_targets=_config_targets,
+        clock=lambda: NOW,
+        monotonic=_Clock(),
+    )
+    _run(lambda: _pass_through_call(audit, "/clip/embed_text"))
+    (event,) = _ai_calls(stream)
+    assert event["outcome"] == "ok"
+    assert event["recipient"] == "model:clip"
+    assert "revision" not in event["ai"]
+    assert event["criteria"]["incomplete"] is True
     _assert_chain(stream)

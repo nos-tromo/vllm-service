@@ -49,5 +49,7 @@ image, check that order against the new release.
 The revision tests run each vLLM command from `docker/compose.yaml` under `sh`
 (`dash` where installed) with a stub `vllm` that prints its arguments, and
 import the first-party servers over stub loaders that record what they were
-asked to load. A new `vllm serve` service fails them until it has a revision
-variable.
+asked to load. They read the router's `PASS_THROUGH_REVISIONS` from its source,
+so a new `vllm serve` service or pass-through backend fails them until the
+router records a revision variable for it (or, for a pass-through backend, it
+is listed as loading no pinned revision).

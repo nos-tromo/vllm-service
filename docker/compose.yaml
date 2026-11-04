@@ -207,11 +207,12 @@ services:
   # Each vLLM launch below loads its model at the commit its revision
   # variable names: TEXT_MODEL_REVISION, EMBED_MODEL_REVISION (embed and
   # embed-sparse), RERANK_MODEL_REVISION, WHISPER_MODEL_REVISION. They are
-  # the variables model_info.revision in litellm.config.yaml records, read
-  # from the same env_file, so the audit log's ai.revision is the revision
-  # served. With HF_HUB_OFFLINE=1 vLLM resolves the model id to that
-  # snapshot in the cache and does not start without it. Unset passes no
-  # flag: the cache's refs/main, as before.
+  # the variables the router records (model_info.revision in
+  # litellm.config.yaml; PASS_THROUGH_REVISIONS in router/router_audit.py for
+  # embed-sparse), read from the same env_file, so the audit log's ai.revision
+  # is the revision served. With HF_HUB_OFFLINE=1 vLLM resolves the model id
+  # to that snapshot in the cache and does not start without it. Unset passes
+  # no flag: the cache's refs/main, as before.
   chat:
     <<: *hardened
     # read_only deferred (deploy ADR 0001): torch-compile cache under ~/.cache/vllm needs a writable rootfs.

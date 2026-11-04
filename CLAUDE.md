@@ -526,8 +526,8 @@ Design points that are load-bearing, all verified against the pinned
   pre-call hooks enforce (so the router's retries are refused too) until an
   `admin`/`audit.recovered` event records the gap.
 - **Facts are read defensively, the write is not:** every fact (headers,
-  token, deployment details, response, stream chunks, pass-through targets)
-  goes through `_read`, so whatever fails while reading it the event is still
+  token, deployment details, response, stream chunks, pass-through targets
+  and revisions) goes through `_read`, so whatever fails while reading it the event is still
   written, marked `incomplete`; any failure of the write itself counts as an
   unwritten event and fails closed.
 - **Headers only from what the proxy records:** model-list calls read
@@ -546,7 +546,9 @@ Design points that are load-bearing, all verified against the pinned
   names the compose service (`chat`, `embed`, `rerank`, `asr`); pass-through
   routes resolve their backend host from `pass_through_endpoints`.
   `model_info.revision` comes from `<MODEL>_REVISION`, the variable the
-  backend also loads by (see "Revision pinning" below).
+  backend also loads by; a pass-through backend's revision comes from the
+  variable `PASS_THROUGH_REVISIONS` names (`embed-sparse`, `clip`,
+  `diarize`), read from the same environment (see "Revision pinning" below).
 - **stdout is the audit stream:** uvicorn's access log goes to stderr
   (`--log_config`), `LITELLM_LOG` is pinned to `WARNING` (debug prints bodies),
   and the lock is on the router's own tmpfs, not on `media-tmp`.
@@ -657,14 +659,17 @@ Each launch that can be given a Hub revision loads the commit its
 reference). Load-bearing points:
 
 - **One variable, one source.** The vLLM launches append `--revision` and
-  `--tokenizer-revision` from the same variable `model_info.revision` reads
-  (`embed-sparse` shares `EMBED_MODEL_REVISION`), and router and backends both
-  get it from the shared `env_file` — not from `environment:` interpolation,
-  which reads the operator's shell first and could hand the two different
-  values. `eval/tests/test_revision_pinning.py` runs each rendered command
-  under `sh` with a stub `vllm` and fails when a `vllm serve` service has no
-  revision variable, so a new vLLM backend must join `docker/litellm.config.yaml`
-  or the test's `PASS_THROUGH_LAUNCHES`.
+  `--tokenizer-revision` from the same variable the router records:
+  `model_info.revision` for the model-list deployments, `PASS_THROUGH_REVISIONS`
+  in `router_audit.py` for the pinned pass-through backends (`embed-sparse`
+  shares `EMBED_MODEL_REVISION`; `clip` and `diarize` have their own). Router
+  and backends both get it from the shared `env_file` — not from
+  `environment:` interpolation, which reads the operator's shell first and
+  could hand the two different values. `eval/tests/test_revision_pinning.py`
+  runs each rendered command under `sh` with a stub `vllm` and reads
+  `PASS_THROUGH_REVISIONS` from the router's source. It fails when a
+  `vllm serve` service is in neither map, or a pass-through backend is
+  neither in `PASS_THROUGH_REVISIONS` nor in its list of unpinned backends.
 - **Offline resolution.** With `HF_HUB_OFFLINE=1`, vLLM (0.30) replaces the
   repo id by `snapshot_download(local_files_only=True, revision=…)`, i.e. the
   cache's `snapshots/<commit>`; a missing commit stops startup instead of
@@ -679,8 +684,8 @@ reference). Load-bearing points:
 - **Not pinned:** `gliner` (`gliner.serve` has no revision option; the v2.5
   encoder config also comes from a second repo), `vad` (weights in the
   `silero-vad` wheel), `topics` (no weights), asr-only (openai-whisper
-  checkpoints are checksum-pinned by the package, not Hub commits). Pass-through
-  backends are pinned, but their `ai_call` events carry no revision.
+  checkpoints are checksum-pinned by the package, not Hub commits). The
+  router's events for `gliner`, `vad` and `topics` carry no revision.
 
 ### Rerank-only shape (CPU)
 

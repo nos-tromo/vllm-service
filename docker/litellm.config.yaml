@@ -101,6 +101,11 @@ general_settings:
   # Pass-through endpoints for vLLM-specific paths that LiteLLM does not
   # map natively. Forwards the request body unchanged to the upstream.
   #
+  # They have no model_info: the audit event's recipient is the target's
+  # host, and its revision comes from PASS_THROUGH_REVISIONS in
+  # router/router_audit.py (embed-sparse, clip, diarize). A route to a
+  # backend that loads a pinned model needs its host listed there.
+  #
   # `auth: true` gates each one behind the master key, same as the
   # OpenAI-shaped routes above — consumers must send
   # `Authorization: Bearer $OPENAI_API_KEY`. LiteLLM made this the default in

@@ -1,9 +1,11 @@
 """Every model launch loads the revision the deployment recorded.
 
 The router records ``model_info.revision`` from a ``<MODEL>_REVISION``
-variable (``docker/litellm.config.yaml``); the backends must load by that
-same variable, or the audit log's ``ai.revision`` could name weights other
-than the ones served. The vLLM launches are checked by running each
+variable (``docker/litellm.config.yaml``), and a pass-through backend's
+revision from the variable ``PASS_THROUGH_REVISIONS`` names
+(``docker/router/router_audit.py``); the backends must load by those same
+variables, or the audit log's ``ai.revision`` could name weights other than
+the ones served. The vLLM launches are checked by running each
 ``docker/compose.yaml`` command under ``sh`` with a stub ``vllm`` that prints
 its arguments; the first-party servers by importing each one over stubbed
 loaders that record what they were asked to load. Unset or empty, no revision
@@ -16,6 +18,7 @@ importable (the eval-run env), importing a server would load an actual
 checkpoint, so the server tests are skipped there.
 """
 
+import ast
 import importlib.util
 import shutil
 import subprocess
@@ -23,6 +26,7 @@ import sys
 import types
 from contextlib import nullcontext
 from pathlib import Path
+from urllib.parse import urlsplit
 
 import pytest
 import yaml
@@ -31,6 +35,7 @@ REPO = Path(__file__).resolve().parents[2]
 SRC = REPO / "src"
 COMPOSE = REPO / "docker" / "compose.yaml"
 LITELLM_CONFIG = REPO / "docker" / "litellm.config.yaml"
+ROUTER_AUDIT = REPO / "docker" / "router" / "router_audit.py"
 
 #: A distinct fake commit per variable, so a launch wired to another model's
 #: variable fails instead of passing by coincidence.
@@ -41,9 +46,11 @@ SHAS: dict[str, str] = {
     "WHISPER_MODEL_REVISION": "4" * 40,
 }
 
-#: embed-sparse serves EMBED_MODEL through a pass-through route, so it has no
-#: model_info of its own; it loads the same revision as embed.
-PASS_THROUGH_LAUNCHES = {"embed-sparse": "EMBED_MODEL_REVISION"}
+#: The pass-through backends that load no pinned revision
+#: (docs/configuration.md#model-revisions).
+UNPINNED_PASS_THROUGH = frozenset({"gliner", "vad", "topics"})
+#: The variable build_pipeline reads the diarization model's revision from.
+DIARIZE_VARIABLE = "DIARIZE_MODEL_REVISION"
 
 needs_torch_free_env = pytest.mark.skipif(
     importlib.util.find_spec("transformers") is not None,
@@ -66,9 +73,47 @@ def _router_revision_vars() -> dict[str, str]:
     }
 
 
+def _router_pass_through_vars() -> dict[str, str]:
+    """Map each pass-through backend to the variable the router records its revision from.
+
+    Read from the source, so the router module (which needs LiteLLM) is not
+    imported here.
+    """
+    for node in ast.parse(ROUTER_AUDIT.read_text()).body:
+        if (
+            isinstance(node, ast.AnnAssign)
+            and isinstance(node.target, ast.Name)
+            and node.target.id == "PASS_THROUGH_REVISIONS"
+            and node.value is not None
+        ):
+            value = ast.literal_eval(node.value)
+            assert isinstance(value, dict)
+            return {str(backend): str(variable) for backend, variable in value.items()}
+    raise AssertionError("PASS_THROUGH_REVISIONS not found in docker/router/router_audit.py")
+
+
+def _pass_through_hosts() -> set[str]:
+    """Return the backend host of every pass-through route the router forwards."""
+    config = yaml.safe_load(LITELLM_CONFIG.read_text())
+    return {
+        urlsplit(str(entry["target"])).hostname or "" for entry in config["general_settings"]["pass_through_endpoints"]
+    }
+
+
+def _vllm_services() -> set[str]:
+    """Return the compose services that run ``vllm serve``."""
+    names = set()
+    for name, service in _compose_services().items():
+        command = service.get("command")
+        if isinstance(command, list) and any("vllm serve" in str(part) for part in command):
+            names.add(name)
+    return names
+
+
 def _vllm_launches() -> dict[str, str]:
-    """Map every vLLM service to the revision variable it must load by."""
-    return {**_router_revision_vars(), **PASS_THROUGH_LAUNCHES}
+    """Map every vLLM service the router records a revision for to that variable."""
+    pass_through = {backend: v for backend, v in _router_pass_through_vars().items() if backend in _vllm_services()}
+    return {**_router_revision_vars(), **pass_through}
 
 
 def _launch_argv(service: str, env: dict[str, str], tmp_path: Path) -> list[str]:
@@ -111,12 +156,23 @@ def test_every_vllm_launch_is_pinned() -> None:
     A vLLM backend added without one would serve whatever the cache resolves
     to while this suite stayed green.
     """
-    vllm_services = set()
-    for name, service in _compose_services().items():
-        command = service.get("command")
-        if isinstance(command, list) and any("vllm serve" in str(part) for part in command):
-            vllm_services.add(name)
-    assert vllm_services == set(_vllm_launches())
+    assert _vllm_services() == set(_vllm_launches())
+
+
+def test_router_records_the_variable_each_pass_through_backend_loads_by() -> None:
+    """Every pinned pass-through backend is in the router's map, with the variable it loads by.
+
+    embed-sparse's launch is run with that variable by the launch tests below;
+    clip's and the diarization pipeline's by the server tests further down.
+    """
+    recorded = _router_pass_through_vars()
+    assert set(recorded) == _pass_through_hosts() - UNPINNED_PASS_THROUGH
+    loaded_by = {
+        **_vllm_launches(),
+        "clip": next(variable for module, variable, _ in SERVERS if module == "clip_server"),
+        "diarize": DIARIZE_VARIABLE,
+    }
+    assert recorded == {backend: loaded_by[backend] for backend in recorded}
 
 
 @pytest.mark.parametrize("others", ["unset", "set"])
@@ -333,7 +389,7 @@ def _build_pipeline(
 
 def test_pipeline_loads_the_recorded_revision(monkeypatch: pytest.MonkeyPatch) -> None:
     """With pyannote 4.x, DIARIZE_MODEL (here its default) loads at DIARIZE_MODEL_REVISION."""
-    monkeypatch.setenv("DIARIZE_MODEL_REVISION", "6" * 40)
+    monkeypatch.setenv(DIARIZE_VARIABLE, "6" * 40)
     calls = _build_pipeline(monkeypatch)
     assert calls == [("pyannote/speaker-diarization-community-1", {"revision": "6" * 40, "token": None})]
 
@@ -342,16 +398,16 @@ def test_pipeline_loads_the_recorded_revision(monkeypatch: pytest.MonkeyPatch) -
 def test_pipeline_without_revision_passes_none(value: str | None, monkeypatch: pytest.MonkeyPatch) -> None:
     """Unset or empty, pyannote gets its own default revision (None), as before."""
     if value is None:
-        monkeypatch.delenv("DIARIZE_MODEL_REVISION", raising=False)
+        monkeypatch.delenv(DIARIZE_VARIABLE, raising=False)
     else:
-        monkeypatch.setenv("DIARIZE_MODEL_REVISION", value)
+        monkeypatch.setenv(DIARIZE_VARIABLE, value)
     calls = _build_pipeline(monkeypatch)
     assert calls == [("pyannote/speaker-diarization-community-1", {"revision": None, "token": None})]
 
 
 def test_pipeline_revision_does_not_apply_to_a_named_model(monkeypatch: pytest.MonkeyPatch) -> None:
     """DIARIZE_MODEL_REVISION is DIARIZE_MODEL's commit, not that of a model_id the caller names."""
-    monkeypatch.setenv("DIARIZE_MODEL_REVISION", "6" * 40)
+    monkeypatch.setenv(DIARIZE_VARIABLE, "6" * 40)
     calls = _build_pipeline(monkeypatch, model_id="example-org/example-pipeline")
     assert calls == [("example-org/example-pipeline", {"revision": None, "token": None})]
 
@@ -369,8 +425,8 @@ def test_legacy_pipeline_reads_the_revision_from_the_id(
 ) -> None:
     """Under pyannote 3.x, which has no revision kwarg, the revision rides on the id."""
     if value is None:
-        monkeypatch.delenv("DIARIZE_MODEL_REVISION", raising=False)
+        monkeypatch.delenv(DIARIZE_VARIABLE, raising=False)
     else:
-        monkeypatch.setenv("DIARIZE_MODEL_REVISION", value)
+        monkeypatch.setenv(DIARIZE_VARIABLE, value)
     calls = _build_pipeline(monkeypatch, legacy=True)
     assert calls == [(checkpoint, {"use_auth_token": None})]

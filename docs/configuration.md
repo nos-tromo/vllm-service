@@ -259,11 +259,12 @@ empty, a service gets no revision and serves whatever the cache's
 | `CLIP_MODEL_REVISION` | `clip`, `clip-only` | `revision=` for the model and its processor |
 | `DIARIZE_MODEL_REVISION` | `diarize`, `diarize-only` | pyannote's `revision=` |
 
-The first four are the variables the router records as `ai.revision`
-(`model_info.revision` in `docker/litellm.config.yaml`). Router and backends
-read them from the same `.env`, so the revision in an audit event is the one
-the deployment loaded. The services behind pass-through routes (`embed-sparse`,
-`clip`, `diarize`) are pinned too, but their events carry no revision.
+The router records each as `ai.revision` in the audit events of the calls it
+forwards: the first four through `model_info.revision` in
+`docker/litellm.config.yaml`, those of the pass-through backends
+(`embed-sparse`, `clip`, `diarize`) through `PASS_THROUGH_REVISIONS` in
+`docker/router/router_audit.py`. Router and backends read them from the same
+`.env`, so the revision in an audit event is the one the deployment loaded.
 
 The value is the full 40-character commit id: what deploy's `fetch-model.sh`
 prints as `Revision:`, and the name of the model's `snapshots/<commit>`
