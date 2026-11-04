@@ -85,8 +85,14 @@ def build_pipeline(
     With no overrides this is byte-for-byte the server's historical construction
     (stock model from ``DIARIZE_MODEL``, no ``instantiate`` call).
 
+    ``DIARIZE_MODEL_REVISION`` names the commit of ``DIARIZE_MODEL`` to load, so it
+    applies only when the model comes from the environment, never to a
+    ``model_id`` the caller names. pyannote 4.x loads a pipeline's ``$model/...``
+    parts from the same commit; parts its config names by another repo id load at
+    that repo's default revision.
+
     Args:
-        model_id: pyannote pipeline id; None → ``DIARIZE_MODEL`` env or 3.1.
+        model_id: pyannote pipeline id; None → ``DIARIZE_MODEL`` env or ``DEFAULT_MODEL``.
         device: Torch device; None → ``DIARIZE_DEVICE`` env or ``cuda``.
         clustering_threshold: Clustering-threshold override, or None.
         segmentation_min_duration_off: Segmentation override, or None.
@@ -108,17 +114,20 @@ def build_pipeline(
     # isort: on
 
     resolved_model = model_id or os.environ.get("DIARIZE_MODEL", DEFAULT_MODEL)
+    revision = None if model_id else (os.environ.get("DIARIZE_MODEL_REVISION") or None)
     resolved_device = device or os.environ.get("DIARIZE_DEVICE", "cuda")
     token = os.environ.get("HF_TOKEN") or None
     try:
         # pyannote.audio 4.x renamed the auth kwarg to `token`; 3.x uses `use_auth_token`.
-        pipeline = Pipeline.from_pretrained(resolved_model, token=token)
+        pipeline = Pipeline.from_pretrained(resolved_model, revision=revision, token=token)
     except TypeError:
         # 3.x-only kwarg, gone from 4.x's signature — pass it via an untyped
         # dict so the call typechecks whether pyannote's types are installed
-        # (dev eval-run venv, 4.x) or Any (CI lint env).
+        # (dev eval-run venv, 4.x) or Any (CI lint env). 3.x takes no
+        # revision kwarg either; it reads one from "<id>@<revision>".
         legacy_kwargs: dict[str, Any] = {"use_auth_token": token}
-        pipeline = Pipeline.from_pretrained(resolved_model, **legacy_kwargs)
+        checkpoint = f"{resolved_model}@{revision}" if revision else resolved_model
+        pipeline = Pipeline.from_pretrained(checkpoint, **legacy_kwargs)
     if pipeline is None:
         raise RuntimeError(
             f"Pipeline.from_pretrained({resolved_model!r}) returned None — gated-repo access "

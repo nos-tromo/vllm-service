@@ -33,14 +33,18 @@ from pydantic import BaseModel, Field
 from transformers import AutoModelForSequenceClassification, AutoTokenizer
 
 MODEL_ID = os.environ.get("RERANK_MODEL", "BAAI/bge-reranker-v2-m3")
+# The commit of MODEL_ID to load, as recorded with the release. Unset or
+# empty passes no revision: the cache's refs/main, as before.
+REVISION = os.environ.get("RERANK_MODEL_REVISION") or None
 USE_FP16 = os.environ.get("RERANK_USE_FP16", "false").lower() == "true"
 MAX_LENGTH = int(os.environ.get("RERANK_MAX_LENGTH", "512"))
 
 app = FastAPI(title="vllm-service rerank-only", version="1.0")
 
 _dtype = torch.float16 if USE_FP16 else torch.float32
-tokenizer = AutoTokenizer.from_pretrained(MODEL_ID)
-model = AutoModelForSequenceClassification.from_pretrained(MODEL_ID, torch_dtype=_dtype)
+_REVISION_KWARGS: dict[str, str] = {"revision": REVISION} if REVISION else {}
+tokenizer = AutoTokenizer.from_pretrained(MODEL_ID, **_REVISION_KWARGS)
+model = AutoModelForSequenceClassification.from_pretrained(MODEL_ID, torch_dtype=_dtype, **_REVISION_KWARGS)
 model.train(False)
 
 
