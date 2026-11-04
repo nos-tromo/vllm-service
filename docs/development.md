@@ -39,8 +39,15 @@ so they need no GPU, no model and no network. CI does not run them.
 ```bash
 uv run --group eval pytest eval/tests/                           # every unit test
 uv run --group eval pytest eval/tests/test_router_audit.py       # the router's audit callback
+uv run --group eval pytest eval/tests/test_revision_pinning.py   # every model launch's revision
 ```
 
 The audit callback's tests stub LiteLLM and call its hooks in the order the
 pinned LiteLLM release calls them for each route; when you bump the router
 image, check that order against the new release.
+
+The revision tests run each vLLM command from `docker/compose.yaml` under `sh`
+(`dash` where installed) with a stub `vllm` that prints its arguments, and
+import the first-party servers over stub loaders that record what they were
+asked to load. A new `vllm serve` service fails them until it has a revision
+variable.

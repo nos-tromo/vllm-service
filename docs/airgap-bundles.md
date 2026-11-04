@@ -89,6 +89,13 @@ docker compose --env-file .env -f docker/compose.yaml up --no-build -d
 The target host runs the production shape — `docker/compose.yaml` without
 the dev override — so no host ports are published.
 
+The bundles carry images, not model weights; those move into the
+`huggingface-cache` volume with the deploy repo's model-transfer scripts. Set
+each model's `*_MODEL_REVISION` in `.env` to the commit those scripts report:
+the services then load exactly that snapshot, and one whose commit is missing
+from the volume does not start. See
+[configuration.md](configuration.md#model-revisions).
+
 The version is embedded in the tarball filenames, so the operator just
 reads it off the file. Verify with `docker images | grep vllm-service`
 between `load` and `up`.

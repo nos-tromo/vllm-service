@@ -58,6 +58,17 @@ and **vad-only** and **topics-only** download nothing at all (see
 [VAD-only](#vad-only) and [Topics-only](#topics-only); the latter has no weights
 and mounts no cache). Per-shape download sizes are in the table below.
 
+### Pinning the model revision
+
+Four shapes load their model at a recorded commit, read from the same variable
+the full stack uses: `RERANK_MODEL_REVISION` (rerank-only),
+`CLIP_MODEL_REVISION` (clip-only), `EMBED_MODEL_REVISION` (embed-only) and
+`DIARIZE_MODEL_REVISION` (diarize-only). Set, the shape loads that snapshot and
+does not start if the cache lacks it; unset, it serves the cache's `refs/main`,
+as before. gliner-only cannot be pinned (`gliner.serve` takes no revision);
+asr-only, vad-only and topics-only have no Hub revision to pin. Details:
+[configuration.md](configuration.md#model-revisions).
+
 ### Auth posture
 
 No `Authorization` header is required: the container has no built-in

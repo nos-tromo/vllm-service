@@ -34,7 +34,7 @@ and `shutdown` when the worker stops. Each model call adds one event:
 | `recipient` | `model:<deployment>`, the compose service that received the data: `chat`, `embed`, `rerank`, `asr`, or the pass-through backend (`embed-sparse`, `gliner`, `clip`, `diarize`, `vad`, `topics`) |
 | `ai.model_alias` | the model the caller requested; the request path for a pass-through route |
 | `ai.model_id` | the deployment that served the call (`model_info.id` in `docker/litellm.config.yaml`) |
-| `ai.revision` | the deployment's `<MODEL>_REVISION`, when set |
+| `ai.revision` | the deployment's `<MODEL>_REVISION`, when set: the commit the backend loads ([configuration.md](configuration.md#model-revisions)) |
 | `ai.input_tokens`, `ai.output_tokens` | as the response reports them; output tokens for text generation only |
 | `ai.output_sha256` | SHA-256 of the text of a chat or text completion with a single choice, or of a transcription. A stream hashes its text deltas in order, which gives the same value. An app's `sha256_text(output)` matches when the app hashes the text as the model returned it |
 | `criteria.route` | the request path |
@@ -156,11 +156,11 @@ startup.
 |---|---|---|
 | `AUDIT_ROUTER_CALL_TYPES` | empty: all | Comma-separated call types to audit (`completion`, `text_completion`, `embedding`, `rerank`, `transcription`, `pass_through_endpoint`, ...). An unknown name stops the router. |
 | `AUDIT_OPENWEBUI_JWT_SECRET` | unset | The secret Open WebUI signs its user token with. Unset: no Open WebUI user is named. |
-| `TEXT_MODEL_REVISION`, `EMBED_MODEL_REVISION`, `RERANK_MODEL_REVISION`, `WHISPER_MODEL_REVISION` | unset | Recorded as `ai.revision` (via `model_info.revision`). Recorded, not enforced: the backends still load whatever the cache resolves the model id to. |
+| `TEXT_MODEL_REVISION`, `EMBED_MODEL_REVISION`, `RERANK_MODEL_REVISION`, `WHISPER_MODEL_REVISION` | unset | Recorded as `ai.revision` (via `model_info.revision`), and loaded by the same deployment (vLLM `--revision`), so the event names the commit served. Unset: not recorded, and the backend serves the cache's `refs/main`. See [Model revisions](configuration.md#model-revisions). |
 | `AUDIT_OUTPUT` | `container` (compose) | `stdout` writes to the process's own stdout instead. |
 | `AUDIT_SERVICE_VERSION` | `VLLM_SERVICE_VERSION` (compose) | The `service_version` of the events; a release tag loses its `v`. |
 
-The first two go in `.env`; compose sets the others. The apps' purpose and
+The first three rows go in `.env`; compose sets the last two. The apps' purpose and
 command-line settings (`AUDIT_REQUIRE_PURPOSE`, `AUDIT_CASE_REF`,
 `AUDIT_REASON`, `AUDIT_CLI_USER`) do not apply: no purpose reaches the
 router, and it has no command-line operations.
@@ -172,8 +172,11 @@ missing.
 ## Tests
 
 ```bash
-uv run --group eval pytest eval/tests/test_router_audit.py
+uv run --group eval pytest eval/tests/test_router_audit.py eval/tests/test_revision_pinning.py
 ```
 
-The tests stub LiteLLM and call the hooks in the order the pinned release
-calls them; each ends by verifying the chain it wrote.
+The router tests stub LiteLLM and call the hooks in the order the pinned
+release calls them; each ends by verifying the chain it wrote. The revision
+tests check that every vLLM launch in `docker/compose.yaml` passes the
+variable its `model_info.revision` records, and passes nothing while it is
+unset.
