@@ -127,8 +127,10 @@ Reference material lives in [docs/](docs/README.md).
   request/response body.
 - [airgap-bundles.md](docs/airgap-bundles.md) — producing and loading offline
   image bundles.
-- [development.md](docs/development.md) — the lint regime for the Python
-  servers.
+- [audit.md](docs/audit.md) — the data-protection audit log the router
+  writes: one event per model call.
+- [development.md](docs/development.md) — the lint regime and the unit
+  tests.
 
 ## Pointers
 

@@ -109,7 +109,7 @@ help:
 	@echo "vllm-service — build-host helpers."
 	@echo
 	@echo "Development:"
-	@echo "  make pre-commit       run ruff check + ruff format + pyrefly over src/ (no Docker)"
+	@echo "  make pre-commit       run ruff check + ruff format + pyrefly over src/, eval/, docker/router/ (no Docker)"
 	@echo "  make verify           pre-push gate: pre-commit (ruff + pyrefly); mirrors CI's lint gate"
 	@echo
 	@echo "Full stack (CUDA):"

@@ -193,6 +193,27 @@ override `environment:`. Every response reports them under `runtime.threads`.
 The request and response bodies, and the errors these limits produce, are in
 [api-reference.md](api-reference.md#topics).
 
+## Audit log
+
+The router writes one data-protection audit event per model call
+([audit.md](audit.md)). Two settings go in `.env`:
+
+```bash
+# Default: empty, every call type is audited. Otherwise a comma-separated list of
+# completion, text_completion, embedding, rerank, transcription, pass_through_endpoint, ...
+# An unknown name stops the router.
+AUDIT_ROUTER_CALL_TYPES=
+# The secret open-webui-service signs its user token with; unset, no Open WebUI user is named.
+AUDIT_OPENWEBUI_JWT_SECRET=
+```
+
+Leave a call type out only if every app that calls it records those calls
+itself: the router then keeps no record of them. Compose sets the rest
+(`AUDIT_OUTPUT`, `AUDIT_SERVICE_VERSION`, the callback's `PYTHONPATH` and
+startup hook) in the router's `environment:`, where a shared `.env` cannot
+change them, and pins `LITELLM_LOG=WARNING`, because LiteLLM's debug logging
+prints request bodies.
+
 ## Updating the model catalog
 
 `docker/litellm.config.yaml` is model-agnostic: all model names are read at
@@ -207,6 +228,13 @@ not fail loudly, the model's tool calls just go unrecognised (see
 Clients must use the exact model ID set in `.env` as the `model` field in
 their requests (e.g. `"model": "BAAI/bge-m3"`). The `/v1/models` endpoint
 returns the currently active IDs.
+
+When you switch a model, update its revision with it: `TEXT_MODEL_REVISION`,
+`EMBED_MODEL_REVISION`, `RERANK_MODEL_REVISION` and `WHISPER_MODEL_REVISION`
+name the commit the model id resolves to on this host (recorded with the
+release), and the audit log reports it for every call to that deployment. They
+are recorded, not enforced: the backends still load whatever revision the cache
+resolves the id to.
 
 `NER_MODEL`, `CLIP_MODEL`, `DIARIZE_MODEL`, and `VAD_MODEL` are the exceptions:
 their servers have no OpenAI-shaped endpoints, so they are not in `model_list`

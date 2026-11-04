@@ -127,6 +127,21 @@ services:
     volumes:
       - ./litellm.config.yaml:/app/config.yaml:ro
       - media-tmp:/tmp
+      # The data-protection audit callback (router_audit.py, the vendored
+      # audit library, the uvicorn log config), on PYTHONPATH below. A missing
+      # directory stops `up` instead of mounting an empty one.
+      - type: bind
+        source: ./router
+        target: /opt/router
+        read_only: true
+        bind:
+          create_host_path: false
+    # The audit stream's lock (router_audit.LOCK_PATH), private to the router:
+    # media-tmp is shared with asr/diarize/vad/topics, so the library's default
+    # lock under /tmp would be reachable from their containers. uid 65534 is
+    # the non_root image's user.
+    tmpfs:
+      - /run/audit:size=1m,uid=65534,gid=65534,mode=0700
     image: ghcr.io/berriai/litellm-non_root:v1.97.0@sha256:e2de74cae0d1f708bebe33bf3e03c3335029e27ff7f0dbddc7ff94d0edd63614
     logging: *default-logging
     env_file: *env-file
@@ -153,7 +168,20 @@ services:
     environment:
       <<: *no-proxy-env
       WHISPER_MODEL: ${WHISPER_MODEL:-openai/whisper-large-v3}
-    command: ["--config", "/app/config.yaml", "--port", "4000", "--host", "0.0.0.0"]
+      # Data-protection audit log (docs/audit.md), set here, where a shared
+      # .env cannot change it (environment: wins over env_file). The worker
+      # startup hook opens each worker's audit chain; its events go to the
+      # container's main stdout, which carries nothing else at runtime.
+      PYTHONPATH: /opt/router
+      LITELLM_WORKER_STARTUP_HOOKS: router_audit:start
+      AUDIT_OUTPUT: container
+      AUDIT_SERVICE_VERSION: ${VLLM_SERVICE_VERSION:-}
+      # Debug logging prints request bodies.
+      LITELLM_LOG: WARNING
+      LITELLM_DONT_SHOW_FEEDBACK_BOX: "true"
+    # --log_config sends uvicorn's access log to stderr with every other log
+    # line, leaving stdout to the audit events.
+    command: ["--config", "/app/config.yaml", "--port", "4000", "--host", "0.0.0.0", "--log_config", "/opt/router/uvicorn-log-config.json"]
     healthcheck:
       test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://localhost:4000/health/liveliness').read()"]
       interval: 10s
