@@ -246,8 +246,9 @@ the canvas before allocating it, so a small, highly compressed file cannot
 expand into gigabytes. A group crop over 512 px on a side counts as undecodable
 too. Decoding and these checks run outside the model lock, which is held only
 for the detector and recognizer calls, one call at a time: a request that waits
-more than 30 s for it, or runs past its 120 s deadline, gets `503` with
-`Retry-After: 5`. In the
+more than 30 s for it, finds four calls already waiting (refused at once), or
+runs past its 120 s deadline gets `503` with `Retry-After: 5`. `/health` runs
+on the event loop, so a busy worker pool cannot starve the probe. In the
 full stack the router reads the JSON body in full before it forwards it, so it
 holds up to 32 MiB per request in flight, refused requests included
 ([issue #158](https://github.com/nos-tromo/vllm-service/issues/158)).
