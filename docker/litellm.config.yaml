@@ -103,8 +103,10 @@ general_settings:
   #
   # They have no model_info: the audit event's recipient is the target's
   # host, and its revision comes from PASS_THROUGH_REVISIONS in
-  # router/router_audit.py (embed-sparse, clip, diarize). A route to a
-  # backend that loads a pinned model needs its host listed there.
+  # router/router_audit.py (embed-sparse, clip, diarize), or per route from
+  # PASS_THROUGH_ROUTE_REVISIONS there for a backend that serves a model per
+  # route (faces). A route to a backend that loads a pinned model needs its
+  # host or its path listed there.
   #
   # `auth: true` gates each one behind the master key, same as the
   # OpenAI-shaped routes above — consumers must send
@@ -177,6 +179,22 @@ general_settings:
     - path: "/vad"
       target: "http://vad:8000/vad"
       auth: true
+    # Face detection (YuNet) and per-video grouping (SFace). JSON bodies with
+    # base64 images; headers pin JSON. Embeddings never leave the backend:
+    # /faces/group answers with labels only. The top-level keys (images,
+    # min_score, tracks) are none of LiteLLM's own parameter names, which it
+    # would strip from the body before forwarding. The faces backend is not in
+    # model_list and does not appear in /v1/models.
+    - path: "/faces/detect"
+      target: "http://faces:8000/faces/detect"
+      auth: true
+      headers:
+        content-type: "application/json"
+    - path: "/faces/group"
+      target: "http://faces:8000/faces/group"
+      auth: true
+      headers:
+        content-type: "application/json"
     # Topic-model fit. Not OpenAI-compatible — clients POST multipart parts
     # `meta` (JSON settings), `texts` (JSON array of strings) and `vectors`
     # (n x dim little-endian float32) and receive {"labels": [...],

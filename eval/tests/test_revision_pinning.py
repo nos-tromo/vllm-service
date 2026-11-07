@@ -196,6 +196,15 @@ def test_router_records_the_variable_each_pass_through_backend_loads_by() -> Non
     assert recorded == {backend: loaded_by[backend] for backend in recorded}
 
 
+def test_route_revision_map_names_configured_routes() -> None:
+    """Every key of PASS_THROUGH_ROUTE_REVISIONS is a configured pass-through path.
+
+    A route renamed in ``docker/litellm.config.yaml`` alone would otherwise
+    fall back to its host's entry, which ``faces`` does not have.
+    """
+    assert set(_router_map("PASS_THROUGH_ROUTE_REVISIONS")) <= set(_pass_through_routes())
+
+
 @pytest.mark.parametrize("others", ["unset", "set"])
 @pytest.mark.parametrize("service", sorted(_vllm_launches()))
 def test_vllm_launch_loads_the_recorded_revision(service: str, others: str, tmp_path: Path) -> None:
