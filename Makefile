@@ -14,7 +14,7 @@
 # 3. Rerank-only (same hosts as NER-only) — a single FastAPI/transformers
 #    rerank container on inference-net, no router, no GPU requirement.
 #    Lives in docker/compose.rerank-only.yaml. Pairs with `gliner-only` so a
-#    CPU host can offer both /gliner and /rerank to docint/chorus.
+#    CPU host can offer both /gliner and /rerank to docint.
 #    Targets: build-rerank-only, up-rerank-only, stop-rerank-only,
 #             bundle-rerank-only.
 #
