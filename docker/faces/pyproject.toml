@@ -1,0 +1,17 @@
+[project]
+name = "vllm-service-faces"
+version = "0.0.0"
+requires-python = ">=3.11,<3.12"
+dependencies = [
+    "opencv-python-headless>=4.10,<5",
+    "numpy>=2.0,<2.6",
+    "fastapi>=0.162.0",
+    "uvicorn[standard]>=0.54.0",
+    "pydantic>=2.0",
+    "huggingface-hub>=0.34",
+    "anyio>=4",
+]
+
+[tool.uv]
+package = false
+environments = ["sys_platform == 'linux'", "sys_platform == 'darwin'"]
