@@ -65,13 +65,22 @@ PASS_THROUGH: Final = "pass_through_endpoint"
 #: The revision variable of each pass-through backend that loads a pinned
 #: model: the variable the backend loads by (``docker/compose.yaml``), read
 #: here from the router's own environment, which compose fills from the same
-#: ``.env``, so the event names the commit the backend serves. The other
-#: pass-through backends (``gliner``, ``vad``, ``topics``) load no pinned
-#: revision, and their events carry none.
+#: ``.env``, so the event names the commit the backend serves. A backend that
+#: serves a different model per route (``faces``) is keyed by route in
+#: ``PASS_THROUGH_ROUTE_REVISIONS`` instead. The other pass-through backends
+#: (``gliner``, ``vad``, ``topics``) load no pinned revision, and their events
+#: carry none.
 PASS_THROUGH_REVISIONS: Final[Mapping[str, str]] = {
     "embed-sparse": "EMBED_MODEL_REVISION",
     "clip": "CLIP_MODEL_REVISION",
     "diarize": "DIARIZE_MODEL_REVISION",
+}
+#: The revision variable of each pass-through route whose backend loads a
+#: model per route, checked before ``PASS_THROUGH_REVISIONS``: ``faces`` runs
+#: the detection model for one route and the embedding model for the other.
+PASS_THROUGH_ROUTE_REVISIONS: Final[Mapping[str, str]] = {
+    "/faces/detect": "FACE_DETECT_MODEL_REVISION",
+    "/faces/group": "FACE_EMBED_MODEL_REVISION",
 }
 #: Call types whose LiteLLM handler runs ``async_post_call_success_hook``
 #: before it returns a non-streaming result. Every other call type is recorded
@@ -862,18 +871,22 @@ class RouterAudit(CustomLogger):
             self._targets = self._passthrough_targets()
         return self._targets.get(route)
 
-    def _passthrough_revision(self, backend: str | None) -> str | None:
-        """Return the revision a pass-through backend loads, if it pins one.
+    def _passthrough_revision(self, backend: str | None, route: str | None) -> str | None:
+        """Return the revision a pass-through call's model loads, if it pins one.
 
         Args:
             backend: The backend host the route forwards to.
+            route: The request path.
 
         Returns:
-            The value of the backend's ``PASS_THROUGH_REVISIONS`` variable,
-            cleaned like a ``model_info.revision``; ``None`` for a backend
-            without one, or while the variable is unset or empty.
+            The value of the route's ``PASS_THROUGH_ROUTE_REVISIONS``
+            variable, else of the backend's ``PASS_THROUGH_REVISIONS``
+            variable, cleaned like a ``model_info.revision``; ``None`` for a
+            call with neither, or while the variable is unset or empty.
         """
-        variable = PASS_THROUGH_REVISIONS.get(backend) if backend is not None else None
+        variable = PASS_THROUGH_ROUTE_REVISIONS.get(route) if route is not None else None
+        if variable is None and backend is not None:
+            variable = PASS_THROUGH_REVISIONS.get(backend)
         return _revision(self._env.get(variable)) if variable is not None else None
 
     def _finish(
@@ -935,7 +948,7 @@ class RouterAudit(CustomLogger):
         output_sha256: str | None = None
         if call.call_type == PASS_THROUGH:
             deployment = _read(call, lambda: self._target(call.route), None)
-            revision = _read(call, lambda: self._passthrough_revision(deployment), None)
+            revision = _read(call, lambda: self._passthrough_revision(deployment, call.route), None)
         else:
             deployment = call.deployment
             revision = call.revision

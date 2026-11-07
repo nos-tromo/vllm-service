@@ -73,31 +73,50 @@ def _router_revision_vars() -> dict[str, str]:
     }
 
 
-def _router_pass_through_vars() -> dict[str, str]:
-    """Map each pass-through backend to the variable the router records its revision from.
+def _router_map(name: str) -> dict[str, str]:
+    """Return one of the router's revision-variable maps, read from its source.
 
     Read from the source, so the router module (which needs LiteLLM) is not
     imported here.
+
+    Args:
+        name: The module-level constant, ``PASS_THROUGH_REVISIONS`` (backend
+            host to variable) or ``PASS_THROUGH_ROUTE_REVISIONS`` (route to
+            variable).
+
+    Returns:
+        The map, with string keys and values.
     """
     for node in ast.parse(ROUTER_AUDIT.read_text()).body:
         if (
             isinstance(node, ast.AnnAssign)
             and isinstance(node.target, ast.Name)
-            and node.target.id == "PASS_THROUGH_REVISIONS"
+            and node.target.id == name
             and node.value is not None
         ):
             value = ast.literal_eval(node.value)
             assert isinstance(value, dict)
-            return {str(backend): str(variable) for backend, variable in value.items()}
-    raise AssertionError("PASS_THROUGH_REVISIONS not found in docker/router/router_audit.py")
+            return {str(key): str(variable) for key, variable in value.items()}
+    raise AssertionError(f"{name} not found in docker/router/router_audit.py")
+
+
+def _router_pass_through_vars() -> dict[str, str]:
+    """Map each pass-through backend to the variable the router records its revision from."""
+    return _router_map("PASS_THROUGH_REVISIONS")
+
+
+def _pass_through_routes() -> dict[str, str]:
+    """Map every pass-through path the router forwards to its backend host."""
+    config = yaml.safe_load(LITELLM_CONFIG.read_text())
+    return {
+        str(entry["path"]): urlsplit(str(entry["target"])).hostname or ""
+        for entry in config["general_settings"]["pass_through_endpoints"]
+    }
 
 
 def _pass_through_hosts() -> set[str]:
     """Return the backend host of every pass-through route the router forwards."""
-    config = yaml.safe_load(LITELLM_CONFIG.read_text())
-    return {
-        urlsplit(str(entry["target"])).hostname or "" for entry in config["general_settings"]["pass_through_endpoints"]
-    }
+    return set(_pass_through_routes().values())
 
 
 def _vllm_services() -> set[str]:
@@ -166,7 +185,9 @@ def test_router_records_the_variable_each_pass_through_backend_loads_by() -> Non
     clip's and the diarization pipeline's by the server tests further down.
     """
     recorded = _router_pass_through_vars()
-    assert set(recorded) == _pass_through_hosts() - UNPINNED_PASS_THROUGH
+    route_map = _router_map("PASS_THROUGH_ROUTE_REVISIONS")
+    routed = {host for route, host in _pass_through_routes().items() if route in route_map}
+    assert set(recorded) | routed == _pass_through_hosts() - UNPINNED_PASS_THROUGH
     loaded_by = {
         **_vllm_launches(),
         "clip": next(variable for module, variable, _ in SERVERS if module == "clip_server"),
