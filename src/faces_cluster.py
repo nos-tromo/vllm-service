@@ -75,6 +75,28 @@ def track_vector(embeddings: np.ndarray, *, outlier_cos: float = OUTLIER_COS) ->
     return mean / norm
 
 
+def _cooccurring(assigned: list[int], samples: list[frozenset[int]]) -> list[np.ndarray]:
+    """Return each distinct set of tracks that share a sample index.
+
+    Built from an index of sample to tracks, so the cost follows the number of
+    sample indices sent, not the number of track pairs times their sizes.
+
+    Args:
+        assigned: The tracks that have a vector, as indices into ``samples``.
+        samples: The sample indices of every track.
+
+    Returns:
+        The positions in ``assigned`` of each group of two or more tracks on
+        screen together, each group once.
+    """
+    on_screen: dict[int, list[int]] = {}
+    for position, index in enumerate(assigned):
+        for sample in samples[index]:
+            on_screen.setdefault(sample, []).append(position)
+    groups = {tuple(members) for members in on_screen.values() if len(members) > 1}
+    return [np.asarray(members) for members in sorted(groups)]
+
+
 def cluster_tracks(vectors: list[np.ndarray | None], samples: list[frozenset[int]], *, threshold: float) -> list[int]:
     """Group tracks by average-linkage clustering under cannot-link constraints.
 
@@ -107,10 +129,8 @@ def cluster_tracks(vectors: list[np.ndarray | None], samples: list[frozenset[int
 
     matrix = np.stack([np.asarray(vectors[index], dtype=np.float64) for index in assigned])
     similarity = matrix @ matrix.T
-    for row in range(count):
-        for col in range(row + 1, count):
-            if samples[assigned[row]] & samples[assigned[col]]:
-                similarity[row, col] = similarity[col, row] = -np.inf
+    for members in _cooccurring(assigned, samples):
+        similarity[np.ix_(members, members)] = -np.inf
     np.fill_diagonal(similarity, -np.inf)
 
     sizes = np.ones(count)

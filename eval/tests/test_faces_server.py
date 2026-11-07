@@ -11,17 +11,21 @@ the fake recognizer maps a crop filled with ``v`` to the unit vector along axis
 """
 
 import base64
+import importlib.abc
+import importlib.machinery
 import importlib.util
 import json
+import os
 import re
 import sys
 import types
-from collections.abc import Callable, Iterator
+from collections.abc import Callable, Iterator, Sequence
 from pathlib import Path
 
 import numpy as np
 import pytest
 from fastapi.testclient import TestClient
+from typing_extensions import override
 
 SRC = Path(__file__).resolve().parents[2] / "src"
 DIM = 128
@@ -210,10 +214,10 @@ def _img(width: int, height: int, faces: int = 1) -> str:
     return _b64(b"SYNTH %d %d %d %s" % (width, height, faces, _PADDING))
 
 
-def _face(person: int) -> dict[str, object]:
-    """A synthetic 112 x 112 crop of ``person``, with landmarks in crop pixels."""
+def _face(person: int, side: int = 112) -> dict[str, object]:
+    """A synthetic ``side x side`` crop of ``person``, with landmarks in crop pixels."""
     return {
-        "image": _b64(b"SYNTH 112 112 %d %s" % (person, _PADDING)),
+        "image": _b64(b"SYNTH %d %d %d %s" % (side, side, person, _PADDING)),
         "landmarks": [[38.0, 51.0], [73.0, 51.0], [56.0, 71.0], [41.0, 92.0], [70.0, 92.0]],
     }
 
@@ -470,6 +474,113 @@ def test_health(client: TestClient) -> None:
         "detect_model": "opencv/face_detection_yunet",
         "embed_model": "opencv/face_recognition_sface",
     }
+
+
+# -- per-request bounds ----------------------------------------------------------------
+
+#: OpenCV's decode ceiling the server sets: a 4K frame.
+FOUR_K_PIXELS = 3840 * 2160
+
+
+def test_detect_refuses_a_canvas_over_4k_as_undecodable(client: TestClient) -> None:
+    """An image that decodes to more than 3840 x 2160 pixels costs only its own result."""
+    out = client.post("/faces/detect", json={"images": [_img(3841, 2160), _img(3840, 2160)]}).json()
+    assert out["results"][0] == {"error": "undecodable"}
+    assert len(out["results"][1]["faces"]) == 1
+
+
+def test_decode_cap_is_set_before_opencv_loads(monkeypatch: pytest.MonkeyPatch) -> None:
+    """OpenCV reads OPENCV_IO_MAX_IMAGE_PIXELS once, as it loads, so the server sets it before importing cv2."""
+    seen: list[str | None] = []
+    stub = _stubs()["cv2"]
+
+    class _Cv2Finder(importlib.abc.MetaPathFinder, importlib.abc.Loader):
+        """Loads the cv2 stub as a real import, recording the variable at that moment."""
+
+        @override
+        def find_spec(
+            self, fullname: str, path: Sequence[str] | None, target: types.ModuleType | None = None
+        ) -> importlib.machinery.ModuleSpec | None:
+            """Claim ``cv2`` only."""
+            return importlib.util.spec_from_loader(fullname, self) if fullname == "cv2" else None
+
+        @override
+        def exec_module(self, module: types.ModuleType) -> None:
+            """Record the variable, then fill the module from the stub."""
+            seen.append(os.environ.get("OPENCV_IO_MAX_IMAGE_PIXELS"))
+            vars(module).update({key: value for key, value in vars(stub).items() if not key.startswith("__")})
+
+    monkeypatch.delenv("OPENCV_IO_MAX_IMAGE_PIXELS", raising=False)
+    monkeypatch.setattr(sys, "meta_path", [_Cv2Finder(), *sys.meta_path])
+    monkeypatch.delitem(sys.modules, "cv2", raising=False)
+    monkeypatch.setitem(sys.modules, "huggingface_hub", _stubs()["huggingface_hub"])
+    monkeypatch.syspath_prepend(str(SRC))
+    spec = importlib.util.spec_from_file_location("_faces_server_env", SRC / "faces_server.py")
+    assert spec is not None and spec.loader is not None
+    module = importlib.util.module_from_spec(spec)
+    monkeypatch.setitem(sys.modules, "_faces_server_env", module)
+    try:
+        spec.loader.exec_module(module)
+    finally:
+        sys.modules.pop("cv2", None)
+    assert seen == [str(FOUR_K_PIXELS)]
+
+
+def test_group_refuses_a_crop_over_512_px(client: TestClient) -> None:
+    """A crop larger than 512 px on a side counts as undecodable; a 512 px crop is used."""
+    tracks = [{"samples": [0], "faces": [_face(1, side=600)]}, {"samples": [1], "faces": [_face(1, side=512)]}]
+    assert client.post("/faces/group", json={"tracks": tracks}).json() == {"labels": [-1, 0]}
+
+
+def _faceless_track(samples: int) -> dict[str, object]:
+    """A track with ``samples`` sample indices and no faces."""
+    faces: list[dict[str, object]] = []
+    return {"samples": list(range(samples)), "faces": faces}
+
+
+def test_track_over_3600_samples_is_400(client: TestClient) -> None:
+    """A track may name at most 3600 samples."""
+    at_limit = client.post("/faces/group", json={"tracks": [_faceless_track(3600)]})
+    assert at_limit.json() == {"labels": [-1]}
+    over = client.post("/faces/group", json={"tracks": [_faceless_track(3601)]})
+    assert over.status_code == 400
+
+
+def test_request_over_100000_samples_is_400(client: TestClient) -> None:
+    """All tracks together may name at most 100,000 samples."""
+    full = [_faceless_track(3600) for _ in range(27)]
+    at_limit = [*full, _faceless_track(2800)]
+    assert client.post("/faces/group", json={"tracks": at_limit}).status_code == 200
+    over = [*full, _faceless_track(2801)]
+    assert client.post("/faces/group", json={"tracks": over}).status_code == 400
+
+
+def test_detect_past_its_deadline_is_503_and_frees_the_models(
+    client: TestClient, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A request that runs past its deadline stops between images with a 503, holding nothing."""
+    clock = [0.0]
+    monkeypatch.setattr(faces_server, "_now", lambda: clock[0])
+
+    def slow(width: int, height: int, value: int) -> list[list[float]]:
+        clock[0] += 100.0
+        return _default_faces(width, height, value)
+
+    _Detector.faces_for = staticmethod(slow)
+    response = client.post("/faces/detect", json={"images": [_img(640, 360)] * 3})
+    assert response.status_code == 503
+    assert response.headers["retry-after"] == "5"
+    assert SET_INPUT_SIZES == [(640, 360), (320, 180)]
+    assert faces_server._model_lock.acquire(blocking=False)
+    faces_server._model_lock.release()
+
+
+def test_group_past_its_deadline_is_503(client: TestClient, monkeypatch: pytest.MonkeyPatch) -> None:
+    """The grouping loop checks the deadline too."""
+    monkeypatch.setattr(faces_server, "REQUEST_DEADLINE_S", 0.0)
+    response = client.post("/faces/group", json={"tracks": [_track(0, [0])]})
+    assert response.status_code == 503
+    assert response.headers["retry-after"] == "5"
 
 
 # -- model loading -------------------------------------------------------------------
