@@ -84,6 +84,20 @@ def test_constraint_survives_merges() -> None:
     assert labels[0] in (labels[1], labels[2])
 
 
+def test_constraints_follow_each_shared_sample() -> None:
+    """Only tracks that share a sample are kept apart: t0~t1 and t1~t2 overlap, t0 and t2 do not."""
+    a = _unit(0)
+    labels = cluster_tracks([a, a, a], [frozenset({1, 2}), frozenset({2, 3}), frozenset({3, 4})], threshold=0.42)
+    assert labels == [0, 1, 0]
+
+
+def test_one_sample_shared_by_many_tracks_keeps_them_all_apart() -> None:
+    """Fifty look-alike tracks on screen together are fifty people."""
+    a = _unit(0)
+    labels = cluster_tracks([a] * 50, [frozenset({7, index + 100}) for index in range(50)], threshold=0.42)
+    assert labels == list(range(50))
+
+
 def test_none_vector_is_unassigned() -> None:
     """A track without a decodable face gets ``-1`` and takes no label number."""
     assert cluster_tracks([None, _unit(0), None, _unit(1)], [frozenset({i}) for i in range(4)], threshold=0.42) == [

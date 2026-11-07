@@ -36,12 +36,13 @@ COPY src/faces_cluster.py src/faces_server.py /app/
 
 # The weights come from the huggingface-cache volume, offline (no runtime
 # download). OPENCV_IO_MAX_IMAGE_PIXELS caps what one decoded upload may
-# allocate (64 megapixels, about 200 MB as BGR; OpenCV's own default is a
-# gigapixel), since a small compressed image can declare a huge canvas.
+# allocate at a 4K frame (3840 x 2160, about 25 MB as BGR; OpenCV's own default
+# is a gigapixel), since a small compressed image can declare a huge canvas.
+# faces_server.py sets the same value before it imports cv2 and checks it again.
 ENV PATH=/opt/venv/bin:$PATH \
     HF_HUB_OFFLINE=1 \
     OPENCV_LOG_LEVEL=ERROR \
-    OPENCV_IO_MAX_IMAGE_PIXELS=67108864
+    OPENCV_IO_MAX_IMAGE_PIXELS=8294400
 
 # Build smoke: the hash-pinned install imports, and this OpenCV build has both
 # face APIs the server calls.

@@ -24,9 +24,10 @@ Endpoints:
     POST /faces/group
         Body JSON ``{"tracks": [{"samples": [3, 4, 5], "faces": [{"image":
         "<base64 JPEG/PNG>", "landmarks": [[x, y], ... five]}]}, ...]}``: at
-        most 500 tracks of at most three faces each; a face is a crop with its
-        five landmarks in the crop's pixels, ``samples`` the indices of the
-        frames the track was on screen in. Returns ``{"labels": [0, 0, 1, -1]}``,
+        most 500 tracks of at most three faces each; a face is a crop of at
+        most 512 px a side with its five landmarks in the crop's pixels,
+        ``samples`` the indices of the frames the track was on screen in (at
+        most 3600 per track and 100,000 per request). Returns ``{"labels": [0, 0, 1, -1]}``,
         one label per track. Per face, SFace ``alignCrop`` + ``feature``,
         L2-normalized; per track, faces far from the track's medoid are dropped
         and the rest averaged; tracks that share a sample index are never
@@ -42,8 +43,15 @@ Endpoints:
 Errors: 400 for a malformed payload or one over a count limit; 413 when the
 declared ``Content-Length``, or the body as it is read, exceeds 32 MiB; 422
 when no image of a detect request decodes; 503 with ``Retry-After: 5`` when
-the models are busy with another request for longer than 30 s (requests are
-served one at a time, never queued past that).
+the models stay busy with another request for longer than 30 s, or when the
+request runs past its 120 s deadline (the models serve one call at a time,
+and nothing queues past those bounds).
+
+Bounded work: an image that decodes to more than 3840 x 2160 pixels is
+undecodable (``OPENCV_IO_MAX_IMAGE_PIXELS``, set before OpenCV loads, makes
+OpenCV refuse it before allocating; the server checks again), and so is a
+group crop over 512 px on a side. Decoding and validation run outside the
+model lock, which is held only for the detector and recognizer calls.
 
 Unknown top-level keys are ignored: the router drops keys named like its own
 parameters before forwarding, so the contract's keys (``images``,
@@ -81,25 +89,40 @@ import math
 import os
 import threading
 import time
-from collections.abc import Callable
+from collections.abc import Callable, Iterator
+from contextlib import contextmanager
 from typing import Annotated, TypeVar
 
-import anyio
-import cv2
-import numpy as np
-from fastapi import FastAPI, HTTPException, Request
-from huggingface_hub import hf_hub_download
-from pydantic import BaseModel, ConfigDict, Field, ValidationError
+#: The most pixels one decoded image may have: a 4K frame.
+MAX_IMAGE_PIXELS = 3840 * 2160
 
-from faces_cluster import cluster_tracks, track_vector
+# OpenCV reads its decode ceiling once, as it loads, and refuses a larger
+# canvas before allocating it; its own default is a gigapixel.
+os.environ.setdefault("OPENCV_IO_MAX_IMAGE_PIXELS", str(MAX_IMAGE_PIXELS))
+
+import anyio  # noqa: E402
+import cv2  # noqa: E402
+import numpy as np  # noqa: E402
+from fastapi import FastAPI, HTTPException, Request  # noqa: E402
+from huggingface_hub import hf_hub_download  # noqa: E402
+from pydantic import BaseModel, ConfigDict, Field, ValidationError, model_validator  # noqa: E402
+
+from faces_cluster import cluster_tracks, track_vector  # noqa: E402
 
 MAX_IMAGES = 8
 MAX_SIDE = 1280
 MAX_TRACKS = 500
 MAX_FACES_PER_TRACK = 3
+#: The most sample indices one track, and one request, may name.
+MAX_SAMPLES_PER_TRACK = 3600
+MAX_SAMPLES_PER_REQUEST = 100_000
+#: The largest group crop, per side.
+MAX_CROP_SIDE = 512
 MAX_BODY_BYTES = 32 * 1024 * 1024
 #: Seconds a request waits for the models before it is told to retry.
 LOCK_WAIT_S = 30.0
+#: Seconds a request may take from its start before it is told to retry.
+REQUEST_DEADLINE_S = 120.0
 RETRY_AFTER_S = 5
 NMS_IOU = 0.4
 DEFAULT_MIN_SCORE = 0.7
@@ -121,7 +144,8 @@ _ROW_WIDTH = 15
 # uvicorn puts its handler on this logger; a logger of our own would drop the INFO line.
 _log = logging.getLogger("uvicorn.error")
 
-_T = TypeVar("_T")
+#: The clock the deadline runs on.
+_now: Callable[[], float] = time.monotonic
 
 
 def _setting(name: str, default: str) -> str:
@@ -206,7 +230,7 @@ recognizer = cv2.FaceRecognizerSF.create(
 )
 
 # Neither OpenCV model is safe to call from two threads at once, and the detector's
-# input size is per call; one request at a time holds both.
+# input size is per call; each detector or recognizer call holds both.
 _model_lock = threading.Lock()
 
 app = FastAPI(title="vllm-service faces", version="1.0")
@@ -235,7 +259,7 @@ class GroupFace(_Request):
 class GroupTrack(_Request):
     """One track: the frames it was on screen in and up to three of its faces."""
 
-    samples: list[int]
+    samples: Annotated[list[int], Field(max_length=MAX_SAMPLES_PER_TRACK)]
     faces: Annotated[list[GroupFace], Field(max_length=MAX_FACES_PER_TRACK)]
 
 
@@ -243,6 +267,20 @@ class GroupRequest(_Request):
     """A ``/faces/group`` body."""
 
     tracks: Annotated[list[GroupTrack], Field(max_length=MAX_TRACKS)]
+
+    @model_validator(mode="after")
+    def _bounded_samples(self) -> GroupRequest:
+        """Refuse a request whose tracks name too many sample indices in all.
+
+        Returns:
+            The request.
+
+        Raises:
+            ValueError: When the tracks name more than ``MAX_SAMPLES_PER_REQUEST`` samples.
+        """
+        if sum(len(track.samples) for track in self.tracks) > MAX_SAMPLES_PER_REQUEST:
+            raise ValueError(f"the tracks name more than {MAX_SAMPLES_PER_REQUEST} sample indices in all")
+        return self
 
 
 async def _read_body(request: Request) -> bytes:
@@ -298,38 +336,72 @@ def _parse(model: type[_ModelT], body: bytes) -> _ModelT:
         raise HTTPException(status_code=400, detail=f"malformed request: {where}: {first['msg']}") from None
 
 
-def _with_models(work: Callable[[], _T]) -> _T:
-    """Run ``work`` while holding the models, or refuse when they stay busy.
+def _retry_later(detail: str) -> HTTPException:
+    """Return the 503 that tells a client to come back.
 
     Args:
-        work: The CPU work, run in the calling (worker) thread.
+        detail: Why.
 
     Returns:
-        What ``work`` returns.
+        The exception, with ``Retry-After``.
+    """
+    return HTTPException(status_code=503, detail=detail, headers={"Retry-After": str(RETRY_AFTER_S)})
+
+
+class _Deadline:
+    """When a request must be done, on ``_now``'s clock."""
+
+    def __init__(self) -> None:
+        """Start the request's ``REQUEST_DEADLINE_S`` from now."""
+        self.at = _now() + REQUEST_DEADLINE_S
+
+    def remaining(self) -> float:
+        """Return the seconds left (negative once past)."""
+        return self.at - _now()
+
+    def check(self) -> None:
+        """Stop the request once it is past its deadline.
+
+        Raises:
+            HTTPException: 503 with ``Retry-After``.
+        """
+        if self.remaining() <= 0:
+            raise _retry_later(f"the request ran past its {REQUEST_DEADLINE_S:g} s deadline; retry later")
+
+
+@contextmanager
+def _models(deadline: _Deadline) -> Iterator[None]:
+    """Hold the models for one call, or refuse when they stay busy.
+
+    Args:
+        deadline: The request's deadline; the wait never runs past it.
+
+    Yields:
+        Nothing; the models are the caller's until the block ends.
 
     Raises:
-        HTTPException: 503 with ``Retry-After`` when the models are not free within ``LOCK_WAIT_S``.
+        HTTPException: 503 with ``Retry-After`` when the models are not free
+            within ``LOCK_WAIT_S`` or before the deadline.
     """
-    if not _model_lock.acquire(timeout=LOCK_WAIT_S):
-        raise HTTPException(
-            status_code=503,
-            detail="the face models are busy; retry later",
-            headers={"Retry-After": str(RETRY_AFTER_S)},
-        )
+    wait = min(LOCK_WAIT_S, deadline.remaining())
+    if wait <= 0 or not _model_lock.acquire(timeout=wait):
+        raise _retry_later("the face models are busy; retry later")
     try:
-        return work()
+        yield
     finally:
         _model_lock.release()
 
 
-def _decode(data: str) -> np.ndarray | None:
-    """Decode one base64 image to a BGR array.
+def _decode(data: str, *, max_side: int | None = None) -> np.ndarray | None:
+    """Decode one base64 image to a BGR array within the size limits.
 
     Args:
         data: Standard base64 of a JPEG, PNG or other format OpenCV reads.
+        max_side: The largest width or height accepted, if any.
 
     Returns:
-        The image, or ``None`` when it does not decode.
+        The image, or ``None`` when it does not decode, has more than
+        ``MAX_IMAGE_PIXELS`` pixels, or a side over ``max_side``.
     """
     try:
         raw = base64.b64decode(data, validate=True)
@@ -342,6 +414,9 @@ def _decode(data: str) -> np.ndarray | None:
     except cv2.error:
         return None
     if image is None or image.ndim != 3 or image.shape[0] == 0 or image.shape[1] == 0:
+        return None
+    height, width = image.shape[:2]
+    if height * width > MAX_IMAGE_PIXELS or (max_side is not None and max(height, width) > max_side):
         return None
     return image
 
@@ -435,12 +510,16 @@ def _face_json(row: np.ndarray, width: int, height: int) -> dict[str, object]:
     }
 
 
-def _faces_in(image: np.ndarray, min_score: float) -> list[dict[str, object]]:
+def _faces_in(image: np.ndarray, min_score: float, deadline: _Deadline) -> list[dict[str, object]]:
     """Find the faces in one image at full and half scale.
+
+    The image is downscaled and halved before the models are taken; they are
+    held only for the two detector passes.
 
     Args:
         image: The decoded image.
         min_score: The lowest score returned.
+        deadline: The request's deadline.
 
     Returns:
         The faces, best score first, as fractions of the image.
@@ -449,11 +528,15 @@ def _faces_in(image: np.ndarray, min_score: float) -> list[dict[str, object]]:
     height, width = image.shape[:2]
     if min(height, width) < MIN_DETECT_SIDE:
         return []
-    detector.setScoreThreshold(min_score)
-    found = [_detect_rows(image)]
     half_width, half_height = width // 2, height // 2
+    half_image = None
     if min(half_width, half_height) >= MIN_DETECT_SIDE:
-        half = _detect_rows(cv2.resize(image, (half_width, half_height), interpolation=cv2.INTER_AREA))
+        half_image = cv2.resize(image, (half_width, half_height), interpolation=cv2.INTER_AREA)
+    with _models(deadline):
+        detector.setScoreThreshold(min_score)
+        found = [_detect_rows(image)]
+        half = _detect_rows(half_image) if half_image is not None else None
+    if half is not None:
         half[:, [*_X_COLUMNS, _WIDTH_COLUMN]] *= width / half_width
         half[:, [*_Y_COLUMNS, _HEIGHT_COLUMN]] *= height / half_height
         found.append(half)
@@ -462,58 +545,84 @@ def _faces_in(image: np.ndarray, min_score: float) -> list[dict[str, object]]:
     return [_face_json(rows[index], width, height) for index in _nms(rows, NMS_IOU)]
 
 
-def _detect_all(images: list[str], min_score: float) -> list[dict[str, object]]:
+def _detect_all(images: list[str], min_score: float, deadline: _Deadline) -> list[dict[str, object]]:
     """Detect the faces in each image, one decoded image in memory at a time.
 
     Args:
         images: The base64 images.
         min_score: The lowest score returned.
+        deadline: The request's deadline, checked before each image.
 
     Returns:
         One result per image, in order.
     """
     results: list[dict[str, object]] = []
     for data in images:
+        deadline.check()
         image = _decode(data)
         if image is None:
             results.append({"error": "undecodable"})
         else:
-            results.append({"faces": _faces_in(image, min_score)})
+            results.append({"faces": _faces_in(image, min_score, deadline)})
     return results
 
 
-def _face_feature(face: GroupFace) -> np.ndarray | None:
-    """Return one crop's SFace feature, L2-normalized.
+def _aligned_input(face: GroupFace) -> tuple[np.ndarray, np.ndarray] | None:
+    """Decode one crop and build the YuNet-shaped row ``alignCrop`` reads.
 
     Args:
         face: The crop and its landmarks.
 
     Returns:
-        The feature, or ``None`` when the crop does not decode or cannot be aligned.
+        The crop and its row, or ``None`` when the crop does not decode or has
+        a side over ``MAX_CROP_SIDE``.
     """
-    image = _decode(face.image)
+    image = _decode(face.image, max_side=MAX_CROP_SIDE)
     if image is None:
         return None
     height, width = image.shape[:2]
-    # alignCrop reads a YuNet row; only its landmarks place the crop.
+    # Only the landmarks place the crop; the box and score are filler.
     row = np.zeros(_ROW_WIDTH, dtype=np.float32)
     row[_WIDTH_COLUMN], row[_HEIGHT_COLUMN], row[_SCORE_COLUMN] = width, height, 1.0
     row[4:14] = np.asarray(face.landmarks, dtype=np.float32).reshape(-1)
-    try:
-        feature = np.asarray(recognizer.feature(recognizer.alignCrop(image, row)), dtype=np.float64).reshape(-1)
-    except cv2.error:
+    return image, row
+
+
+def _face_feature(face: GroupFace, deadline: _Deadline) -> np.ndarray | None:
+    """Return one crop's SFace feature, L2-normalized.
+
+    The crop is decoded and checked before the models are taken; they are held
+    only for the ``alignCrop`` and ``feature`` calls.
+
+    Args:
+        face: The crop and its landmarks.
+        deadline: The request's deadline.
+
+    Returns:
+        The feature, or ``None`` when the crop is undecodable or cannot be aligned.
+    """
+    prepared = _aligned_input(face)
+    if prepared is None:
         return None
+    image, row = prepared
+    with _models(deadline):
+        try:
+            raw = recognizer.feature(recognizer.alignCrop(image, row))
+        except cv2.error:
+            return None
+    feature = np.asarray(raw, dtype=np.float64).reshape(-1)
     norm = float(np.linalg.norm(feature))
     if not math.isfinite(norm) or norm == 0.0:
         return None
     return feature / norm
 
 
-def _group_all(tracks: list[GroupTrack]) -> tuple[list[int], int]:
+def _group_all(tracks: list[GroupTrack], deadline: _Deadline) -> tuple[list[int], int]:
     """Group the tracks by person.
 
     Args:
         tracks: The tracks.
+        deadline: The request's deadline, checked before each face.
 
     Returns:
         One label per track, and how many faces yielded a feature.
@@ -521,7 +630,12 @@ def _group_all(tracks: list[GroupTrack]) -> tuple[list[int], int]:
     vectors: list[np.ndarray | None] = []
     embedded = 0
     for track in tracks:
-        features = [feature for feature in map(_face_feature, track.faces) if feature is not None]
+        features: list[np.ndarray] = []
+        for face in track.faces:
+            deadline.check()
+            feature = _face_feature(face, deadline)
+            if feature is not None:
+                features.append(feature)
         embedded += len(features)
         vectors.append(track_vector(np.stack(features)) if features else None)
     samples = [frozenset(track.samples) for track in tracks]
@@ -542,8 +656,9 @@ async def detect(request: Request) -> dict[str, list[dict[str, object]]]:
         HTTPException: 400, 413, 422 or 503, as the module docstring lists.
     """
     started = time.monotonic()
+    deadline = _Deadline()
     payload = _parse(DetectRequest, await _read_body(request))
-    results = await anyio.to_thread.run_sync(_with_models, lambda: _detect_all(payload.images, payload.min_score))
+    results = await anyio.to_thread.run_sync(lambda: _detect_all(payload.images, payload.min_score, deadline))
     undecodable = sum(1 for result in results if "error" in result)
     faces = sum(len(faces) for result in results if isinstance(faces := result.get("faces"), list))
     _log.info(
@@ -572,8 +687,9 @@ async def group(request: Request) -> dict[str, list[int]]:
         HTTPException: 400, 413 or 503, as the module docstring lists.
     """
     started = time.monotonic()
+    deadline = _Deadline()
     payload = _parse(GroupRequest, await _read_body(request))
-    labels, embedded = await anyio.to_thread.run_sync(_with_models, lambda: _group_all(payload.tracks))
+    labels, embedded = await anyio.to_thread.run_sync(lambda: _group_all(payload.tracks, deadline))
     _log.info(
         "faces.group tracks=%d faces=%d embedded=%d unassigned=%d groups=%d ms=%d",
         len(labels),
