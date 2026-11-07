@@ -368,6 +368,8 @@ Response, one result per image in order, faces by descending score:
   at the image's own scale and at half scale, because YuNet finds faces of
   roughly 10–300 px; the two sets are merged by non-maximum suppression at
   IoU 0.4, keeping the higher score.
+- An image that decodes to more than 3840 × 2160 pixels counts as undecodable;
+  OpenCV refuses such a canvas before allocating it.
 - An image that does not decode costs only its own result
   (`{"error": "undecodable"}`); the request fails with 422 only when none of
   its images decodes.
@@ -388,7 +390,9 @@ curl http://vllm-router:4000/faces/group \
 A track is a run of detections the caller already linked within one shot:
 `samples` are the indices of the frames it was on screen in, `faces` up to three
 crops of it, each with its five landmarks **in the crop's pixels** (YuNet's
-order). At most 500 tracks per request. Response:
+order), at most 512 px on a side (a larger crop counts as undecodable). At most
+500 tracks per request, at most 3600 sample indices per track and 100,000 in
+all. Response:
 
 ```json
 {"labels": [0, 0, 1, -1]}
@@ -411,10 +415,10 @@ track; a track with no decodable face gets `-1`.
 
 | Status | When |
 |---|---|
-| 400 | malformed JSON or payload, or over a count limit (8 images, 500 tracks, 3 faces per track, exactly 5 landmarks) |
+| 400 | malformed JSON or payload, or over a count limit (8 images, 500 tracks, 3 faces per track, exactly 5 landmarks, 3600 samples per track, 100,000 samples per request) |
 | 413 | the declared `Content-Length`, or the body as read, exceeds 32 MiB |
 | 422 | no image of a detect request decodes |
-| 503 + `Retry-After: 5` | the models are busy with another request for more than 30 s; requests run one at a time and are not queued past that |
+| 503 + `Retry-After: 5` | the models stay busy with another request for more than 30 s, or the request runs past its 120 s deadline; the models serve one call at a time and nothing queues past those bounds |
 
 The top-level keys are exactly `images`, `min_score` and `tracks`, and unknown
 keys are ignored: LiteLLM strips body keys named like its own parameters
