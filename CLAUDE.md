@@ -1116,12 +1116,19 @@ Load-bearing points:
   share a sample index were on screen together and never merge), merging while
   the best pair is ≥ `FACE_GROUP_THRESHOLD` (0.42; stricter than OpenCV's 0.363
   pair threshold — merging two people is worse than splitting one).
-- **Limits:** ≤ 8 images, ≤ 500 tracks, ≤ 3 faces per track (400); body
-  ≤ 32 MiB by `Content-Length` and as read (413); no image decodes (422); one
-  request at a time under `_model_lock`, waiting ≤ 30 s, else 503 +
-  `Retry-After: 5`; images downscaled to ≤ 1280 px, detected at 1× and 0.5×,
-  merged by NMS at IoU 0.4; `OPENCV_IO_MAX_IMAGE_PIXELS` caps a decoded canvas
-  at 64 MP.
+- **Limits:** ≤ 8 images, ≤ 500 tracks, ≤ 3 faces per track, ≤ 3600 samples
+  per track and ≤ 100,000 per request (400); body ≤ 32 MiB by
+  `Content-Length` and as read (413); no image decodes (422). A decoded image
+  over 3840 × 2160 px or a group crop over 512 px a side is undecodable —
+  `OPENCV_IO_MAX_IMAGE_PIXELS` is set in the image and by the server *before*
+  `import cv2` (OpenCV reads it once, at load), so OpenCV refuses the canvas
+  before allocating it, and the server checks again. Decoding and validation
+  run outside `_model_lock`; the lock is held only for the detector and
+  recognizer calls, each wait ≤ 30 s, and a per-request 120 s deadline is
+  checked in the work loops — either gives 503 + `Retry-After: 5`. Images are
+  downscaled to ≤ 1280 px, detected at 1× and 0.5×, merged by NMS at IoU 0.4.
+  The cannot-link matrix is built from a sample → tracks index, so its cost
+  follows the samples sent, not track pairs × set sizes.
 - **Weights:** both files from `huggingface-cache`, offline, at
   `FACE_DETECT_MODEL_REVISION` / `FACE_EMBED_MODEL_REVISION` when set; loaded at
   import, so a missing file or commit stops startup. Both Hub repos also hold

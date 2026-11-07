@@ -522,8 +522,9 @@ FACE_EMBED_MODEL_FILE=face_recognition_sface_2021dec.onnx    # default
 ```
 
 Requests are held in memory (at most 32 MiB each), so `/tmp` is a small tmpfs,
-not a disk-backed spool. One request at a time holds the models; another that
-waits more than 30 s gets `503` with `Retry-After: 5`. The container reports
+not a disk-backed spool. The models serve one call at a time; a request that
+waits more than 30 s for them, or runs past its 120 s deadline, gets `503` with
+`Retry-After: 5`. The container reports
 healthy within seconds of starting.
 
 Request and response shapes: [api-reference.md](api-reference.md#faces).

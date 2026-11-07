@@ -231,12 +231,18 @@ server at startup. Tracks that were on screen together are never merged,
 whatever the threshold.
 
 **Limits.** A request may carry at most 8 images (detect) or 500 tracks of at
-most 3 faces (group), in a body of at most 32 MiB, which the service reads into
-memory — so `/tmp` is a 64 MB tmpfs, not `media-tmp`. Each image is decoded,
-downscaled to 1280 px on its long side and run before the next is decoded, and
-`OPENCV_IO_MAX_IMAGE_PIXELS` (64 megapixels, set in the image) refuses an image
-that declares a larger canvas, as undecodable. One request at a time holds the
-models; one that waits more than 30 s gets `503` with `Retry-After: 5`. In the
+most 3 faces and 3600 sample indices each, 100,000 sample indices in all
+(group), in a body of at most 32 MiB, which the service reads into memory — so
+`/tmp` is a 64 MB tmpfs, not `media-tmp`. Each image is decoded, downscaled to
+1280 px on its long side and run before the next is decoded. An image that
+decodes to more than 3840 × 2160 pixels is undecodable: `OPENCV_IO_MAX_IMAGE_PIXELS`
+(set in the image, and by the server before OpenCV loads) makes OpenCV refuse
+the canvas before allocating it, so a small, highly compressed file cannot
+expand into gigabytes. A group crop over 512 px on a side counts as undecodable
+too. Decoding and these checks run outside the model lock, which is held only
+for the detector and recognizer calls, one call at a time: a request that waits
+more than 30 s for it, or runs past its 120 s deadline, gets `503` with
+`Retry-After: 5`. In the
 full stack the router reads the JSON body in full before it forwards it, so it
 holds up to 32 MiB per request in flight, refused requests included
 ([issue #158](https://github.com/nos-tromo/vllm-service/issues/158)).
