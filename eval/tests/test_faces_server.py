@@ -11,10 +11,10 @@ the fake recognizer maps a crop filled with ``v`` to the unit vector along axis
 """
 
 import base64
-import inspect
 import importlib.abc
 import importlib.machinery
 import importlib.util
+import inspect
 import json
 import os
 import re
