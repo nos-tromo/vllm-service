@@ -11,6 +11,7 @@ the fake recognizer maps a crop filled with ``v`` to the unit vector along axis
 """
 
 import base64
+import inspect
 import importlib.abc
 import importlib.machinery
 import importlib.util
@@ -18,6 +19,8 @@ import json
 import os
 import re
 import sys
+import threading
+import time
 import types
 from collections.abc import Callable, Iterator, Sequence
 from pathlib import Path
@@ -403,6 +406,43 @@ def test_busy_lock_is_503_with_retry_after(client: TestClient, monkeypatch: pyte
     for response in (detect, group):
         assert response.status_code == 503
         assert response.headers["retry-after"] == "5"
+
+
+def test_a_fifth_waiter_gets_an_immediate_503(client: TestClient, monkeypatch: pytest.MonkeyPatch) -> None:
+    """At most four calls wait for the models; one more is refused at once, not after the wait."""
+    monkeypatch.setattr(faces_server, "LOCK_WAIT_S", 10.0)
+
+    def wait_for_models() -> None:
+        try:
+            with faces_server._models(faces_server._Deadline()):
+                pass
+        except Exception:  # a waiter that times out is fine here
+            return
+
+    assert faces_server._model_lock.acquire(timeout=1)
+    waiters = [threading.Thread(target=wait_for_models) for _ in range(faces_server.MAX_LOCK_WAITERS)]
+    try:
+        for waiter in waiters:
+            waiter.start()
+        give_up = time.monotonic() + 5
+        while faces_server._waiting < faces_server.MAX_LOCK_WAITERS and time.monotonic() < give_up:
+            time.sleep(0.01)
+        assert faces_server._waiting == faces_server.MAX_LOCK_WAITERS
+        started = time.monotonic()
+        response = client.post("/faces/detect", json={"images": [_img(64, 64)]})
+        assert time.monotonic() - started < 2.0
+    finally:
+        faces_server._model_lock.release()
+        for waiter in waiters:
+            waiter.join(timeout=15)
+    assert response.status_code == 503
+    assert response.headers["retry-after"] == "5"
+    assert faces_server._waiting == 0
+
+
+def test_health_runs_on_the_event_loop() -> None:
+    """The probe never needs a worker thread, so a busy threadpool cannot starve it."""
+    assert inspect.iscoroutinefunction(faces_server.health)
 
 
 def test_unknown_top_level_keys_are_ignored(client: TestClient) -> None:
