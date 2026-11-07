@@ -3,7 +3,7 @@
 # Two deployment shapes:
 #
 # 1. Full stack (CUDA host) — chat, embed, rerank, clip, asr, diarize, vad,
-#    gliner, topics, router. Lives in docker/compose.yaml.
+#    faces, gliner, topics, router. Lives in docker/compose.yaml.
 #    Targets: build, up, stop, bundle.
 #
 # 2. NER-only (Mac, CPU-only, ROCm host running Ollama for chat/embed) —
@@ -65,6 +65,14 @@
 #    endpoint.
 #    Targets: build-topics-only, up-topics-only, stop-topics-only,
 #             bundle-topics-only.
+#
+# 10. Faces-only (same hosts as the other -only shapes) — a single
+#    FastAPI/OpenCV face detection (YuNet) and grouping (SFace) container on
+#    inference-net, no router, no GPU requirement. Lives in
+#    docker/compose.faces-only.yaml. Same JSON /faces/detect and /faces/group
+#    contracts as the full-stack `faces` service.
+#    Targets: build-faces-only, up-faces-only, stop-faces-only,
+#             bundle-faces-only.
 
 .DEFAULT_GOAL := help
 
@@ -76,11 +84,12 @@
         build-asr-only bundle-asr-only up-asr-only up-dev-asr-only stop-asr-only down-asr-only \
         build-vad-only bundle-vad-only up-vad-only up-dev-vad-only stop-vad-only down-vad-only \
         build-embed-only bundle-embed-only up-embed-only up-dev-embed-only stop-embed-only down-embed-only \
-        build-topics-only bundle-topics-only up-topics-only up-dev-topics-only stop-topics-only down-topics-only
+        build-topics-only bundle-topics-only up-topics-only up-dev-topics-only stop-topics-only down-topics-only \
+        build-faces-only bundle-faces-only up-faces-only up-dev-faces-only stop-faces-only down-faces-only
 
 # The full-stack compose lifecycle (network/volumes/build/bundle/up/up-dev/
 # stop/down/pre-commit) + the versioned image tag come from make/common.mk,
-# vendored from nos-tromo/.github. The eight CPU `-only` shapes below are
+# vendored from nos-tromo/.github. The nine CPU `-only` shapes below are
 # vllm-service-specific and stay here.
 REPO     := vllm-service
 NETWORKS := inference-net
@@ -104,6 +113,8 @@ COMPOSE_EMBED_ONLY      := docker compose --env-file .env -f docker/compose.embe
 COMPOSE_EMBED_ONLY_DEV  := docker compose --env-file .env -f docker/compose.embed-only.yaml -f docker/compose.embed-only.override.yaml
 COMPOSE_TOPICS_ONLY     := docker compose --env-file .env -f docker/compose.topics-only.yaml
 COMPOSE_TOPICS_ONLY_DEV := docker compose --env-file .env -f docker/compose.topics-only.yaml -f docker/compose.topics-only.override.yaml
+COMPOSE_FACES_ONLY      := docker compose --env-file .env -f docker/compose.faces-only.yaml
+COMPOSE_FACES_ONLY_DEV  := docker compose --env-file .env -f docker/compose.faces-only.yaml -f docker/compose.faces-only.override.yaml
 
 help:
 	@echo "vllm-service — build-host helpers."
@@ -188,6 +199,14 @@ help:
 	@echo "  make up-dev-topics-only   like 'up-topics-only', but publishes the port on the host"
 	@echo "  make stop-topics-only     stop the topics service"
 	@echo "  make down-topics-only     stop + remove the topics service"
+	@echo
+	@echo "Faces-only stack (CPU; for hosts without the full CUDA stack):"
+	@echo "  make build-faces-only     build the faces-cpu image"
+	@echo "  make bundle-faces-only    ship the faces-cpu image as a versioned .tar.gz"
+	@echo "  make up-faces-only        run the face detection/grouping service on inference-net (detached, no host port)"
+	@echo "  make up-dev-faces-only    like 'up-faces-only', but publishes the port on the host"
+	@echo "  make stop-faces-only      stop the face detection/grouping service"
+	@echo "  make down-faces-only      stop + remove the face detection/grouping service"
 
 
 # --- NER-only stack -----------------------------------------------------
@@ -403,4 +422,31 @@ stop-topics-only:
 # Stop + remove the topics service. The media-tmp scratch volume survives.
 down-topics-only:
 	$(COMPOSE_TOPICS_ONLY) down
+
+# --- Faces-only stack ---------------------------------------------------
+#
+# Uses the same external inference-net + huggingface-cache as the full
+# stack, so `make network` and `make volumes` remain the one-time
+# prerequisites. The two ONNX files must already be in the cache
+# (docs/airgap-bundles.md); nothing is downloaded at runtime.
+
+build-faces-only:
+	DOCKER_BUILDKIT=1 $(COMPOSE_FACES_ONLY) build
+
+bundle-faces-only:
+	./scripts/bundle_images.sh faces-only
+
+up-faces-only:
+	$(COMPOSE_FACES_ONLY) up -d --no-build
+
+# Like 'up-faces-only' but publishes the faces port on the host.
+up-dev-faces-only:
+	$(COMPOSE_FACES_ONLY_DEV) up -d --no-build
+
+stop-faces-only:
+	$(COMPOSE_FACES_ONLY) stop
+
+# Stop + remove the faces service. The external huggingface-cache survives.
+down-faces-only:
+	$(COMPOSE_FACES_ONLY) down
 

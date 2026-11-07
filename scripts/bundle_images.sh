@@ -18,7 +18,8 @@ case "$PROFILE_ARG" in
   vad-only)     PROFILE_LABEL="vad-only";     COMPOSE_FILE="docker/compose.vad-only.yaml" ;;
   embed-only)   PROFILE_LABEL="embed-only";   COMPOSE_FILE="docker/compose.embed-only.yaml" ;;
   topics-only)  PROFILE_LABEL="topics-only";  COMPOSE_FILE="docker/compose.topics-only.yaml" ;;
-  *) echo "Usage: $0 [gliner-only|rerank-only|clip-only|diarize-only|asr-only|vad-only|embed-only|topics-only]" >&2; exit 2 ;;
+  faces-only)   PROFILE_LABEL="faces-only";   COMPOSE_FILE="docker/compose.faces-only.yaml" ;;
+  *) echo "Usage: $0 [gliner-only|rerank-only|clip-only|diarize-only|asr-only|vad-only|embed-only|topics-only|faces-only]" >&2; exit 2 ;;
 esac
 
 [[ -n "${BUNDLE_DEV:-}" ]] || bundle_checkout_release vllm-service
