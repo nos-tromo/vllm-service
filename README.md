@@ -136,7 +136,6 @@ Reference material lives in [docs/](docs/README.md).
 
 - Consumers in the federation: [docint](https://github.com/nos-tromo/docint),
   [Nextext](https://github.com/nos-tromo/Nextext),
-  [chorus](https://github.com/nos-tromo/chorus),
   [translator](https://github.com/nos-tromo/translator),
   [open-webui-service](https://github.com/nos-tromo/open-webui-service).
 - Issues: <https://github.com/nos-tromo/vllm-service/issues>
