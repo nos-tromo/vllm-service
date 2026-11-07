@@ -102,3 +102,9 @@ updates:
         update-types:
           - "version-update:semver-major"
           - "version-update:semver-minor"
+  - package-ecosystem: uv
+    directory: "/docker/faces"
+    schedule:
+      interval: weekly
+    cooldown:
+      default-days: 7
