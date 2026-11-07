@@ -418,7 +418,7 @@ track; a track with no decodable face gets `-1`.
 | 400 | malformed JSON or payload, or over a count limit (8 images, 500 tracks, 3 faces per track, exactly 5 landmarks, 3600 samples per track, 100,000 samples per request) |
 | 413 | the declared `Content-Length`, or the body as read, exceeds 32 MiB |
 | 422 | no image of a detect request decodes |
-| 503 + `Retry-After: 5` | the models stay busy with another request for more than 30 s, four calls are already waiting for them (refused at once), or the request runs past its 120 s deadline; the models serve one call at a time and nothing queues past those bounds |
+| 503 + `Retry-After: 5` | four requests are already in flight (refused at once, before any of the body is read), the models stay busy with another request for more than 30 s, or the request runs past its 120 s deadline; the models serve one call at a time and nothing queues past those bounds |
 
 The top-level keys are exactly `images`, `min_score` and `tracks`, and unknown
 keys are ignored: LiteLLM strips body keys named like its own parameters

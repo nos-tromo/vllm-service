@@ -1145,9 +1145,11 @@ Load-bearing points:
   `import cv2` (OpenCV reads it once, at load), so OpenCV refuses the canvas
   before allocating it, and the server checks again. Decoding and validation
   run outside `_model_lock`; the lock is held only for the detector and
-  recognizer calls, each wait ≤ 30 s with at most `MAX_LOCK_WAITERS` (4)
-  waiting (one more is refused at once), and a per-request 120 s deadline is
-  checked in the work loops — each gives 503 + `Retry-After: 5`. `health` is
+  recognizer calls, each wait ≤ 30 s. At most `MAX_IN_FLIGHT` (4) `/faces/*`
+  requests are admitted at once (`_admission`, taken before the body is read
+  and held until the response is built), so a fifth gets 503 unread and at
+  most three calls ever wait for the lock; a per-request 120 s deadline is
+  checked in the work loops. Each gives 503 + `Retry-After: 5`. `health` is
   `async def`, so a busy threadpool cannot starve the probe; an OpenCV error
   after decoding costs only that image (`undecodable`) or face (skipped). Images are
   downscaled to ≤ 1280 px, detected at 1× and 0.5×, merged by NMS at IoU 0.4.

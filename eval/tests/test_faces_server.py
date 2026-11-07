@@ -25,9 +25,11 @@ import types
 from collections.abc import Callable, Iterator, Sequence
 from pathlib import Path
 
+import anyio
 import numpy as np
 import pytest
 from fastapi.testclient import TestClient
+from starlette.types import Message, Scope
 from typing_extensions import override
 
 SRC = Path(__file__).resolve().parents[2] / "src"
@@ -429,36 +431,112 @@ def test_busy_lock_is_503_with_retry_after(client: TestClient, monkeypatch: pyte
         assert response.headers["retry-after"] == "5"
 
 
-def test_a_fifth_waiter_gets_an_immediate_503(client: TestClient, monkeypatch: pytest.MonkeyPatch) -> None:
-    """At most four calls wait for the models; one more is refused at once, not after the wait."""
-    monkeypatch.setattr(faces_server, "LOCK_WAIT_S", 10.0)
+def _asgi_post(path: str, body: bytes) -> tuple[int, dict[str, str], list[str]]:
+    """Send one POST straight to the ASGI app, recording whether it read the body.
 
-    def wait_for_models() -> None:
-        try:
-            with faces_server._models(faces_server._Deadline()):
-                pass
-        except Exception:  # a waiter that times out is fine here
-            return
+    Each call runs its own event loop, so calls from several threads are
+    concurrent requests to the one app.
+
+    Args:
+        path: The route.
+        body: The JSON body.
+
+    Returns:
+        The status, the response headers, and one ``"receive"`` per body read.
+    """
+    reads: list[str] = []
+    messages: list[Message] = []
+
+    async def receive() -> Message:
+        reads.append("receive")
+        return {"type": "http.request", "body": body, "more_body": False}
+
+    async def send(message: Message) -> None:
+        messages.append(message)
+
+    scope: Scope = {
+        "type": "http",
+        "asgi": {"version": "3.0"},
+        "http_version": "1.1",
+        "method": "POST",
+        "scheme": "http",
+        "path": path,
+        "raw_path": path.encode(),
+        "query_string": b"",
+        "root_path": "",
+        "headers": [(b"content-type", b"application/json"), (b"content-length", str(len(body)).encode())],
+        "client": ("127.0.0.1", 1),
+        "server": ("testserver", 80),
+    }
+    anyio.run(faces_server.app, scope, receive, send)
+    start = next(message for message in messages if message["type"] == "http.response.start")
+    headers = {bytes(name).decode(): bytes(value).decode() for name, value in start["headers"]}
+    return int(start["status"]), headers, reads
+
+
+def _detect_body() -> bytes:
+    """A one-image detect body."""
+    return json.dumps({"images": [_img(64, 64)]}).encode()
+
+
+def _group_body() -> bytes:
+    """A one-track group body."""
+    return json.dumps({"tracks": [_track(0, [0])]}).encode()
+
+
+@pytest.mark.parametrize(("path", "body"), [("/faces/detect", _detect_body), ("/faces/group", _group_body)])
+def test_a_fifth_request_is_refused_before_its_body_is_read(
+    client: TestClient, monkeypatch: pytest.MonkeyPatch, path: str, body: Callable[[], bytes]
+) -> None:
+    """With four requests in flight, one more gets 503 at once and none of its body is read."""
+    monkeypatch.setattr(faces_server, "_in_flight", faces_server.MAX_IN_FLIGHT)
+    status, headers, reads = _asgi_post(path, body())
+    assert status == 503
+    assert headers["retry-after"] == "5"
+    assert reads == []
+    assert faces_server._in_flight == faces_server.MAX_IN_FLIGHT
+
+
+def test_a_request_is_admitted_while_a_slot_is_free(client: TestClient, monkeypatch: pytest.MonkeyPatch) -> None:
+    """Three in flight leave room for one more, which returns its slot when done."""
+    monkeypatch.setattr(faces_server, "_in_flight", faces_server.MAX_IN_FLIGHT - 1)
+    status, _, reads = _asgi_post("/faces/detect", _detect_body())
+    assert status == 200
+    assert reads
+    assert faces_server._in_flight == faces_server.MAX_IN_FLIGHT - 1
+
+
+def test_four_in_flight_then_a_fifth_is_refused_and_a_later_one_admitted(
+    client: TestClient, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Four real requests held on the models fill the slots; once they finish, a new one is served."""
+    monkeypatch.setattr(faces_server, "LOCK_WAIT_S", 10.0)
+    statuses: list[int] = []
+
+    def held_request() -> None:
+        statuses.append(_asgi_post("/faces/detect", _detect_body())[0])
 
     assert faces_server._model_lock.acquire(timeout=1)
-    waiters = [threading.Thread(target=wait_for_models) for _ in range(faces_server.MAX_LOCK_WAITERS)]
+    held = [threading.Thread(target=held_request) for _ in range(faces_server.MAX_IN_FLIGHT)]
     try:
-        for waiter in waiters:
-            waiter.start()
+        for thread in held:
+            thread.start()
         give_up = time.monotonic() + 5
-        while faces_server._waiting < faces_server.MAX_LOCK_WAITERS and time.monotonic() < give_up:
+        while faces_server._in_flight < faces_server.MAX_IN_FLIGHT and time.monotonic() < give_up:
             time.sleep(0.01)
-        assert faces_server._waiting == faces_server.MAX_LOCK_WAITERS
+        assert faces_server._in_flight == faces_server.MAX_IN_FLIGHT
         started = time.monotonic()
-        response = client.post("/faces/detect", json={"images": [_img(64, 64)]})
+        fifth_status, _, fifth_reads = _asgi_post("/faces/group", _group_body())
         assert time.monotonic() - started < 2.0
     finally:
         faces_server._model_lock.release()
-        for waiter in waiters:
-            waiter.join(timeout=15)
-    assert response.status_code == 503
-    assert response.headers["retry-after"] == "5"
-    assert faces_server._waiting == 0
+        for thread in held:
+            thread.join(timeout=15)
+    assert fifth_status == 503
+    assert fifth_reads == []
+    assert statuses == [200] * faces_server.MAX_IN_FLIGHT
+    assert faces_server._in_flight == 0
+    assert _asgi_post("/faces/detect", _detect_body())[0] == 200
 
 
 def test_health_runs_on_the_event_loop() -> None:

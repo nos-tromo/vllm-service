@@ -310,10 +310,13 @@ decodes to more than 3840 × 2160 pixels is undecodable: `OPENCV_IO_MAX_IMAGE_PI
 (set in the image, and by the server before OpenCV loads) makes OpenCV refuse
 the canvas before allocating it, so a small, highly compressed file cannot
 expand into gigabytes. A group crop over 512 px on a side counts as undecodable
-too. Decoding and these checks run outside the model lock, which is held only
-for the detector and recognizer calls, one call at a time: a request that waits
-more than 30 s for it, finds four calls already waiting (refused at once), or
-runs past its 120 s deadline gets `503` with `Retry-After: 5`. `/health` runs
+too. At most four `/faces/*` requests are in flight at once, from before the
+body is read until the response is built; a fifth gets `503` with
+`Retry-After: 5` at once, before any of its body is read, so at most four
+bodies and their decoded images are in memory. Decoding and the checks run
+outside the model lock, which is held only for the detector and recognizer
+calls, one call at a time: a request that waits more than 30 s for it, or runs
+past its 120 s deadline, gets the same `503`. `/health` runs
 on the event loop, so a busy worker pool cannot starve the probe. The 32 MiB
 limit is the faces service's own: in the full stack the router enforces no body
 limit at all, and reads the whole JSON body into memory, whatever its size,
