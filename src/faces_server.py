@@ -43,10 +43,10 @@ Endpoints:
 Errors: 400 for a malformed payload or one over a count limit; 413 when the
 declared ``Content-Length``, or the body as it is read, exceeds 32 MiB; 422
 when no image of a detect request decodes; 503 with ``Retry-After: 5`` when
-the models stay busy with another request for longer than 30 s, when four
-calls are already waiting for them, or when the request runs past its 120 s
-deadline (the models serve one call at a time, and nothing queues past those
-bounds).
+four requests are already in flight (refused at once, before any of the
+body is read), when the models stay busy with another request for longer than
+30 s, or when the request runs past its 120 s deadline (the models serve one
+call at a time, and nothing queues past those bounds).
 
 Bounded work: an image that decodes to more than 3840 x 2160 pixels is
 undecodable (``OPENCV_IO_MAX_IMAGE_PIXELS``, set before OpenCV loads, makes
@@ -122,8 +122,9 @@ MAX_CROP_SIDE = 512
 MAX_BODY_BYTES = 32 * 1024 * 1024
 #: Seconds a request waits for the models before it is told to retry.
 LOCK_WAIT_S = 30.0
-#: The most calls that may wait for the models at once; one more is refused at once.
-MAX_LOCK_WAITERS = 4
+#: The most /faces/* requests in flight at once, from before the body is read
+#: until the response is built; one more is refused at once, unread.
+MAX_IN_FLIGHT = 4
 #: Seconds a request may take from its start before it is told to retry.
 REQUEST_DEADLINE_S = 120.0
 RETRY_AFTER_S = 5
@@ -235,9 +236,9 @@ recognizer = cv2.FaceRecognizerSF.create(
 # Neither OpenCV model is safe to call from two threads at once, and the detector's
 # input size is per call; each detector or recognizer call holds both.
 _model_lock = threading.Lock()
-# How many calls are waiting for _model_lock, guarded by _waiting_lock.
-_waiting_lock = threading.Lock()
-_waiting = 0
+# How many /faces/* requests are in flight, guarded by _in_flight_lock.
+_in_flight_lock = threading.Lock()
+_in_flight = 0
 
 app = FastAPI(title="vllm-service faces", version="1.0")
 
@@ -377,12 +378,35 @@ class _Deadline:
 
 
 @contextmanager
+def _admission() -> Iterator[None]:
+    """Admit one request, or refuse it before any of its body is read.
+
+    At most ``MAX_IN_FLIGHT`` requests hold a slot, from before the body is
+    read until the response is built, so at most that many bodies and decoded
+    images are in memory and at most that many worker threads are busy; at
+    most ``MAX_IN_FLIGHT - 1`` calls can then wait for the models.
+
+    Yields:
+        Nothing; the slot is the caller's until the block ends.
+
+    Raises:
+        HTTPException: 503 with ``Retry-After`` when every slot is taken.
+    """
+    global _in_flight
+    with _in_flight_lock:
+        if _in_flight >= MAX_IN_FLIGHT:
+            raise _retry_later("the face service is at capacity; retry later")
+        _in_flight += 1
+    try:
+        yield
+    finally:
+        with _in_flight_lock:
+            _in_flight -= 1
+
+
+@contextmanager
 def _models(deadline: _Deadline) -> Iterator[None]:
     """Hold the models for one call, or refuse when they stay busy.
-
-    A call that finds them taken waits, unless ``MAX_LOCK_WAITERS`` calls are
-    waiting already: then it is refused at once, so waiters (each holding a
-    worker thread and its request) cannot pile up.
 
     Args:
         deadline: The request's deadline; the wait never runs past it.
@@ -391,25 +415,11 @@ def _models(deadline: _Deadline) -> Iterator[None]:
         Nothing; the models are the caller's until the block ends.
 
     Raises:
-        HTTPException: 503 with ``Retry-After`` when too many calls are waiting,
-            or the models are not free within ``LOCK_WAIT_S`` or before the deadline.
+        HTTPException: 503 with ``Retry-After`` when the models are not free
+            within ``LOCK_WAIT_S`` or before the deadline.
     """
-    global _waiting
     wait = min(LOCK_WAIT_S, deadline.remaining())
-    if wait <= 0:
-        raise _retry_later("the face models are busy; retry later")
-    acquired = _model_lock.acquire(blocking=False)
-    if not acquired:
-        with _waiting_lock:
-            if _waiting >= MAX_LOCK_WAITERS:
-                raise _retry_later("too many requests are waiting for the face models; retry later")
-            _waiting += 1
-        try:
-            acquired = _model_lock.acquire(timeout=wait)
-        finally:
-            with _waiting_lock:
-                _waiting -= 1
-    if not acquired:
+    if wait <= 0 or not _model_lock.acquire(timeout=wait):
         raise _retry_later("the face models are busy; retry later")
     try:
         yield
@@ -675,7 +685,23 @@ def _group_all(tracks: list[GroupTrack], deadline: _Deadline) -> tuple[list[int]
 
 @app.post("/faces/detect")
 async def detect(request: Request) -> dict[str, list[dict[str, object]]]:
-    """Detect the faces in up to eight images.
+    """Detect the faces in up to eight images, once the request is admitted.
+
+    Args:
+        request: The request; its body is read only after admission.
+
+    Returns:
+        One result per image, in order.
+
+    Raises:
+        HTTPException: 400, 413, 422 or 503, as the module docstring lists.
+    """
+    with _admission():
+        return await _detect(request)
+
+
+async def _detect(request: Request) -> dict[str, list[dict[str, object]]]:
+    """Read, check and run one admitted detect request.
 
     Args:
         request: The request; its body is read here, against the size limit.
@@ -706,7 +732,23 @@ async def detect(request: Request) -> dict[str, list[dict[str, object]]]:
 
 @app.post("/faces/group")
 async def group(request: Request) -> dict[str, list[int]]:
-    """Group up to 500 face tracks by person within one video.
+    """Group up to 500 face tracks by person within one video, once the request is admitted.
+
+    Args:
+        request: The request; its body is read only after admission.
+
+    Returns:
+        One label per track.
+
+    Raises:
+        HTTPException: 400, 413 or 503, as the module docstring lists.
+    """
+    with _admission():
+        return await _group(request)
+
+
+async def _group(request: Request) -> dict[str, list[int]]:
+    """Read, check and run one admitted group request.
 
     Args:
         request: The request; its body is read here, against the size limit.
