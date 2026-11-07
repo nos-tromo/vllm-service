@@ -1148,8 +1148,10 @@ Load-bearing points:
   recognizer calls, each wait ≤ 30 s. At most `MAX_IN_FLIGHT` (4) `/faces/*`
   requests are admitted at once (`_admission`, taken before the body is read
   and held until the response is built), so a fifth gets 503 unread and at
-  most three calls ever wait for the lock; a per-request 120 s deadline is
-  checked in the work loops. Each gives 503 + `Retry-After: 5`. `health` is
+  most three calls ever wait for the lock. The body read under a slot is timed
+  (`_BODY_TIMEOUT_S` 30 s in all, `_RECEIVE_STALL_S` 10 s per read → 408 +
+  `Connection: close`), so slow clients cannot hold the slots; a per-request
+  120 s deadline is checked in the work loops. Each gives 503 + `Retry-After: 5`. `health` is
   `async def`, so a busy threadpool cannot starve the probe; an OpenCV error
   after decoding costs only that image (`undecodable`) or face (skipped). Images are
   downscaled to ≤ 1280 px, detected at 1× and 0.5×, merged by NMS at IoU 0.4.
