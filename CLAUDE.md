@@ -1136,7 +1136,8 @@ Load-bearing points:
   `FACE_DETECT_MODEL_REVISION` / `FACE_EMBED_MODEL_REVISION` when set; loaded at
   import, so a missing file or commit stops startup. Both Hub repos also hold
   `example_outputs/` with photos of people — transfer only the `.onnx` file and
-  `LICENSE` of each. A first start with `HF_HUB_OFFLINE=0` does not populate the
+  `LICENSE` of each (deploy's `fetch-model.sh --file <name> --file LICENSE
+  <repo>`, which prints the `Revision:` for `FACE_*_MODEL_REVISION`). A first start with `HF_HUB_OFFLINE=0` does not populate the
   cache: hf-xet writes under `~/.cache/huggingface/xet` on the read-only rootfs.
   **Upgrading a host to this release** needs the two files in `huggingface-cache`
   first; without them only `faces` is down (the router waits only for it to
