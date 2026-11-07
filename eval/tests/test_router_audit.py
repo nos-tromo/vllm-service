@@ -1176,6 +1176,8 @@ PINNED: dict[str, str] = {
     "EMBED_MODEL_REVISION": "1" * 40,
     "CLIP_MODEL_REVISION": "2" * 40,
     "DIARIZE_MODEL_REVISION": "3" * 40,
+    "FACE_DETECT_MODEL_REVISION": "4" * 40,
+    "FACE_EMBED_MODEL_REVISION": "5" * 40,
 }
 #: The variable each pass-through backend loads its model by; gliner, vad and
 #: topics load no pinned revision.
@@ -1183,6 +1185,12 @@ LOADED_BY: dict[str, str] = {
     "embed-sparse": "EMBED_MODEL_REVISION",
     "clip": "CLIP_MODEL_REVISION",
     "diarize": "DIARIZE_MODEL_REVISION",
+}
+#: The variable each route of a backend serving more than one model loads by;
+#: checked before the backend's own entry.
+LOADED_BY_ROUTE: dict[str, str] = {
+    "/faces/detect": "FACE_DETECT_MODEL_REVISION",
+    "/faces/group": "FACE_EMBED_MODEL_REVISION",
 }
 
 
@@ -1258,7 +1266,7 @@ def test_pass_through_records_its_backends_revision(route: str) -> None:
     (event,) = _ai_calls(stream)
     backend = _config_targets()[route]
     assert event["recipient"] == f"model:{backend}"
-    variable = LOADED_BY.get(backend)
+    variable = LOADED_BY_ROUTE.get(route) or LOADED_BY.get(backend)
     if variable is None:
         assert "revision" not in event["ai"]
     else:
@@ -1280,6 +1288,22 @@ def test_pass_through_without_revision_records_none(route: str, value: str | Non
     (event,) = _ai_calls(stream)
     assert "revision" not in event["ai"]
     assert "incomplete" not in event["criteria"]
+    _assert_chain(stream)
+
+
+@pytest.mark.parametrize("host", ["faces", "clip"])
+def test_route_revision_wins_over_backend(host: str) -> None:
+    """A route in the route map records its own variable, not the host's.
+
+    ``clip`` pins a revision of its own, so a lookup that tried the host first
+    would record ``CLIP_MODEL_REVISION`` instead.
+    """
+    targets = {"/faces/detect": host, "/faces/group": host}
+    audit, stream = _audit(env=PINNED, targets=lambda: targets)
+    _run(lambda: _pass_through_call(audit, "/faces/group"))
+    (event,) = _ai_calls(stream)
+    assert event["recipient"] == f"model:{host}"
+    assert event["ai"]["revision"] == "5" * 40
     _assert_chain(stream)
 
 
