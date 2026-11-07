@@ -13,7 +13,7 @@ field in the request body, not by path — they all answer on the standard
 OpenAI routes (`/v1/chat/completions`, `/v1/embeddings`, `/v1/rerank`,
 `/v1/audio/transcriptions`, …). The backends that speak their own contracts
 are reached by path instead, forwarded verbatim (`/pooling`, `/tokenize`,
-`/gliner`, `/clip/*`, `/diarize`, `/vad`, `/topics/fit`). Every route
+`/gliner`, `/clip/*`, `/diarize`, `/vad`, `/faces/*`, `/topics/fit`). Every route
 is gated by the router's master key, so clients send
 `Authorization: Bearer $OPENAI_API_KEY`.
 
@@ -33,8 +33,9 @@ are in [api-reference.md](docs/api-reference.md).
 | ASR-only | `docker/compose.asr-only.yaml` | `/v1/audio/transcriptions`, `/v1/audio/translations` |
 | VAD-only | `docker/compose.vad-only.yaml` | `/vad` |
 | Topics-only | `docker/compose.topics-only.yaml` | `/topics/fit` |
+| Faces-only | `docker/compose.faces-only.yaml` | `/faces/detect`, `/faces/group` |
 
-The eight `-only` shapes are single-container CPU deployments for hosts that
+The nine `-only` shapes are single-container CPU deployments for hosts that
 cannot run the CUDA stack (Mac dev boxes, ROCm or CPU-only Linux running Ollama
 for chat/embed). They have no router and no auth, expose the same contracts as
 the full stack, and can be co-deployed on one host. Runbook:
@@ -71,7 +72,7 @@ longer finds the compose file.
 
    ```bash
    make build                 # build images for the full stack
-   make up-dev                # full stack with the router published on the host (router, chat, embed, embed-sparse, rerank, clip, asr, diarize, vad, gliner, topics)
+   make up-dev                # full stack with the router published on the host (router, chat, embed, embed-sparse, rerank, clip, asr, diarize, vad, faces, gliner, topics)
    make up                    # same as up-dev but production shape (no host ports)
    make dev                   # build, then up-dev (dev convenience)
    ```
@@ -120,7 +121,7 @@ Reference material lives in [docs/](docs/README.md).
 - [architecture.md](docs/architecture.md) — the containers behind the router,
   the gliner watchdog, and the Docker networks.
 - [deployment-shapes.md](docs/deployment-shapes.md) — bringing up any of the
-  eight CPU-only standalone shapes.
+  nine CPU-only standalone shapes.
 - [configuration.md](docs/configuration.md) — the env knobs that need
   explaining, and how to switch models.
 - [api-reference.md](docs/api-reference.md) — endpoint surface, auth, and every

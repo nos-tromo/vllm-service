@@ -46,8 +46,8 @@ shows:
 
 | Compose file | Settings filled in by compose |
 |---|---|
-| `compose.yaml` | the router's `OPENAI_API_KEY`, `HF_HUB_OFFLINE` and `TRANSFORMERS_OFFLINE` (every service but router and topics), `PYTORCH_CUDA_ALLOC_CONF`, `CLIP_MODEL`, `CLIP_DEVICE`, `VLLM_MAX_AUDIO_CLIP_FILESIZE_MB`, `VLLM_MAX_AUDIO_DECODE_DURATION_S`, `DIARIZE_MODEL`, `DIARIZE_DEVICE`, `DIARIZE_VAD_URL`, `DIARIZE_VAD_GATE`, `DIARIZE_VAD_THRESHOLD`, `DIARIZE_VAD_PAD_MS`, `DIARIZE_VAD_TIMEOUT`, `VAD_MODEL`, `VAD_USE_ONNX`, `NER_RAY_MEMORY_THRESHOLD`, `TOPICS_MAX_POINTS`, `TOPICS_MEM_LIMIT` |
-| the CPU-only shapes | the HF flags (all but topics-only), `WHISPER_MODEL` (asr-only), `CLIP_MODEL` (clip-only), `EMBED_MODEL`, `EMBED_MAX_LENGTH`, `EMBED_MAX_BATCH_TOKENS` (embed-only), `RERANK_MODEL`, `RERANK_USE_FP16` (rerank-only), `DIARIZE_MODEL` (diarize-only), `VAD_MODEL`, `VAD_USE_ONNX` (vad-only), `NER_SHM_SIZE` (gliner-only), `TOPICS_MAX_POINTS`, `TOPICS_MEM_LIMIT` (topics-only) |
+| `compose.yaml` | the router's `OPENAI_API_KEY`, `HF_HUB_OFFLINE` and `TRANSFORMERS_OFFLINE` (every service but router and topics), `PYTORCH_CUDA_ALLOC_CONF`, `CLIP_MODEL`, `CLIP_DEVICE`, `VLLM_MAX_AUDIO_CLIP_FILESIZE_MB`, `VLLM_MAX_AUDIO_DECODE_DURATION_S`, `DIARIZE_MODEL`, `DIARIZE_DEVICE`, `DIARIZE_VAD_URL`, `DIARIZE_VAD_GATE`, `DIARIZE_VAD_THRESHOLD`, `DIARIZE_VAD_PAD_MS`, `DIARIZE_VAD_TIMEOUT`, `VAD_MODEL`, `VAD_USE_ONNX`, `NER_RAY_MEMORY_THRESHOLD`, `TOPICS_MAX_POINTS`, `TOPICS_MEM_LIMIT`, `FACE_DETECT_MODEL`, `FACE_DETECT_MODEL_FILE`, `FACE_EMBED_MODEL`, `FACE_EMBED_MODEL_FILE`, `FACE_GROUP_THRESHOLD` |
+| the CPU-only shapes | the HF flags (all but topics-only), `WHISPER_MODEL` (asr-only), `CLIP_MODEL` (clip-only), `EMBED_MODEL`, `EMBED_MAX_LENGTH`, `EMBED_MAX_BATCH_TOKENS` (embed-only), `RERANK_MODEL`, `RERANK_USE_FP16` (rerank-only), `DIARIZE_MODEL` (diarize-only), `VAD_MODEL`, `VAD_USE_ONNX` (vad-only), `NER_SHM_SIZE` (gliner-only), `TOPICS_MAX_POINTS`, `TOPICS_MEM_LIMIT` (topics-only), `FACE_DETECT_MODEL`, `FACE_DETECT_MODEL_FILE`, `FACE_EMBED_MODEL`, `FACE_EMBED_MODEL_FILE`, `FACE_GROUP_THRESHOLD` (faces-only) |
 | every file | `INFERENCE_NETWORK`, `EXTRA_NO_PROXY`, and the dev overlays' `*_HOST_PORT` |
 
 `OPENAI_API_KEY` is the one router setting a shell export overrides: compose
@@ -246,6 +246,56 @@ override `environment:`. Every response reports them under `runtime.threads`.
 The request and response bodies, and the errors these limits produce, are in
 [api-reference.md](api-reference.md#topics).
 
+## Faces
+
+Applies to both the full-stack `faces` service and the `faces-only` shape.
+Override defaults via `.env`:
+
+```bash
+FACE_DETECT_MODEL=opencv/face_detection_yunet               # default; the detection model's repository
+FACE_DETECT_MODEL_FILE=face_detection_yunet_2023mar.onnx     # default; the file in it
+FACE_EMBED_MODEL=opencv/face_recognition_sface              # default; the feature model's repository
+FACE_EMBED_MODEL_FILE=face_recognition_sface_2021dec.onnx    # default; the file in it
+# FACE_DETECT_MODEL_REVISION=<commit>
+# FACE_EMBED_MODEL_REVISION=<commit>
+# FACE_GROUP_THRESHOLD=0.42             # lowest mean cosine at which two groups merge
+# FACES_HOST_PORT=8009                  # host publish port for dev (faces-only)
+```
+
+**Files.** Each repository holds the model in several variants (fp32, int8,
+int8bq), so the file is configured beside the repository; the defaults are the
+fp32 files. Both come from the `huggingface-cache` volume, offline; only the
+two files and each repository's `LICENSE` belong there (the repositories also
+hold `example_outputs/` with photographs of people). YuNet is MIT-licensed and
+SFace Apache-2.0, both from the OpenCV Zoo. InsightFace's SCRFD/ArcFace models
+are not used because their weights are licensed for non-commercial research
+only. How to fetch them: [deployment-shapes.md](deployment-shapes.md#faces-only).
+
+**Revisions.** One backend, two models: each loads at its own revision
+variable, and the router records each per route (see
+[Model revisions](#model-revisions)).
+
+**Grouping threshold.** `FACE_GROUP_THRESHOLD` is the lowest average cosine
+between two groups of tracks at which `/faces/group` still merges them. The
+default `0.42` is stricter than OpenCV's 0.363 for a single same-person pair,
+because merging two people is worse than splitting one: raise it to split more,
+lower it to merge more. A value that is not a number in `[0, 1]` stops the
+server at startup. Tracks that were on screen together are never merged,
+whatever the threshold.
+
+**Limits.** A request may carry at most 8 images (detect) or 500 tracks of at
+most 3 faces (group), in a body of at most 32 MiB, which the service reads into
+memory — so `/tmp` is a 64 MB tmpfs, not `media-tmp`. Each image is decoded,
+downscaled to 1280 px on its long side and run before the next is decoded, and
+`OPENCV_IO_MAX_IMAGE_PIXELS` (64 megapixels, set in the image) refuses an image
+that declares a larger canvas, as undecodable. One request at a time holds the
+models; one that waits more than 30 s gets `503` with `Retry-After: 5`. In the
+full stack the router reads the JSON body in full before it forwards it, so it
+holds up to 32 MiB per request in flight, refused requests included
+([issue #158](https://github.com/nos-tromo/vllm-service/issues/158)).
+
+The request and response bodies are in [api-reference.md](api-reference.md#faces).
+
 ## Audit log
 
 The router writes one data-protection audit event per model call
@@ -291,12 +341,14 @@ name the commit the backend loads, and the audit log reports it for every call
 to that deployment. A revision left from the previous model stops the backend
 at startup, since the new model has no such commit.
 
-`NER_MODEL`, `CLIP_MODEL`, `DIARIZE_MODEL`, and `VAD_MODEL` are the exceptions:
-their servers have no OpenAI-shaped endpoints, so they are not in `model_list`
-and do not appear in `/v1/models`. Switching them still works by updating the
-variable in `.env` (with `CLIP_MODEL_REVISION` or `DIARIZE_MODEL_REVISION` for
-the two that load by revision) and restarting the matching service (`gliner`,
-`clip`, `diarize`, `vad`).
+`NER_MODEL`, `CLIP_MODEL`, `DIARIZE_MODEL`, `VAD_MODEL`, `FACE_DETECT_MODEL`
+and `FACE_EMBED_MODEL` are the exceptions: their servers have no OpenAI-shaped
+endpoints, so they are not in `model_list` and do not appear in `/v1/models`.
+Switching them still works by updating the variable in `.env` (with
+`CLIP_MODEL_REVISION`, `DIARIZE_MODEL_REVISION` or the `FACE_*_MODEL_REVISION`
+for those that load by revision, and `FACE_*_MODEL_FILE` for the faces models)
+and restarting the matching service (`gliner`, `clip`, `diarize`, `vad`,
+`faces`).
 
 ## Model revisions
 
@@ -313,12 +365,17 @@ empty, a service gets no revision and serves whatever the cache's
 | `WHISPER_MODEL_REVISION` | `asr` | the vLLM flags |
 | `CLIP_MODEL_REVISION` | `clip`, `clip-only` | `revision=` for the model and its processor |
 | `DIARIZE_MODEL_REVISION` | `diarize`, `diarize-only` | pyannote's `revision=` |
+| `FACE_DETECT_MODEL_REVISION` | `faces`, `faces-only` | `hf_hub_download`'s `revision=` for `FACE_DETECT_MODEL_FILE` |
+| `FACE_EMBED_MODEL_REVISION` | `faces`, `faces-only` | `hf_hub_download`'s `revision=` for `FACE_EMBED_MODEL_FILE` |
 
 The router records each as `ai.revision` in the audit events of the calls it
 forwards: the first four through `model_info.revision` in
 `docker/litellm.config.yaml`, those of the pass-through backends
 (`embed-sparse`, `clip`, `diarize`) through `PASS_THROUGH_REVISIONS` in
-`docker/router/router_audit.py`. Router and backends read them from the same
+`docker/router/router_audit.py`, and the two of `faces`, which serves a model
+per route, through `PASS_THROUGH_ROUTE_REVISIONS` there (`/faces/detect` →
+`FACE_DETECT_MODEL_REVISION`, `/faces/group` → `FACE_EMBED_MODEL_REVISION`),
+which the router checks before the backend's entry. Router and backends read them from the same
 `.env`, so the revision in an audit event is the one the deployment loaded.
 
 The value is the full 40-character commit id: what deploy's `fetch-model.sh`

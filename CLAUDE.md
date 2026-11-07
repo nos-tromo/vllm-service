@@ -31,7 +31,7 @@ backends with a single LiteLLM Proxy router. The Docker assets live under
 `docker/compose.clip-only.yaml`, `docker/compose.embed-only.yaml`,
 `docker/compose.diarize-only.yaml`,
 `docker/compose.asr-only.yaml`, `docker/compose.vad-only.yaml`,
-`docker/compose.topics-only.yaml`,
+`docker/compose.topics-only.yaml`, `docker/compose.faces-only.yaml`,
 `docker/Dockerfile.vllm`,
 `docker/Dockerfile.gliner.cuda`, `docker/Dockerfile.gliner.cpu`,
 `docker/Dockerfile.rerank.cpu`, `docker/Dockerfile.clip.cuda`,
@@ -39,6 +39,7 @@ backends with a single LiteLLM Proxy router. The Docker assets live under
 `docker/Dockerfile.diarize.cuda`,
 `docker/Dockerfile.diarize.cpu`, `docker/Dockerfile.asr.cpu`,
 `docker/Dockerfile.vad.cpu`, `docker/Dockerfile.topics.cpu`, `docker/topics/`,
+`docker/Dockerfile.faces.cpu`, `docker/faces/`,
 `docker/litellm.config.yaml`, and `docker/router/` — the router's audit
 callback, mounted into the pinned LiteLLM image, see "Audit log" below) plus `.env`
 and `.dockerignore` at the repo root. Besides `docker/router/router_audit.py`
@@ -48,12 +49,13 @@ edited), the only Python sources are
 `src/diarize_server.py` (and its `src/diarize_audio.py`,
 `src/diarize_pipeline.py`, `src/diarize_compat.py`, and
 `src/diarize_gate.py` helpers),
-`src/asr_server.py`, `src/vad_server.py`, and `src/topics_server.py`
-(and its `src/topics_fit.py`) —
+`src/asr_server.py`, `src/vad_server.py`, `src/topics_server.py`
+(and its `src/topics_fit.py`), and `src/faces_server.py` (and its
+`src/faces_cluster.py`) —
 small FastAPI wrappers around Hugging Face models that ship because there
 is no off-the-shelf server that speaks the Jina-shape `/rerank`, `/clip`,
-`/pooling`/`/tokenize`, `/diarize`, `/vad`, or `/topics/fit` contracts the
-full stack exposes. (`asr_server.py` is
+`/pooling`/`/tokenize`, `/diarize`, `/vad`, `/topics/fit`, or
+`/faces/detect`/`/faces/group` contracts the full stack exposes. (`asr_server.py` is
 the exception — it speaks the standard OpenAI `/v1/audio/transcriptions`
 contract, but exists to serve Whisper on CPU via openai-whisper where the
 full stack uses vLLM.) (`diarize_compat.py`
@@ -76,8 +78,9 @@ variant. The shared `huggingface-cache` volume is therefore mounted at
 is baked into every image and set in `x-vllm-env` as belt-and-braces, and
 `ASR_DOWNLOAD_ROOT`/`PYANNOTE_CACHE` follow the same path. Compose applies
 `no-new-privileges` + `cap_drop: ALL` everywhere; most services also run
-`read_only`. Two shapes of writable `/tmp`: `embed`, `embed-sparse`, `rerank`
-and `clip` get a 64m tmpfs, while the five services that receive whole
+`read_only`. Two shapes of writable `/tmp`: `embed`, `embed-sparse`, `rerank`,
+`clip` and `faces` get a 64m tmpfs (`faces` reads its JSON bodies, ≤ 32 MiB,
+into memory), while the five services that receive whole
 uploads (`router`, `asr`, `diarize`, `vad`, `topics`) share the disk-backed
 `media-tmp` volume instead — starlette spools multipart bodies to `/tmp`, and
 Nextext allows multi-GB files, which a RAM tmpfs would have to hold. (The
@@ -89,7 +92,7 @@ writable rootfs: `chat` (vLLM's torch-compile cache under `~/.cache/vllm`)
 and `gliner` (Ray session dirs under `/tmp/ray`).
 
 **Ownership is self-healing:** the `volume-permissions` one-shot present in
-every compose shape but `topics-only` (the other eight) chowns any
+every compose shape but `topics-only` (the other nine) chowns any
 wrong-owner entries under the huggingface-cache mountpoint to `10001:10001`
 before any backend starts, at every `up` — so a fresh, root-owned volume and
 an already-owned multi-GB cache both boot cleanly with no separate migration
@@ -100,15 +103,16 @@ with docint's mounts of this volume, so the fix applies uniformly there too.
 
 ## Deployment shapes
 
-Nine independent compose projects, picked per host:
+Ten independent compose projects, picked per host:
 
 - **Full stack** (`docker/compose.yaml`, CUDA-required) — chat, embed,
-  embed-sparse, rerank, clip, asr, diarize, vad, gliner, topics, router, plus
-  the one-shot `volume-permissions` init job. The original shape; reached as
-  `http://vllm-router:4000/...` on `inference-net`. GLiNER is routed via the
+  embed-sparse, rerank, clip, asr, diarize, vad, faces, gliner, topics, router,
+  plus the one-shot `volume-permissions` init job. The original shape; reached
+  as `http://vllm-router:4000/...` on `inference-net`. GLiNER is routed via the
   router's `/gliner` pass-through, diarization via `/diarize`, voice activity
-  detection via `/vad`, topic-model fits via `/topics/fit`. (`vad` is a tiny
-  CPU Silero service even in the full stack — Silero gains nothing from CUDA.)
+  detection via `/vad`, topic-model fits via `/topics/fit`, face detection and
+  grouping via `/faces/detect` and `/faces/group`. (`vad` and `faces` are small
+  CPU services even in the full stack — neither gains from CUDA.)
 
   The gliner container is supervised by `scripts/gliner_watchdog.sh` (installed as
   `/usr/local/bin/gliner-watchdog`): it probes `POST /gliner` and self-exits after
@@ -212,13 +216,22 @@ Nine independent compose projects, picked per host:
   `/topics/fit` contract. Reached as `http://topics-only:8000/topics/fit`.
   Uses `Dockerfile.topics.cpu` (Python 3.11, installed from the locked closure
   in `docker/topics/`).
+- **Faces-only** (`docker/compose.faces-only.yaml`, CPU OK) — a single
+  `faces-only` container on `inference-net`, no router, no GPU. Runs the same
+  `src/faces_server.py` the full-stack `faces` service does (YuNet detection +
+  SFace grouping through OpenCV), so it speaks the identical JSON
+  `/faces/detect` and `/faces/group` contracts. Reached as
+  `http://faces-only:8000/faces/{detect,group}`, dev port `FACES_HOST_PORT`
+  (8009). Uses `Dockerfile.faces.cpu` (Python 3.11, installed from the locked
+  closure in `docker/faces/`; no torch). Its two ONNX files come from the
+  `huggingface-cache` volume — see "Faces backend" below.
 
 The shapes are **not profiles of one compose file** — they have different
 images, different topologies, and (gliner-only, rerank-only, clip-only,
-embed-only, diarize-only, asr-only, vad-only, topics-only) no router. Pick one
-per host. They reuse the same external `inference-net` network and
+embed-only, diarize-only, asr-only, vad-only, topics-only, faces-only) no
+router. Pick one per host. They reuse the same external `inference-net` network and
 `huggingface-cache` volume, so the one-time `make network` / `make volumes`
-prerequisites apply to all of them. The eight CPU-only shapes can coexist on a
+prerequisites apply to all of them. The nine CPU-only shapes can coexist on a
 single host because they target different network aliases and host ports.
 
 ## Common commands
@@ -226,7 +239,8 @@ single host because they target different network aliases and host ports.
 The `Makefile` is the entry point — it points Compose at `docker/compose.yaml`,
 since a bare `docker compose` from the repo root no longer finds the compose
 file. It builds and runs the full stack (chat, embed, embed-sparse, rerank,
-clip, asr, diarize, vad, gliner, topics, router) — there are no optional profiles.
+clip, asr, diarize, vad, faces, gliner, topics, router) — there are no optional
+profiles.
 
 Prerequisites (one-time per host):
 
@@ -340,6 +354,17 @@ make stop-topics-only
 make bundle-topics-only   # versioned .tar.gz of the topics-cpu image
 ```
 
+Or, for the Faces-only shape (no CUDA, no router — face detection and
+grouping):
+
+```bash
+make build-faces-only     # builds vllm-service-faces-cpu
+make up-faces-only        # one faces-only container on inference-net (no host port)
+make up-dev-faces-only    # like 'up-faces-only', but publishes the faces port on the host
+make stop-faces-only
+make bundle-faces-only    # versioned .tar.gz of the faces-cpu image
+```
+
 Other useful operations use the raw compose form, pointed at the compose file:
 
 ```bash
@@ -369,18 +394,19 @@ config. Run locally with `uv sync` then `uv run pre-commit run --all-files`
 dependencies: `uv run --group eval pytest eval/tests/`; the router's audit
 callback alone is `eval/tests/test_router_audit.py`. The
 heavy ML backends (torch, transformers, openai-whisper, pyannote, silero,
-bertopic, umap-learn, hdbscan, scikit-learn) are
+bertopic, umap-learn, hdbscan, scikit-learn, opencv) are
 not installed for linting — `pyrefly` treats them as `Any` (`ignore-missing-imports`);
 only the light typed deps (`fastapi`, `pydantic`, `numpy`) are declared so
 strict mode can check the first-party code.
 
 The servers (`src/rerank_server.py`, `src/clip_server.py`,
 `src/embed_server.py`, `src/diarize_server.py`, `src/asr_server.py`,
-`src/vad_server.py`, `src/topics_server.py`) are also small enough to verify by
-curl — rerank, clip, embed, asr, vad, and topics against their running
-standalone containers, diarize through the full-stack router — see the
-Architecture / Rerank-only, CLIP-only, Embed-only, Diarization, ASR-only, and
-VAD sections below (topics: `docs/api-reference.md`).
+`src/vad_server.py`, `src/topics_server.py`, `src/faces_server.py`) are also
+small enough to verify by curl — rerank, clip, embed, asr, vad, topics and
+faces against their running standalone containers, diarize through the
+full-stack router — see the Architecture / Rerank-only, CLIP-only, Embed-only,
+Diarization, ASR-only, VAD and Faces sections below (topics:
+`docs/api-reference.md`).
 
 ## Architecture
 
@@ -406,10 +432,12 @@ like `chat`, `embed` and `asr`.
 
 The paths that ARE forwarded by `pass_through_endpoints` are `/pooling` and
 `/tokenize` (to `embed-sparse`), GLiNER's `/gliner`, CLIP's `/clip/*`,
-diarization's `/diarize`, VAD's `/vad`, and the topic-model fit's
-`/topics/fit`. All but `/pooling` and `/tokenize` have upstreams that are *not*
+diarization's `/diarize`, VAD's `/vad`, the topic-model fit's
+`/topics/fit`, and face detection and grouping's `/faces/detect` and
+`/faces/group`. All but `/pooling` and `/tokenize` have upstreams that are *not*
 vLLM containers — they go to the `gliner` (Ray Serve), `clip` (FastAPI),
-`diarize` (FastAPI), `vad` (FastAPI), and `topics` (FastAPI) services.
+`diarize` (FastAPI), `vad` (FastAPI), `topics` (FastAPI), and `faces`
+(FastAPI) services.
 
 Every pass-through entry carries `auth: true`, so the master key gates them
 exactly like the OpenAI-shaped routes. LiteLLM made that the default in
@@ -422,7 +450,7 @@ defaults.
 
 ### Backends
 
-Five of the ten workers share the same `docker/Dockerfile.vllm` image,
+Five of the eleven workers share the same `docker/Dockerfile.vllm` image,
 launched with a different model and per-service env-driven flags:
 
 - `chat` — general LLM (`TEXT_MODEL`)
@@ -434,7 +462,7 @@ launched with a different model and per-service env-driven flags:
 - `rerank` — reranker, `--runner pooling` (`RERANK_MODEL`)
 - `asr` — Whisper (`WHISPER_MODEL`)
 
-The other five do not run vLLM:
+The other six do not run vLLM:
 
 - `gliner` — GLiNER zero-shot NER via Ray Serve (`NER_MODEL`, default
   `gliner-community/gliner_large-v2.5` on CUDA; set `NER_DEVICE=cpu` with
@@ -468,6 +496,12 @@ The other five do not run vLLM:
   (the fit itself is `src/topics_fit.py`); CPU-only. The endpoint is
   `POST /topics/fit` (multipart `meta`, `texts`, `vectors`), reached via the
   router's `/topics/fit` pass-through.
+- `faces` — face detection (YuNet) and per-video face grouping (SFace) via
+  FastAPI, two OpenCV Zoo ONNX models run through `opencv-python-headless`.
+  Uses **`docker/Dockerfile.faces.cpu`** and runs `src/faces_server.py` (the
+  clustering is pure NumPy in `src/faces_cluster.py`); CPU-only. Endpoints
+  `POST /faces/detect` and `POST /faces/group` (JSON, base64 images), reached
+  via the router's pass-throughs of the same paths. See "Faces backend" below.
 
 Each buildable service in `docker/compose.yaml` carries
 `image: vllm-service-<svc>:${VLLM_SERVICE_VERSION:-latest}`. A raw `docker
@@ -480,8 +514,8 @@ tarballs for offline shipping.
 All backends listen on internal port 8000 and join both `vllm-net` and the
 external `inference-net` — the latter so `obs-plane` can reach them by service
 name; they are not an app-facing entry point. Only the vLLM backends serve
-`/metrics`; the FastAPI wrappers (`clip`, `diarize`, `vad`, `topics`) expose
-their contract route and `/health` and nothing else. Apps still reach the stack
+`/metrics`; the FastAPI wrappers (`clip`, `diarize`, `vad`, `topics`, `faces`)
+expose their contract routes and `/health` and nothing else. Apps still reach the stack
 exclusively through `router`, which keeps the `vllm-router` alias on
 `inference-net` for cross-project consumers.
 
@@ -548,7 +582,11 @@ Design points that are load-bearing, all verified against the pinned
   `model_info.revision` comes from `<MODEL>_REVISION`, the variable the
   backend also loads by; a pass-through backend's revision comes from the
   variable `PASS_THROUGH_REVISIONS` names (`embed-sparse`, `clip`,
-  `diarize`), read from the same environment (see "Revision pinning" below).
+  `diarize`), or — checked first — the variable `PASS_THROUGH_ROUTE_REVISIONS`
+  names for the route, for a backend that serves a model per route (`faces`:
+  `/faces/detect` → `FACE_DETECT_MODEL_REVISION`, `/faces/group` →
+  `FACE_EMBED_MODEL_REVISION`), read from the same environment (see "Revision
+  pinning" below).
 - **stdout is the audit stream:** uvicorn's access log goes to stderr
   (`--log_config`), `LITELLM_LOG` is pinned to `WARNING` (debug prints bodies),
   and the lock is on the router's own tmpfs, not on `media-tmp`.
@@ -585,8 +623,13 @@ free when it starts, not a fixed reservation like the vLLM backends'
 ad-hoc `diarize` footprint included — must be healthy before it comes up, or
 it would claim the remaining memory and starve them. `vad` is a CPU service
 (no GPU reservation), so its place in the chain is just ordering, not memory
-contention. Healthchecks hit `http://localhost:8000/health` (vLLM backends,
-`clip`, `diarize`, `vad`, and `topics`) and `/health/liveliness` (router).
+contention. `faces` (CPU, no GPU reservation either) and `topics` sit outside
+the chain: `faces` waits only for `volume-permissions`, and the router waits
+for it to be healthy (so a cache missing either ONNX file keeps the router
+down, as a missing CLIP model would), while the router waits only for `topics`
+to start. Healthchecks hit `http://localhost:8000/health` (vLLM backends,
+`clip`, `diarize`, `vad`, `faces`, and `topics`) and `/health/liveliness`
+(router).
 `gliner` has no `/health` route: its healthcheck is the same functional probe
 the watchdog uses — `POST /gliner` with a one-word payload — so a wedged Ray
 Serve deployment reads as unhealthy rather than merely unreachable.
@@ -664,13 +707,15 @@ matching `<MODEL>_REVISION` (`TEXT_MODEL_REVISION`, `EMBED_MODEL_REVISION`,
 that commit and the audit log reports it as the served revision. A revision
 left over from the previous model stops the backend at startup.
 
-`NER_MODEL`, `CLIP_MODEL`, `DIARIZE_MODEL`, and `VAD_MODEL` are the
-exceptions: their servers have no OpenAI-shaped routes, so they are not
-declared in `model_list` and do not appear in `/v1/models`. Clients hit
-`/gliner`, `/clip/*`, `/diarize`, and `/vad` directly with service-native
-bodies and never use the `model` field. Switching one of these vars (with
-`CLIP_MODEL_REVISION` or `DIARIZE_MODEL_REVISION` for the two that pin) and
-restarting the matching service still works. (`VAD_MODEL` is informational —
+`NER_MODEL`, `CLIP_MODEL`, `DIARIZE_MODEL`, `VAD_MODEL`, `FACE_DETECT_MODEL`
+and `FACE_EMBED_MODEL` are the exceptions: their servers have no OpenAI-shaped
+routes, so they are not declared in `model_list` and do not appear in
+`/v1/models`. Clients hit `/gliner`, `/clip/*`, `/diarize`, `/vad`, and
+`/faces/*` directly with service-native bodies and never use the `model` field.
+Switching one of these vars (with `CLIP_MODEL_REVISION`,
+`DIARIZE_MODEL_REVISION` or `FACE_*_MODEL_REVISION` for those that pin, and
+`FACE_*_MODEL_FILE` for the faces models) and restarting the matching service
+still works. (`VAD_MODEL` is informational —
 the `silero-vad` package bundles a single model.)
 
 ### Revision pinning
@@ -683,14 +728,18 @@ reference). Load-bearing points:
   `--tokenizer-revision` from the same variable the router records:
   `model_info.revision` for the model-list deployments, `PASS_THROUGH_REVISIONS`
   in `router_audit.py` for the pinned pass-through backends (`embed-sparse`
-  shares `EMBED_MODEL_REVISION`; `clip` and `diarize` have their own). Router
+  shares `EMBED_MODEL_REVISION`; `clip` and `diarize` have their own), and
+  `PASS_THROUGH_ROUTE_REVISIONS` there for the routes of `faces`, one variable
+  per model. Router
   and backends both get it from the shared `env_file` — not from
   `environment:` interpolation, which reads the operator's shell first and
   could hand the two different values. `eval/tests/test_revision_pinning.py`
   runs each rendered command under `sh` with a stub `vllm` and reads
-  `PASS_THROUGH_REVISIONS` from the router's source. It fails when a
-  `vllm serve` service is in neither map, or a pass-through backend is
-  neither in `PASS_THROUGH_REVISIONS` nor in its list of unpinned backends.
+  `PASS_THROUGH_REVISIONS` (and `PASS_THROUGH_ROUTE_REVISIONS`) from the
+  router's source. It fails when a `vllm serve` service is in neither map, a
+  pass-through backend is in neither router map nor in its list of unpinned
+  backends, a route-map key is not a configured path, or `faces_server.py`
+  loads a route's model by another variable than the route map names.
 - **Offline resolution.** With `HF_HUB_OFFLINE=1`, vLLM (0.30) replaces the
   repo id by `snapshot_download(local_files_only=True, revision=…)`, i.e. the
   cache's `snapshots/<commit>`; a missing commit stops startup instead of
@@ -701,7 +750,10 @@ reference). Load-bearing points:
   (`CLIP_MODEL_REVISION`, `RERANK_MODEL_REVISION` in rerank-only,
   `EMBED_MODEL_REVISION` in embed-only incl. `sparse_linear.pt`,
   `DIARIZE_MODEL_REVISION` via `build_pipeline`, which applies it only to the
-  env's `DIARIZE_MODEL` and puts it on the id as `<id>@<rev>` for pyannote 3.x).
+  env's `DIARIZE_MODEL` and puts it on the id as `<id>@<rev>` for pyannote 3.x;
+  `FACE_DETECT_MODEL_REVISION` / `FACE_EMBED_MODEL_REVISION` as
+  `hf_hub_download(revision=…)` for each model's one file, blank read as unset
+  as the router does).
 - **Not pinned:** `gliner` (`gliner.serve` has no revision option; the v2.5
   encoder config also comes from a second repo), `vad` (weights in the
   `silero-vad` wheel), `topics` (no weights), asr-only (openai-whisper
@@ -1045,6 +1097,71 @@ curl -fsS -X POST http://localhost:${VAD_HOST_PORT:-8006}/vad \
   -F 'file=@/path/to/recording.mp3'
 ```
 
+### Faces backend (full stack + faces-only)
+
+The `faces` service runs `src/faces_server.py` — a small FastAPI app around two
+OpenCV Zoo ONNX models run through `opencv-python-headless`: **YuNet**
+(`opencv/face_detection_yunet`, file `face_detection_yunet_2023mar.onnx`, MIT)
+for detection and **SFace** (`opencv/face_recognition_sface`, file
+`face_recognition_sface_2021dec.onnx`, Apache-2.0) for the features that drive
+grouping. CPU in **both** the full stack and `faces-only`, so one
+`Dockerfile.faces.cpu` (installed from the hash-locked `docker/faces/uv.lock`)
+builds both. InsightFace is deliberately not used (non-commercial weights),
+nor YOLO-face (AGPL). Endpoints:
+
+```
+POST /faces/detect   # JSON {"images": [<base64>, ... at most 8], "min_score": 0.7}
+  -> {"results": [{"faces": [{"box": [x, y, w, h], "score", "landmarks": [[x, y] x5]}]}
+                  | {"error": "undecodable"}, ...]}     # fractions of the image
+POST /faces/group    # JSON {"tracks": [{"samples": [int], "faces": [{"image", "landmarks"}] x<=3}] x<=500}
+  -> {"labels": [int, ...]}                             # -1 = no decodable face
+GET  /health
+  -> {"status": "ok", "detect_model": "...", "embed_model": "..."}
+```
+
+Load-bearing points:
+
+- **Embeddings never leave the process.** `/faces/group` returns labels only;
+  features are computed, clustered and dropped inside the request, never
+  logged, stored or returned, and the server logs counts only. Error messages
+  name a field and a rule, never a value (`include_input=False`).
+- **JSON, not multipart**, because LiteLLM rebuilds a multipart body from a dict
+  keyed by part name (repeated `images` parts would collapse). LiteLLM pops body
+  keys named like its own parameters (`all_litellm_params`: `metadata`, `tags`,
+  `id`, `timeout`, `headers`, …) and streams on `stream`, so the top-level keys
+  are exactly `images`, `min_score`, `tracks`, and the request models use
+  `extra="ignore"` (verified against the pinned v1.97.0).
+- **Grouping** (`src/faces_cluster.py`, pure NumPy): per track, drop faces
+  whose cosine to the track's medoid is < 0.3, average and renormalize; then
+  exact average-linkage clustering with cannot-link constraints (tracks that
+  share a sample index were on screen together and never merge), merging while
+  the best pair is ≥ `FACE_GROUP_THRESHOLD` (0.42; stricter than OpenCV's 0.363
+  pair threshold — merging two people is worse than splitting one).
+- **Limits:** ≤ 8 images, ≤ 500 tracks, ≤ 3 faces per track (400); body
+  ≤ 32 MiB by `Content-Length` and as read (413); no image decodes (422); one
+  request at a time under `_model_lock`, waiting ≤ 30 s, else 503 +
+  `Retry-After: 5`; images downscaled to ≤ 1280 px, detected at 1× and 0.5×,
+  merged by NMS at IoU 0.4; `OPENCV_IO_MAX_IMAGE_PIXELS` caps a decoded canvas
+  at 64 MP.
+- **Weights:** both files from `huggingface-cache`, offline, at
+  `FACE_DETECT_MODEL_REVISION` / `FACE_EMBED_MODEL_REVISION` when set; loaded at
+  import, so a missing file or commit stops startup. Both Hub repos also hold
+  `example_outputs/` with photos of people — transfer only the `.onnx` file and
+  `LICENSE` of each. A first start with `HF_HUB_OFFLINE=0` does not populate the
+  cache: hf-xet writes under `~/.cache/huggingface/xet` on the read-only rootfs.
+
+Unit tests: `eval/tests/test_faces_server.py` (stubbed `cv2` and
+`huggingface_hub`, synthetic arrays only) and `eval/tests/test_faces_cluster.py`.
+In the full stack, requests go through the router's `/faces/*` pass-throughs
+(master-key gated); `faces-only` is reached directly with no Bearer auth.
+Smoke-test (faces-only, no auth; any image without faces returns no faces):
+
+```bash
+curl -fsS http://localhost:${FACES_HOST_PORT:-8009}/health
+curl -fsS -X POST http://localhost:${FACES_HOST_PORT:-8009}/faces/detect \
+  -H 'content-type: application/json' \
+  -d "{\"images\": [\"$(base64 < /path/to/image.png | tr -d '\n')\"]}"
+```
 ## Environment example
 
 `.env.example` follows deploy's shared format (deploy `docs/runbooks/env-sync.md`, For member authors); check with `python3 -B ../deploy/scripts/check_env_examples.py .`.
