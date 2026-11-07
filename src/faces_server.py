@@ -554,7 +554,8 @@ def _detect_all(images: list[str], min_score: float, deadline: _Deadline) -> lis
         deadline: The request's deadline, checked before each image.
 
     Returns:
-        One result per image, in order.
+        One result per image, in order; an image that does not decode, or that
+        OpenCV fails on after decoding, is marked undecodable on its own.
     """
     results: list[dict[str, object]] = []
     for data in images:
@@ -562,8 +563,13 @@ def _detect_all(images: list[str], min_score: float, deadline: _Deadline) -> lis
         image = _decode(data)
         if image is None:
             results.append({"error": "undecodable"})
-        else:
-            results.append({"faces": _faces_in(image, min_score, deadline)})
+            continue
+        try:
+            faces = _faces_in(image, min_score, deadline)
+        except cv2.error:
+            results.append({"error": "undecodable"})
+            continue
+        results.append({"faces": faces})
     return results
 
 

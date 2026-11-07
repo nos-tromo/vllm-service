@@ -254,6 +254,39 @@ def test_detect_marks_undecodable_image_and_keeps_others(client: TestClient) -> 
     assert len(out["results"][2]["faces"]) == 1
 
 
+def test_opencv_error_costs_only_its_own_image(client: TestClient) -> None:
+    """An image OpenCV fails on after decoding is marked undecodable; the batch goes on."""
+
+    def failing(width: int, height: int, value: int) -> list[list[float]]:
+        if value == 9:
+            raise _CvError("synthetic detector failure")
+        return _default_faces(width, height, value)
+
+    _Detector.faces_for = staticmethod(failing)
+    response = client.post("/faces/detect", json={"images": [_img(640, 360, 9), _img(640, 360, 1)]})
+    assert response.status_code == 200
+    out = response.json()
+    assert out["results"][0] == {"error": "undecodable"}
+    assert len(out["results"][1]["faces"]) == 1
+    assert faces_server._model_lock.acquire(blocking=False)
+    faces_server._model_lock.release()
+
+
+def test_opencv_error_costs_only_its_own_face(client: TestClient, monkeypatch: pytest.MonkeyPatch) -> None:
+    """A crop OpenCV fails on is skipped; the track's other faces still count."""
+    recognizer = faces_server.recognizer
+    feature = recognizer.feature
+
+    def failing(crop: np.ndarray) -> np.ndarray:
+        if int(crop.flat[0]) == 99:
+            raise _CvError("synthetic recognizer failure")
+        return feature(crop)
+
+    monkeypatch.setattr(recognizer, "feature", failing)
+    tracks = [{"samples": [0], "faces": [_face(99), _face(2)]}, {"samples": [1], "faces": [_face(99)]}, _track(2, [5])]
+    assert client.post("/faces/group", json={"tracks": tracks}).json() == {"labels": [0, -1, 0]}
+
+
 def test_detect_all_undecodable_is_422(client: TestClient) -> None:
     """A request none of whose images decode is refused."""
     assert client.post("/faces/detect", json={"images": ["broken"]}).status_code == 422
