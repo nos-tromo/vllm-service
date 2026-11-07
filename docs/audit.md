@@ -31,7 +31,7 @@ and `shutdown` when the worker stops. Each model call adds one event:
 | `outcome` | `ok`, or `error` for a call that failed after it was sent |
 | `actor` | `{"user": null, "via": "service"}`: every caller shares the master key, so the router cannot tell them apart; an Open WebUI user only with a valid signed token, see [Open WebUI's users](#open-webuis-users) |
 | `request_id` | the caller's `X-Request-ID`, which the apps forward from the gateway; unset when absent or malformed. It is taken only from the request headers as the proxy received them, never from a request body |
-| `recipient` | `model:<deployment>`, the compose service that received the data: `chat`, `embed`, `rerank`, `asr`, or the pass-through backend (`embed-sparse`, `gliner`, `clip`, `diarize`, `vad`, `topics`) |
+| `recipient` | `model:<deployment>`, the compose service that received the data: `chat`, `embed`, `rerank`, `asr`, or the pass-through backend (`embed-sparse`, `gliner`, `clip`, `diarize`, `vad`, `faces`, `topics`) |
 | `ai.model_alias` | the model the caller requested; the request path for a pass-through route |
 | `ai.model_id` | the deployment that served the call (`model_info.id` in `docker/litellm.config.yaml`) |
 | `ai.revision` | the deployment's `<MODEL>_REVISION`, when set: the commit the backend loads ([configuration.md](configuration.md#model-revisions)). On a pass-through route, the backend's: `EMBED_MODEL_REVISION` for `/pooling` and `/tokenize`, `CLIP_MODEL_REVISION` for `/clip/*`, `DIARIZE_MODEL_REVISION` for `/diarize`, `FACE_DETECT_MODEL_REVISION` for `/faces/detect` and `FACE_EMBED_MODEL_REVISION` for `/faces/group` (one backend, a model per route); none for `/gliner`, `/vad` and `/topics/fit`, whose backends load no pinned revision |
@@ -64,7 +64,7 @@ were left without their event in between.
 | `/v1/embeddings` | `router.embedding` |
 | `/v1/rerank`, `/rerank`, `/v2/rerank` | `router.rerank` |
 | `/v1/audio/transcriptions` | `router.transcription` |
-| `/pooling`, `/tokenize`, `/gliner`, `/clip/embed_image`, `/clip/embed_text`, `/clip/dimension`, `/diarize`, `/vad`, `/topics/fit` | `router.pass_through_endpoint` |
+| `/pooling`, `/tokenize`, `/gliner`, `/clip/embed_image`, `/clip/embed_text`, `/clip/dimension`, `/diarize`, `/vad`, `/faces/detect`, `/faces/group`, `/topics/fit` | `router.pass_through_endpoint` |
 | any other route LiteLLM serves that reaches a model (e.g. `/v1/responses`, `/v1/messages`, which LiteLLM translates for the chat model) | `router.<call type>` (`responses`, `anthropic_messages`, ...) |
 
 Not audited:
@@ -156,7 +156,7 @@ startup.
 |---|---|---|
 | `AUDIT_ROUTER_CALL_TYPES` | empty: all | Comma-separated call types to audit (`completion`, `text_completion`, `embedding`, `rerank`, `transcription`, `pass_through_endpoint`, ...). An unknown name stops the router. |
 | `AUDIT_OPENWEBUI_JWT_SECRET` | unset | The secret Open WebUI signs its user token with. Unset: no Open WebUI user is named. |
-| `TEXT_MODEL_REVISION`, `EMBED_MODEL_REVISION`, `RERANK_MODEL_REVISION`, `WHISPER_MODEL_REVISION`, `CLIP_MODEL_REVISION`, `DIARIZE_MODEL_REVISION` | unset | Recorded as `ai.revision` (via `model_info.revision` for the model-list deployments, via `PASS_THROUGH_REVISIONS` in `router_audit.py` for the pass-through backends `embed-sparse`, `clip` and `diarize`), and loaded by the same deployment, so the event names the commit served. Unset: not recorded, and the backend serves the cache's `refs/main`. See [Model revisions](configuration.md#model-revisions). |
+| `TEXT_MODEL_REVISION`, `EMBED_MODEL_REVISION`, `RERANK_MODEL_REVISION`, `WHISPER_MODEL_REVISION`, `CLIP_MODEL_REVISION`, `DIARIZE_MODEL_REVISION`, `FACE_DETECT_MODEL_REVISION`, `FACE_EMBED_MODEL_REVISION` | unset | Recorded as `ai.revision` (via `model_info.revision` for the model-list deployments, via `PASS_THROUGH_REVISIONS` in `router_audit.py` for the pass-through backends `embed-sparse`, `clip` and `diarize`, and via `PASS_THROUGH_ROUTE_REVISIONS` per route for `/faces/detect` and `/faces/group`), and loaded by the same deployment, so the event names the commit served. Unset: not recorded, and the backend serves the cache's `refs/main`. See [Model revisions](configuration.md#model-revisions). |
 | `AUDIT_OUTPUT` | `container` (compose) | `stdout` writes to the process's own stdout instead. |
 | `AUDIT_SERVICE_VERSION` | `VLLM_SERVICE_VERSION` (compose) | The `service_version` of the events; a release tag loses its `v`. |
 
@@ -178,6 +178,6 @@ uv run --group eval pytest eval/tests/test_router_audit.py eval/tests/test_revis
 The router tests stub LiteLLM and call the hooks in the order the pinned
 release calls them; each ends by verifying the chain it wrote, and they
 check that each configured pass-through route records its backend's
-revision. The revision tests check that every vLLM launch in
+revision, or its own where the route map names one. The revision tests check that every vLLM launch in
 `docker/compose.yaml` passes the variable the router records for it, and
 passes nothing while it is unset.

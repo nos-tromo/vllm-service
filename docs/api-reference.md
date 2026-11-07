@@ -33,6 +33,7 @@ request body verbatim; a `model` field means nothing on these:
 | `/clip/embed_image`, `/clip/embed_text`, `/clip/dimension` | `clip` — CLIP image+text tower |
 | `/diarize` | `diarize` — pyannote speaker diarization |
 | `/vad` | `vad` — Silero voice activity detection |
+| `/faces/detect`, `/faces/group` | `faces` — YuNet face detection and SFace per-video grouping (CPU) |
 | `/topics/fit` | `topics` — topic-model fit over caller-supplied vectors (CPU) |
 
 ## Authentication
@@ -318,6 +319,112 @@ token is needed.
 
 The `vad-only` shape exposes the same contract at `http://vad-only:8000/vad`
 with no Bearer auth.
+
+## Faces
+
+The `faces` service finds faces in images and groups face tracks by person
+within one video. It runs two [OpenCV Zoo](https://github.com/opencv/opencv_zoo)
+ONNX models through OpenCV on CPU: **YuNet** for detection (box, five landmarks,
+score) and **SFace** for the features that drive grouping. Like `vad` it is
+**not** vLLM and does **not** expose OpenAI-compatible routes — it is reached
+through the router's `/faces/detect` and `/faces/group` pass-throughs. Both take
+JSON with base64 images (standard base64, no `data:` prefix), not multipart:
+LiteLLM rebuilds a multipart body from a dict keyed by part name, so repeated
+image parts would collapse to the last one.
+
+The features never leave the service. `/faces/group` answers with one label per
+track and nothing else — the way `/diarize` returns speaker labels, not
+voiceprints; the features are computed, clustered and dropped inside the
+request, and never logged, stored or returned. Nothing is kept between
+requests, so labels mean something within one response only. There are no
+attributes of any kind (age, sex, emotion, origin) and no matching against a
+gallery.
+
+### `POST /faces/detect`
+
+```bash
+curl http://vllm-router:4000/faces/detect \
+  -H "Authorization: Bearer $OPENAI_API_KEY" \
+  -H "Content-Type: application/json" \
+  -d '{"images": ["<base64 JPEG/PNG>", "<base64 JPEG/PNG>"], "min_score": 0.7}'
+```
+
+At most 8 images; `min_score` (in `[0, 1]`, default `0.7`) is optional.
+Response, one result per image in order, faces by descending score:
+
+```json
+{"results": [
+  {"faces": [{"box": [0.41, 0.22, 0.12, 0.21], "score": 0.97,
+              "landmarks": [[0.44, 0.29], [0.50, 0.29], [0.47, 0.33], [0.45, 0.37], [0.49, 0.37]]}]},
+  {"error": "undecodable"}
+]}
+```
+
+- `box` is `[x, y, width, height]`; every coordinate is a fraction of the
+  submitted image's width and height, clipped to `[0, 1]`.
+- `landmarks` are YuNet's five points in its order: right eye, left eye, nose
+  tip, right mouth corner, left mouth corner.
+- An image whose long side exceeds 1280 px is downscaled first. Detection runs
+  at the image's own scale and at half scale, because YuNet finds faces of
+  roughly 10–300 px; the two sets are merged by non-maximum suppression at
+  IoU 0.4, keeping the higher score.
+- An image that does not decode costs only its own result
+  (`{"error": "undecodable"}`); the request fails with 422 only when none of
+  its images decodes.
+
+### `POST /faces/group`
+
+```bash
+curl http://vllm-router:4000/faces/group \
+  -H "Authorization: Bearer $OPENAI_API_KEY" \
+  -H "Content-Type: application/json" \
+  -d '{"tracks": [
+        {"samples": [3, 4, 5],
+         "faces": [{"image": "<base64 JPEG crop>",
+                    "landmarks": [[38.3, 51.7], [73.5, 51.5], [56.0, 71.7], [41.5, 92.4], [70.7, 92.2]]}]}
+      ]}'
+```
+
+A track is a run of detections the caller already linked within one shot:
+`samples` are the indices of the frames it was on screen in, `faces` up to three
+crops of it, each with its five landmarks **in the crop's pixels** (YuNet's
+order). At most 500 tracks per request. Response:
+
+```json
+{"labels": [0, 0, 1, -1]}
+```
+
+Per face, SFace aligns the crop on its landmarks (`alignCrop`) and computes a
+feature, L2-normalized. Per track, faces whose cosine to the track's medoid is
+below 0.3 are dropped (a track that runs on past a missed cut holds someone
+else's face) and the rest averaged. Tracks that share a sample index were on
+screen at the same time, so they are never merged, however alike they look.
+Average-linkage agglomerative clustering on cosine similarity merges groups
+while the best pair is at least `FACE_GROUP_THRESHOLD` (default `0.42` — stricter
+than OpenCV's 0.363 same-person threshold for a single pair, because merging two
+people is worse than splitting one). Labels are numbered by each group's first
+track; a track with no decodable face gets `-1`.
+
+### Health and errors
+
+`GET /health` → `{"status": "ok", "detect_model": "...", "embed_model": "..."}`.
+
+| Status | When |
+|---|---|
+| 400 | malformed JSON or payload, or over a count limit (8 images, 500 tracks, 3 faces per track, exactly 5 landmarks) |
+| 413 | the declared `Content-Length`, or the body as read, exceeds 32 MiB |
+| 422 | no image of a detect request decodes |
+| 503 + `Retry-After: 5` | the models are busy with another request for more than 30 s; requests run one at a time and are not queued past that |
+
+The top-level keys are exactly `images`, `min_score` and `tracks`, and unknown
+keys are ignored: LiteLLM strips body keys named like its own parameters
+(`metadata`, `tags`, `id`, `timeout`, `headers`, …) before forwarding, and
+switches to streaming on `stream`, so the contract avoids all of them. Error
+messages name the field and the rule it broke, never the value sent.
+
+The `faces-only` shape exposes the same contract at
+`http://faces-only:8000/faces/{detect,group}` with no Bearer auth. Model
+selection and pinning: [configuration.md](configuration.md#faces).
 
 ## NER
 
