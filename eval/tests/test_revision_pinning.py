@@ -73,31 +73,50 @@ def _router_revision_vars() -> dict[str, str]:
     }
 
 
-def _router_pass_through_vars() -> dict[str, str]:
-    """Map each pass-through backend to the variable the router records its revision from.
+def _router_map(name: str) -> dict[str, str]:
+    """Return one of the router's revision-variable maps, read from its source.
 
     Read from the source, so the router module (which needs LiteLLM) is not
     imported here.
+
+    Args:
+        name: The module-level constant, ``PASS_THROUGH_REVISIONS`` (backend
+            host to variable) or ``PASS_THROUGH_ROUTE_REVISIONS`` (route to
+            variable).
+
+    Returns:
+        The map, with string keys and values.
     """
     for node in ast.parse(ROUTER_AUDIT.read_text()).body:
         if (
             isinstance(node, ast.AnnAssign)
             and isinstance(node.target, ast.Name)
-            and node.target.id == "PASS_THROUGH_REVISIONS"
+            and node.target.id == name
             and node.value is not None
         ):
             value = ast.literal_eval(node.value)
             assert isinstance(value, dict)
-            return {str(backend): str(variable) for backend, variable in value.items()}
-    raise AssertionError("PASS_THROUGH_REVISIONS not found in docker/router/router_audit.py")
+            return {str(key): str(variable) for key, variable in value.items()}
+    raise AssertionError(f"{name} not found in docker/router/router_audit.py")
+
+
+def _router_pass_through_vars() -> dict[str, str]:
+    """Map each pass-through backend to the variable the router records its revision from."""
+    return _router_map("PASS_THROUGH_REVISIONS")
+
+
+def _pass_through_routes() -> dict[str, str]:
+    """Map every pass-through path the router forwards to its backend host."""
+    config = yaml.safe_load(LITELLM_CONFIG.read_text())
+    return {
+        str(entry["path"]): urlsplit(str(entry["target"])).hostname or ""
+        for entry in config["general_settings"]["pass_through_endpoints"]
+    }
 
 
 def _pass_through_hosts() -> set[str]:
     """Return the backend host of every pass-through route the router forwards."""
-    config = yaml.safe_load(LITELLM_CONFIG.read_text())
-    return {
-        urlsplit(str(entry["target"])).hostname or "" for entry in config["general_settings"]["pass_through_endpoints"]
-    }
+    return set(_pass_through_routes().values())
 
 
 def _vllm_services() -> set[str]:
@@ -166,13 +185,24 @@ def test_router_records_the_variable_each_pass_through_backend_loads_by() -> Non
     clip's and the diarization pipeline's by the server tests further down.
     """
     recorded = _router_pass_through_vars()
-    assert set(recorded) == _pass_through_hosts() - UNPINNED_PASS_THROUGH
+    route_map = _router_map("PASS_THROUGH_ROUTE_REVISIONS")
+    routed = {host for route, host in _pass_through_routes().items() if route in route_map}
+    assert set(recorded) | routed == _pass_through_hosts() - UNPINNED_PASS_THROUGH
     loaded_by = {
         **_vllm_launches(),
         "clip": next(variable for module, variable, _ in SERVERS if module == "clip_server"),
         "diarize": DIARIZE_VARIABLE,
     }
     assert recorded == {backend: loaded_by[backend] for backend in recorded}
+
+
+def test_route_revision_map_names_configured_routes() -> None:
+    """Every key of PASS_THROUGH_ROUTE_REVISIONS is a configured pass-through path.
+
+    A route renamed in ``docker/litellm.config.yaml`` alone would otherwise
+    fall back to its host's entry, which ``faces`` does not have.
+    """
+    assert set(_router_map("PASS_THROUGH_ROUTE_REVISIONS")) <= set(_pass_through_routes())
 
 
 @pytest.mark.parametrize("others", ["unset", "set"])
@@ -430,3 +460,42 @@ def test_legacy_pipeline_reads_the_revision_from_the_id(
         monkeypatch.setenv(DIARIZE_VARIABLE, value)
     calls = _build_pipeline(monkeypatch, legacy=True)
     assert calls == [(checkpoint, {"use_auth_token": None})]
+
+
+#: The model file each ``/faces/*`` route runs (``src/faces_server.py``'s defaults).
+FACES_ROUTE_FILES: dict[str, str] = {
+    "/faces/detect": "face_detection_yunet_2023mar.onnx",
+    "/faces/group": "face_recognition_sface_2021dec.onnx",
+}
+
+
+def test_faces_server_loads_each_route_at_the_revision_the_router_records(monkeypatch: pytest.MonkeyPatch) -> None:
+    """The faces backend serves two models; each route's model loads by its route-map variable.
+
+    The faces server pins per file through ``hf_hub_download``, so it is
+    imported over stubbed ``cv2`` and ``huggingface_hub`` here rather than run
+    through ``SERVERS``' ``from_pretrained`` loaders.
+    """
+    route_map = _router_map("PASS_THROUGH_ROUTE_REVISIONS")
+    assert set(route_map) == set(FACES_ROUTE_FILES)
+    commits = {variable: str(index) * 40 for index, variable in enumerate(sorted(set(route_map.values())), start=8)}
+    for variable, commit in commits.items():
+        monkeypatch.setenv(variable, commit)
+    loaded: dict[str, object] = {}
+
+    def _hf_hub_download(**kwargs: object) -> str:
+        loaded[str(kwargs["filename"])] = kwargs.get("revision")
+        return f"/nonexistent/{kwargs['filename']}"
+
+    cv2_stub = types.ModuleType("cv2")
+    cv2_stub.FaceDetectorYN = types.SimpleNamespace(create=lambda *_a, **_k: object())  # type: ignore[attr-defined]
+    cv2_stub.FaceRecognizerSF = types.SimpleNamespace(create=lambda *_a, **_k: object())  # type: ignore[attr-defined]
+    hub_stub = types.ModuleType("huggingface_hub")
+    hub_stub.hf_hub_download = _hf_hub_download  # type: ignore[attr-defined]
+    monkeypatch.setitem(sys.modules, "cv2", cv2_stub)
+    monkeypatch.setitem(sys.modules, "huggingface_hub", hub_stub)
+    monkeypatch.syspath_prepend(str(SRC))
+    _import_fresh("faces_server", monkeypatch)
+    assert {route: loaded[file] for route, file in FACES_ROUTE_FILES.items()} == {
+        route: commits[variable] for route, variable in route_map.items()
+    }

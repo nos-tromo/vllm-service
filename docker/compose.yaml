@@ -1,8 +1,8 @@
 name: vllm-service
 
 x-no-proxy-env: &no-proxy-env
-  NO_PROXY: "router,chat,embed,rerank,gliner,clip,asr,diarize,vad,topics,localhost,127.0.0.1,172.16.0.0/12,10.0.0.0/8${EXTRA_NO_PROXY:-}"
-  no_proxy: "router,chat,embed,rerank,gliner,clip,asr,diarize,vad,topics,localhost,127.0.0.1,172.16.0.0/12,10.0.0.0/8${EXTRA_NO_PROXY:-}"
+  NO_PROXY: "router,chat,embed,rerank,gliner,clip,asr,diarize,vad,faces,topics,localhost,127.0.0.1,172.16.0.0/12,10.0.0.0/8${EXTRA_NO_PROXY:-}"
+  no_proxy: "router,chat,embed,rerank,gliner,clip,asr,diarize,vad,faces,topics,localhost,127.0.0.1,172.16.0.0/12,10.0.0.0/8${EXTRA_NO_PROXY:-}"
 
 x-env-file: &env-file
   - path: ../.env
@@ -162,6 +162,10 @@ services:
         condition: service_healthy
       gliner:
         condition: service_healthy
+      # A faces backend without its two model files (a host upgraded without
+      # fetching them) must not keep inference down: only /faces/* fails.
+      faces:
+        condition: service_started
       # A failed topics self-check must not keep inference down.
       topics:
         condition: service_started
@@ -661,6 +665,58 @@ services:
       timeout: 5s
       retries: 60
       start_period: 120s
+    networks:
+      - vllm-net
+      - inference-net
+
+  faces:
+    <<: *hardened
+    read_only: true
+    # Face detection (YuNet) and per-video face grouping (SFace) via FastAPI.
+    # Like vad, NOT a vLLM container — two OpenCV Zoo ONNX models run through
+    # OpenCV (src/faces_server.py, clustering in src/faces_cluster.py).
+    # Endpoint shapes (JSON, images as base64):
+    #   POST /faces/detect {"images": [...at most 8], "min_score"}
+    #     -> {"results": [{"faces": [{"box", "score", "landmarks"}]} | {"error"}]}
+    #   POST /faces/group {"tracks": [{"samples", "faces": [{"image", "landmarks"}]}]}
+    #     -> {"labels": [...]}
+    # The features that drive grouping never leave the container: /faces/group
+    # answers with labels only. CPU-only: no GPU reservation, so it sits
+    # outside the GPU startup chain, and the router waits only for it to
+    # start: missing model files stop this service, never inference.
+    # Both weights load from huggingface-cache, offline, at the commits
+    # FACE_DETECT_MODEL_REVISION and FACE_EMBED_MODEL_REVISION name — the
+    # variables the router records per route (PASS_THROUGH_ROUTE_REVISIONS in
+    # router/router_audit.py), so they come from the shared env_file only.
+    # Bodies (at most 32 MiB) are read into memory, never spooled, so /tmp is
+    # a small tmpfs rather than media-tmp.
+    image: vllm-service-faces:${VLLM_SERVICE_VERSION:-latest}
+    build:
+      context: ..
+      dockerfile: docker/Dockerfile.faces.cpu
+    logging: *default-logging
+    env_file: *env-file
+    depends_on:
+      <<: *volume-permissions-dep
+    environment:
+      <<: *no-proxy-env
+      HF_HUB_OFFLINE: ${HF_HUB_OFFLINE:-1}
+      FACE_DETECT_MODEL: ${FACE_DETECT_MODEL:-opencv/face_detection_yunet}
+      FACE_DETECT_MODEL_FILE: ${FACE_DETECT_MODEL_FILE:-face_detection_yunet_2023mar.onnx}
+      FACE_EMBED_MODEL: ${FACE_EMBED_MODEL:-opencv/face_recognition_sface}
+      FACE_EMBED_MODEL_FILE: ${FACE_EMBED_MODEL_FILE:-face_recognition_sface_2021dec.onnx}
+      FACE_GROUP_THRESHOLD: ${FACE_GROUP_THRESHOLD:-0.42}
+    volumes:
+      - huggingface-cache:/home/app/.cache/huggingface/hub
+    tmpfs:
+      - /tmp:size=64m,uid=10001,gid=10001
+    healthcheck:
+      test: ["CMD-SHELL", "curl -sf http://localhost:8000/health || exit 1"]
+      interval: 10s
+      timeout: 5s
+      retries: 60
+      start_period: 120s
+    restart: unless-stopped
     networks:
       - vllm-net
       - inference-net

@@ -1,0 +1,68 @@
+# Face detection (YuNet) and per-video grouping (SFace) through OpenCV, CPU only.
+# Built for both the full stack's `faces` service and the `faces-only` shape.
+#
+# Stage 1: install the locked closure (docker/faces/uv.lock) into a virtualenv.
+# Both stages use the same pinned base, so the venv's interpreter path is valid
+# in the runtime stage.
+FROM ghcr.io/astral-sh/uv:python3.11-trixie-slim@sha256:fc291ad9d72c018670df760bc0611e13b52725d895bf1889d036ca86aa62523e AS builder
+
+# Never fetch an interpreter of uv's own: the venv must point at this base's Python,
+# which the runtime stage shares.
+ENV UV_PYTHON_DOWNLOADS=never
+
+WORKDIR /build
+COPY docker/faces/pyproject.toml docker/faces/uv.lock /build/
+
+# Install what the lock pins. --locked fails the build if docker/faces/uv.lock has
+# drifted from docker/faces/pyproject.toml, and --require-hashes checks each locked
+# artifact against its hash. Every package ships a wheel, so nothing is compiled.
+RUN uv export --locked --no-dev --no-emit-project --format requirements-txt -o /build/requirements.txt
+RUN uv venv /opt/venv \
+    && uv pip install --python /opt/venv/bin/python --no-cache --no-deps --require-hashes --compile-bytecode \
+        -r /build/requirements.txt
+
+# Stage 2: runtime.
+FROM ghcr.io/astral-sh/uv:python3.11-trixie-slim@sha256:fc291ad9d72c018670df760bc0611e13b52725d895bf1889d036ca86aa62523e
+
+# curl is needed for the docker-compose healthcheck against /health.
+RUN apt-get update \
+    && apt-get install -y --no-install-recommends curl \
+    && rm -rf /var/lib/apt/lists/*
+
+COPY --from=builder /opt/venv /opt/venv
+
+WORKDIR /app
+COPY src/faces_cluster.py src/faces_server.py /app/
+
+# The weights come from the huggingface-cache volume, offline (no runtime
+# download). OPENCV_IO_MAX_IMAGE_PIXELS caps what one decoded upload may
+# allocate at a 4K frame (3840 x 2160, about 25 MB as BGR; OpenCV's own default
+# is a gigapixel), since a small compressed image can declare a huge canvas.
+# faces_server.py sets the same value before it imports cv2 and checks it again.
+ENV PATH=/opt/venv/bin:$PATH \
+    HF_HUB_OFFLINE=1 \
+    OPENCV_LOG_LEVEL=ERROR \
+    OPENCV_IO_MAX_IMAGE_PIXELS=8294400
+
+# Build smoke: the hash-pinned install imports, and this OpenCV build has both
+# face APIs the server calls.
+RUN python -c "import cv2, faces_cluster, fastapi, huggingface_hub; assert hasattr(cv2, 'FaceDetectorYN') and hasattr(cv2, 'FaceRecognizerSF'); print(cv2.__version__)"
+
+# Non-root runtime user (deploy ADR 0001). /app stays root-owned and read-only to
+# the app user; the hub cache directory is the mountpoint of the huggingface-cache
+# volume, and HF_HUB_CACHE pins it explicitly as belt-and-braces.
+RUN groupadd --gid 10001 app \
+    && useradd --uid 10001 --gid app --create-home --home-dir /home/app \
+       --shell /usr/sbin/nologin app \
+    && mkdir -p /home/app/.cache/huggingface/hub \
+    && chown -R app:app /home/app/.cache
+ENV HOME=/home/app \
+    HF_HUB_CACHE=/home/app/.cache/huggingface/hub
+
+USER 10001:10001
+
+EXPOSE 8000
+
+# One worker, pinned: the model lock is a lock in one process, and a WEB_CONCURRENCY
+# or UVICORN_WORKERS from the shared .env would otherwise start more.
+CMD ["uvicorn", "--app-dir", "/app", "faces_server:app", "--host", "0.0.0.0", "--port", "8000", "--workers", "1"]

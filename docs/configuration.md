@@ -193,6 +193,89 @@ override `environment:`. Every response reports them under `runtime.threads`.
 The request and response bodies, and the errors these limits produce, are in
 [api-reference.md](api-reference.md#topics).
 
+## Faces
+
+Applies to both the full-stack `faces` service and the `faces-only` shape.
+Override defaults via `.env`:
+
+```bash
+FACE_DETECT_MODEL=opencv/face_detection_yunet               # default; the detection model's repository
+FACE_DETECT_MODEL_FILE=face_detection_yunet_2023mar.onnx     # default; the file in it
+FACE_EMBED_MODEL=opencv/face_recognition_sface              # default; the feature model's repository
+FACE_EMBED_MODEL_FILE=face_recognition_sface_2021dec.onnx    # default; the file in it
+# FACE_DETECT_MODEL_REVISION=<commit>
+# FACE_EMBED_MODEL_REVISION=<commit>
+# FACE_GROUP_THRESHOLD=0.42             # lowest mean cosine at which two groups merge
+# FACES_HOST_PORT=8009                  # host publish port for dev (faces-only)
+```
+
+**Files.** Each repository holds the model in several variants (fp32, int8,
+int8bq), so the file is configured beside the repository; the defaults are the
+fp32 files. Both come from the `huggingface-cache` volume, offline; only the
+two files and each repository's `LICENSE` belong there (the repositories also
+hold `example_outputs/` with photographs of people). YuNet is MIT-licensed and
+SFace Apache-2.0, both from the OpenCV Zoo. InsightFace's SCRFD/ArcFace models
+are not used because their weights are licensed for non-commercial research
+only.
+
+Fetch only those files, with the deploy repo's `scripts/fetch-model.sh` and its
+repeatable `--file` option (given before the model id); each run prints
+`Revision:`, the commit for that model's revision variable:
+
+```bash
+./fetch-model.sh --file face_detection_yunet_2023mar.onnx --file LICENSE opencv/face_detection_yunet      # → FACE_DETECT_MODEL_REVISION
+./fetch-model.sh --file face_recognition_sface_2021dec.onnx --file LICENSE opencv/face_recognition_sface  # → FACE_EMBED_MODEL_REVISION
+```
+
+A whole-repository fetch would bring along the repositories' `example_outputs/`,
+photographs of people, which have no place on a deployment host. More in
+[deployment-shapes.md](deployment-shapes.md#faces-only).
+
+**Upgrading.** A host upgraded to the release that adds `faces` needs the two
+files in `huggingface-cache` before the service can start. Without them only
+`faces` is down: the router waits for it to start, not to be healthy, so the
+rest of inference comes up and only `/faces/detect` and `/faces/group` fail.
+
+**Revisions.** One backend, two models: each loads at its own revision
+variable, and the router records each per route (see
+[Model revisions](#model-revisions)).
+
+**Grouping threshold.** `FACE_GROUP_THRESHOLD` is the lowest average cosine
+between two groups of tracks at which `/faces/group` still merges them. The
+default `0.42` is stricter than OpenCV's 0.363 for a single same-person pair,
+because merging two people is worse than splitting one: raise it to split more,
+lower it to merge more. A value that is not a number in `[0, 1]` stops the
+server at startup. Tracks that were on screen together are never merged,
+whatever the threshold.
+
+**Limits.** A request may carry at most 8 images (detect) or 500 tracks of at
+most 3 faces and 3600 sample indices each, 100,000 sample indices in all
+(group), in a body of at most 32 MiB, which the service reads into memory — so
+`/tmp` is a 64 MB tmpfs, not `media-tmp`. Each image is decoded, downscaled to
+1280 px on its long side and run before the next is decoded. An image that
+decodes to more than 3840 × 2160 pixels is undecodable: `OPENCV_IO_MAX_IMAGE_PIXELS`
+(set in the image, and by the server before OpenCV loads) makes OpenCV refuse
+the canvas before allocating it, so a small, highly compressed file cannot
+expand into gigabytes. A group crop over 512 px on a side counts as undecodable
+too. At most four `/faces/*` requests are in flight at once, from before the
+body is read until the response is built; a fifth gets `503` with
+`Retry-After: 5` at once, before any of its body is read, so at most four
+bodies and their decoded images are in memory. An admitted body must arrive
+within 30 s, with no single read stalling for more than 10 s; otherwise the
+request gets `408` and its connection is closed, so a slow client cannot keep a
+slot. Decoding and the checks run
+outside the model lock, which is held only for the detector and recognizer
+calls, one call at a time: a request that waits more than 30 s for it, or runs
+past its 120 s deadline, gets the same `503`. `/health` runs
+on the event loop, so a busy worker pool cannot starve the probe. The 32 MiB
+limit is the faces service's own: in the full stack the router enforces no body
+limit at all, and reads the whole JSON body into memory, whatever its size,
+before it forwards it, so a body the service then refuses with a 413 has
+already been held by the router in full
+([issue #158](https://github.com/nos-tromo/vllm-service/issues/158)).
+
+The request and response bodies are in [api-reference.md](api-reference.md#faces).
+
 ## Audit log
 
 The router writes one data-protection audit event per model call
@@ -236,12 +319,14 @@ name the commit the backend loads, and the audit log reports it for every call
 to that deployment. A revision left from the previous model stops the backend
 at startup, since the new model has no such commit.
 
-`NER_MODEL`, `CLIP_MODEL`, `DIARIZE_MODEL`, and `VAD_MODEL` are the exceptions:
-their servers have no OpenAI-shaped endpoints, so they are not in `model_list`
-and do not appear in `/v1/models`. Switching them still works by updating the
-variable in `.env` (with `CLIP_MODEL_REVISION` or `DIARIZE_MODEL_REVISION` for
-the two that load by revision) and restarting the matching service (`gliner`,
-`clip`, `diarize`, `vad`).
+`NER_MODEL`, `CLIP_MODEL`, `DIARIZE_MODEL`, `VAD_MODEL`, `FACE_DETECT_MODEL`
+and `FACE_EMBED_MODEL` are the exceptions: their servers have no OpenAI-shaped
+endpoints, so they are not in `model_list` and do not appear in `/v1/models`.
+Switching them still works by updating the variable in `.env` (with
+`CLIP_MODEL_REVISION`, `DIARIZE_MODEL_REVISION` or the `FACE_*_MODEL_REVISION`
+for those that load by revision, and `FACE_*_MODEL_FILE` for the faces models)
+and restarting the matching service (`gliner`, `clip`, `diarize`, `vad`,
+`faces`).
 
 ## Model revisions
 
@@ -258,12 +343,17 @@ empty, a service gets no revision and serves whatever the cache's
 | `WHISPER_MODEL_REVISION` | `asr` | the vLLM flags |
 | `CLIP_MODEL_REVISION` | `clip`, `clip-only` | `revision=` for the model and its processor |
 | `DIARIZE_MODEL_REVISION` | `diarize`, `diarize-only` | pyannote's `revision=` |
+| `FACE_DETECT_MODEL_REVISION` | `faces`, `faces-only` | `hf_hub_download`'s `revision=` for `FACE_DETECT_MODEL_FILE` |
+| `FACE_EMBED_MODEL_REVISION` | `faces`, `faces-only` | `hf_hub_download`'s `revision=` for `FACE_EMBED_MODEL_FILE` |
 
 The router records each as `ai.revision` in the audit events of the calls it
 forwards: the first four through `model_info.revision` in
 `docker/litellm.config.yaml`, those of the pass-through backends
 (`embed-sparse`, `clip`, `diarize`) through `PASS_THROUGH_REVISIONS` in
-`docker/router/router_audit.py`. Router and backends read them from the same
+`docker/router/router_audit.py`, and the two of `faces`, which serves a model
+per route, through `PASS_THROUGH_ROUTE_REVISIONS` there (`/faces/detect` →
+`FACE_DETECT_MODEL_REVISION`, `/faces/group` → `FACE_EMBED_MODEL_REVISION`),
+which the router checks before the backend's entry. Router and backends read them from the same
 `.env`, so the revision in an audit event is the one the deployment loaded.
 
 The value is the full 40-character commit id: what deploy's `fetch-model.sh`
