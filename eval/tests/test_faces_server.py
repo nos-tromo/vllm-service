@@ -350,6 +350,27 @@ def test_box_partly_outside_the_image_is_clipped(client: TestClient) -> None:
     assert face["box"] == pytest.approx([0.0, 0.0, 0.15, 0.15], abs=1e-3)
 
 
+@pytest.mark.parametrize(
+    ("width", "height", "passes"),
+    [(15, 200, []), (31, 100, [(31, 100)]), (32, 32, [(32, 32), (16, 16)])],
+    ids=["too-small-for-any-pass", "too-small-for-the-half-pass", "both-passes"],
+)
+def test_minimum_side_decides_which_passes_run(
+    client: TestClient, width: int, height: int, passes: list[tuple[int, int]]
+) -> None:
+    """No pass runs below 16 px on the short side, and the half pass needs 16 px at half size."""
+    out = client.post("/faces/detect", json={"images": [_img(width, height)]}).json()
+    assert SET_INPUT_SIZES == passes
+    assert len(out["results"][0]["faces"]) == (1 if passes else 0)
+
+
+@pytest.mark.parametrize(("value", "status"), [(True, 400), ("0.5", 400), (None, 400), (1, 200), (0, 200), (0.5, 200)])
+def test_min_score_is_a_number(client: TestClient, value: object, status: int) -> None:
+    """``min_score`` takes a JSON number only, never a boolean or a string."""
+    response = client.post("/faces/detect", json={"images": [_img(64, 64)], "min_score": value})
+    assert response.status_code == status
+
+
 def test_more_than_eight_images_is_400(client: TestClient) -> None:
     """A batch over the image limit is refused before anything is decoded."""
     assert client.post("/faces/detect", json={"images": [_img(64, 64)] * 9}).status_code == 400

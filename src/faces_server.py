@@ -9,7 +9,7 @@ Endpoints:
     POST /faces/detect
         Body JSON ``{"images": ["<base64 JPEG/PNG>", ...], "min_score": 0.7}``:
         one to eight images, standard base64 without a ``data:`` prefix;
-        ``min_score`` in ``[0, 1]`` is optional (default 0.7). Returns
+        ``min_score``, a number in ``[0, 1]``, is optional (default 0.7). Returns
         ``{"results": [{"faces": [{"box": [x, y, w, h], "score": s,
         "landmarks": [[x, y], ... five]}, ...]}, {"error": "undecodable"}, ...]}``,
         one result per image, in order, faces by descending score.
@@ -252,7 +252,8 @@ class DetectRequest(_Request):
     """A ``/faces/detect`` body."""
 
     images: Annotated[list[str], Field(min_length=1, max_length=MAX_IMAGES)]
-    min_score: Annotated[float, Field(ge=0.0, le=1.0)] = DEFAULT_MIN_SCORE
+    # Strict: a JSON number only (an integer is fine), never a boolean or a string.
+    min_score: Annotated[float, Field(ge=0.0, le=1.0, strict=True)] = DEFAULT_MIN_SCORE
 
 
 class GroupFace(_Request):
