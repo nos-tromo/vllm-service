@@ -260,7 +260,10 @@ expand into gigabytes. A group crop over 512 px on a side counts as undecodable
 too. At most four `/faces/*` requests are in flight at once, from before the
 body is read until the response is built; a fifth gets `503` with
 `Retry-After: 5` at once, before any of its body is read, so at most four
-bodies and their decoded images are in memory. Decoding and the checks run
+bodies and their decoded images are in memory. An admitted body must arrive
+within 30 s, with no single read stalling for more than 10 s; otherwise the
+request gets `408` and its connection is closed, so a slow client cannot keep a
+slot. Decoding and the checks run
 outside the model lock, which is held only for the detector and recognizer
 calls, one call at a time: a request that waits more than 30 s for it, or runs
 past its 120 s deadline, gets the same `503`. `/health` runs

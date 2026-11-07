@@ -40,7 +40,9 @@ Endpoints:
         Liveness probe; returns ``{"status": "ok", "detect_model": ...,
         "embed_model": ...}``.
 
-Errors: 400 for a malformed payload or one over a count limit; 413 when the
+Errors: 400 for a malformed payload or one over a count limit; 408, closing
+the connection, when the body does not arrive within 30 s of admission or a
+single read stalls for more than 10 s; 413 when the
 declared ``Content-Length``, or the body as it is read, exceeds 32 MiB; 422
 when no image of a detect request decodes; 503 with ``Retry-After: 5`` when
 four requests are already in flight (refused at once, before any of the
@@ -120,6 +122,10 @@ MAX_SAMPLES_PER_REQUEST = 100_000
 #: The largest group crop, per side.
 MAX_CROP_SIDE = 512
 MAX_BODY_BYTES = 32 * 1024 * 1024
+#: An admitted request's whole body must arrive within this many seconds, and
+#: no single read may wait longer than the stall limit; else 408.
+_BODY_TIMEOUT_S = 30.0
+_RECEIVE_STALL_S = 10.0
 #: Seconds a request waits for the models before it is told to retry.
 LOCK_WAIT_S = 30.0
 #: The most /faces/* requests in flight at once, from before the body is read
@@ -291,11 +297,27 @@ class GroupRequest(_Request):
         return self
 
 
+def _body_timeout(detail: str) -> HTTPException:
+    """Return the 408 that ends a slow upload and closes its connection.
+
+    Args:
+        detail: Which limit the body broke.
+
+    Returns:
+        The exception, with ``Connection: close``.
+    """
+    return HTTPException(status_code=408, detail=detail, headers={"Connection": "close"})
+
+
 async def _read_body(request: Request) -> bytes:
-    """Read the request body, refusing it once it is over the limit.
+    """Read the request body, refusing it once it is over the size or time limit.
 
     A declared length over the limit is refused before a byte is read; the body
     is also counted as it arrives, so a chunked or understated one is cut off.
+    It is read while the request holds an admission slot, so it is also timed:
+    the whole body must arrive within ``_BODY_TIMEOUT_S``, and no single read
+    may wait longer than ``_RECEIVE_STALL_S``, or a slow client could keep the
+    slot for as long as it likes.
 
     Args:
         request: The request.
@@ -304,18 +326,37 @@ async def _read_body(request: Request) -> bytes:
         The body.
 
     Raises:
-        HTTPException: 413 when the body is over ``MAX_BODY_BYTES``.
+        HTTPException: 413 when the body is over ``MAX_BODY_BYTES``; 408, closing
+            the connection, when it arrives too slowly.
     """
     too_large = HTTPException(status_code=413, detail=f"the request body is over the limit of {MAX_BODY_BYTES} bytes")
     declared = request.headers.get("content-length")
     if declared is not None and declared.isdigit() and int(declared) > MAX_BODY_BYTES:
         raise too_large
     body = bytearray()
-    async for chunk in request.stream():
+    finish_by = anyio.current_time() + _BODY_TIMEOUT_S
+    chunks = request.stream()
+    while True:
+        remaining = finish_by - anyio.current_time()
+        if remaining <= 0:
+            raise _body_timeout(f"the request body did not arrive within {_BODY_TIMEOUT_S:g} s")
+        wait = min(_RECEIVE_STALL_S, remaining)
+        chunk: bytes | None = None
+        ended = False
+        with anyio.move_on_after(wait):
+            try:
+                chunk = await anext(chunks)
+            except StopAsyncIteration:
+                ended = True
+        if ended:
+            return bytes(body)
+        if chunk is None:
+            if wait < _RECEIVE_STALL_S:
+                raise _body_timeout(f"the request body did not arrive within {_BODY_TIMEOUT_S:g} s")
+            raise _body_timeout(f"the request body stalled for more than {_RECEIVE_STALL_S:g} s")
         body += chunk
         if len(body) > MAX_BODY_BYTES:
             raise too_large
-    return bytes(body)
 
 
 _ModelT = TypeVar("_ModelT", bound=BaseModel)

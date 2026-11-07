@@ -431,7 +431,7 @@ def test_busy_lock_is_503_with_retry_after(client: TestClient, monkeypatch: pyte
         assert response.headers["retry-after"] == "5"
 
 
-def _asgi_post(path: str, body: bytes) -> tuple[int, dict[str, str], list[str]]:
+def _asgi_post(path: str, body: bytes, delays: Sequence[float] = (0.0,)) -> tuple[int, dict[str, str], list[str]]:
     """Send one POST straight to the ASGI app, recording whether it read the body.
 
     Each call runs its own event loop, so calls from several threads are
@@ -440,16 +440,24 @@ def _asgi_post(path: str, body: bytes) -> tuple[int, dict[str, str], list[str]]:
     Args:
         path: The route.
         body: The JSON body.
+        delays: The body arrives in ``len(delays)`` pieces, piece ``i`` after
+            waiting ``delays[i]`` seconds, as a slow client would send it.
 
     Returns:
         The status, the response headers, and one ``"receive"`` per body read.
     """
     reads: list[str] = []
     messages: list[Message] = []
+    size = -(-len(body) // len(delays))
+    pieces = [body[index * size : (index + 1) * size] for index in range(len(delays))]
 
     async def receive() -> Message:
+        index = len(reads)
         reads.append("receive")
-        return {"type": "http.request", "body": body, "more_body": False}
+        if index >= len(pieces):
+            return {"type": "http.disconnect"}
+        await anyio.sleep(delays[index])
+        return {"type": "http.request", "body": pieces[index], "more_body": index < len(pieces) - 1}
 
     async def send(message: Message) -> None:
         messages.append(message)
@@ -504,6 +512,40 @@ def test_a_request_is_admitted_while_a_slot_is_free(client: TestClient, monkeypa
     assert status == 200
     assert reads
     assert faces_server._in_flight == faces_server.MAX_IN_FLIGHT - 1
+
+
+def test_a_stalled_body_is_408_and_frees_its_slot(monkeypatch: pytest.MonkeyPatch) -> None:
+    """A body that stops arriving mid-stream is cut off after the stall limit; the slot is free again."""
+    monkeypatch.setattr(faces_server, "_RECEIVE_STALL_S", 0.2)
+    monkeypatch.setattr(faces_server, "_BODY_TIMEOUT_S", 5.0)
+    started = time.monotonic()
+    status, headers, _ = _asgi_post("/faces/detect", _detect_body(), delays=(0.0, 30.0))
+    assert time.monotonic() - started < 2.0
+    assert status == 408
+    assert headers["connection"] == "close"
+    assert faces_server._in_flight == 0
+    assert _asgi_post("/faces/detect", _detect_body())[0] == 200
+
+
+def test_a_body_slower_than_the_total_budget_is_408(monkeypatch: pytest.MonkeyPatch) -> None:
+    """A trickle that never stalls long still has to finish within the body budget."""
+    monkeypatch.setattr(faces_server, "_RECEIVE_STALL_S", 0.3)
+    monkeypatch.setattr(faces_server, "_BODY_TIMEOUT_S", 0.5)
+    started = time.monotonic()
+    status, headers, reads = _asgi_post("/faces/group", _group_body(), delays=(0.15,) * 20)
+    elapsed = time.monotonic() - started
+    assert 0.4 < elapsed < 2.0
+    assert status == 408
+    assert headers["connection"] == "close"
+    assert 1 < len(reads) < 20
+    assert faces_server._in_flight == 0
+
+
+def test_a_body_within_both_limits_is_served(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Pieces that keep coming and finish in time make an ordinary request."""
+    monkeypatch.setattr(faces_server, "_RECEIVE_STALL_S", 0.3)
+    monkeypatch.setattr(faces_server, "_BODY_TIMEOUT_S", 5.0)
+    assert _asgi_post("/faces/detect", _detect_body(), delays=(0.05,) * 5)[0] == 200
 
 
 def test_four_in_flight_then_a_fifth_is_refused_and_a_later_one_admitted(
