@@ -488,23 +488,30 @@ pinned as well as the repository:
 | YuNet (detection) | `opencv/face_detection_yunet` | `face_detection_yunet_2023mar.onnx` | MIT |
 | SFace (features) | `opencv/face_recognition_sface` | `face_recognition_sface_2021dec.onnx` | Apache-2.0 |
 
-Both repositories also ship `example_outputs/` with photographs of people. Fetch
-only the `.onnx` file and `LICENSE` of each, never the whole repository — on a
-networked host, for example:
+Both repositories also ship `example_outputs/` with photographs of people, which
+have no place on a deployment host. Fetch only the `.onnx` file and `LICENSE` of
+each, never the whole repository, with the deploy repo's `scripts/fetch-model.sh`
+and its repeatable `--file` option (given before the model id) on a networked
+host:
 
 ```bash
-hf download opencv/face_detection_yunet face_detection_yunet_2023mar.onnx LICENSE --cache-dir <cache>
-hf download opencv/face_recognition_sface face_recognition_sface_2021dec.onnx LICENSE --cache-dir <cache>
+./fetch-model.sh --file face_detection_yunet_2023mar.onnx --file LICENSE opencv/face_detection_yunet
+./fetch-model.sh --file face_recognition_sface_2021dec.onnx --file LICENSE opencv/face_recognition_sface
 ```
 
-and move that cache into the `huggingface-cache` volume (on an airgapped host,
-with the deploy repo's model-transfer scripts, see
+Each run prints `Revision:` as for a whole model: that commit goes into
+`FACE_DETECT_MODEL_REVISION` and `FACE_EMBED_MODEL_REVISION` respectively. (With
+`hf download <repo> <file> LICENSE` directly, the commit is the name of the
+`snapshots/<commit>` directory it prints.) Then move the cache into the
+`huggingface-cache` volume (on an airgapped host, with the deploy repo's
+model-transfer scripts, see
 [airgap-bundles.md](airgap-bundles.md#loading-and-running-the-bundle)). Unlike
 the other shapes, flipping `HF_HUB_OFFLINE=0` for a first start does not
 populate the cache: `huggingface_hub`'s Xet transfer writes under
 `~/.cache/huggingface/xet`, which is on the container's read-only root
-filesystem, so populate it from outside. The server loads both at import, so a missing file — or a pinned revision the
-cache lacks — stops the container at startup instead of serving other weights.
+filesystem, so populate it from outside. The server loads both at import, so a
+missing file — or a pinned revision the cache lacks — stops the container at
+startup instead of serving other weights.
 InsightFace's models are not used: their weights are licensed for non-commercial
 research only.
 

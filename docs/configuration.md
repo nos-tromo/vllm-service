@@ -269,7 +269,20 @@ two files and each repository's `LICENSE` belong there (the repositories also
 hold `example_outputs/` with photographs of people). YuNet is MIT-licensed and
 SFace Apache-2.0, both from the OpenCV Zoo. InsightFace's SCRFD/ArcFace models
 are not used because their weights are licensed for non-commercial research
-only. How to fetch them: [deployment-shapes.md](deployment-shapes.md#faces-only).
+only.
+
+Fetch only those files, with the deploy repo's `scripts/fetch-model.sh` and its
+repeatable `--file` option (given before the model id); each run prints
+`Revision:`, the commit for that model's revision variable:
+
+```bash
+./fetch-model.sh --file face_detection_yunet_2023mar.onnx --file LICENSE opencv/face_detection_yunet      # → FACE_DETECT_MODEL_REVISION
+./fetch-model.sh --file face_recognition_sface_2021dec.onnx --file LICENSE opencv/face_recognition_sface  # → FACE_EMBED_MODEL_REVISION
+```
+
+A whole-repository fetch would bring along the repositories' `example_outputs/`,
+photographs of people, which have no place on a deployment host. More in
+[deployment-shapes.md](deployment-shapes.md#faces-only).
 
 **Upgrading.** A host upgraded to the release that adds `faces` needs the two
 files in `huggingface-cache` before the service can start. Without them only
@@ -301,9 +314,11 @@ too. Decoding and these checks run outside the model lock, which is held only
 for the detector and recognizer calls, one call at a time: a request that waits
 more than 30 s for it, finds four calls already waiting (refused at once), or
 runs past its 120 s deadline gets `503` with `Retry-After: 5`. `/health` runs
-on the event loop, so a busy worker pool cannot starve the probe. In the
-full stack the router reads the JSON body in full before it forwards it, so it
-holds up to 32 MiB per request in flight, refused requests included
+on the event loop, so a busy worker pool cannot starve the probe. The 32 MiB
+limit is the faces service's own: in the full stack the router enforces no body
+limit at all, and reads the whole JSON body into memory, whatever its size,
+before it forwards it, so a body the service then refuses with a 413 has
+already been held by the router in full
 ([issue #158](https://github.com/nos-tromo/vllm-service/issues/158)).
 
 The request and response bodies are in [api-reference.md](api-reference.md#faces).

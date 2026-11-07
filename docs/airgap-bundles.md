@@ -108,8 +108,10 @@ The `faces` service needs one file from each of two repositories,
 `face_detection_yunet_2023mar.onnx` from `opencv/face_detection_yunet` and
 `face_recognition_sface_2021dec.onnx` from `opencv/face_recognition_sface`
 (YuNet is MIT-licensed, SFace Apache-2.0). Transfer only those files and each
-repository's `LICENSE`: both repositories also hold `example_outputs/` with
-photographs of people, which have no place on the target host. The service
+repository's `LICENSE` — fetch them with `fetch-model.sh --file <name> --file
+LICENSE <repo>` ([configuration.md](configuration.md#faces)): both repositories
+also hold `example_outputs/` with photographs of people, which have no place on
+the target host. The service
 never downloads; with either file missing it does not start. The router waits
 only for it to start, so a host upgraded to this release without the two files
 loses only `/faces/*`, never the rest of inference.
