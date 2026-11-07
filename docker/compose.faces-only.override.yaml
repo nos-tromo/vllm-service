@@ -1,0 +1,13 @@
+### Dev override for the faces-only stack — publishes the faces service on the host.
+###
+### NOT auto-loaded: it lives in docker/ and the Makefile passes explicit
+### -f flags. `make up-dev-faces-only` layers this on top of
+### docker/compose.faces-only.yaml so the service is reachable at
+### localhost:${FACES_HOST_PORT} for direct testing; `make up-faces-only`
+### runs the base alone (production shape). Sibling containers reach the
+### service as `faces-only:8000` on inference-net regardless of this override.
+
+services:
+  faces-only:
+    ports:
+      - "${FACES_HOST_PORT:-8009}:8000"
