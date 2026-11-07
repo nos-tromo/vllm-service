@@ -42,10 +42,11 @@ startup chain: the router waits only for it to *start*, never for it to be
 healthy, which keeps a failed startup self-check from taking inference down.
 
 `faces` is CPU-only too and also sits outside the GPU chain (it waits only for
-`volume-permissions`), but the router does wait for it to be healthy, as for
-every model-serving backend: with either ONNX file missing from the cache it
-does not start, and neither does the router. It returns labels, never the
-features it groups by — see [api-reference.md](api-reference.md#faces).
+`volume-permissions`), and the router likewise waits only for it to *start*:
+with either ONNX file missing from the cache — say, on a host upgraded without
+fetching them — `faces` does not start, and only `/faces/*` fails; the rest of
+inference stays up. It returns labels, never the features it groups by — see
+[api-reference.md](api-reference.md#faces).
 
 `embed` and `embed-sparse` are the **same image and the same model**
 (`BAAI/bge-m3`) run twice with different pooler tasks. vLLM binds one pooling

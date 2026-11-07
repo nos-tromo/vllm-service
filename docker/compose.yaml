@@ -160,10 +160,12 @@ services:
         condition: service_healthy
       vad:
         condition: service_healthy
-      faces:
-        condition: service_healthy
       gliner:
         condition: service_healthy
+      # A faces backend without its two model files (a host upgraded without
+      # fetching them) must not keep inference down: only /faces/* fails.
+      faces:
+        condition: service_started
       # A failed topics self-check must not keep inference down.
       topics:
         condition: service_started
@@ -680,7 +682,8 @@ services:
     #     -> {"labels": [...]}
     # The features that drive grouping never leave the container: /faces/group
     # answers with labels only. CPU-only: no GPU reservation, so it sits
-    # outside the GPU startup chain; the router waits for it to be healthy.
+    # outside the GPU startup chain, and the router waits only for it to
+    # start: missing model files stop this service, never inference.
     # Both weights load from huggingface-cache, offline, at the commits
     # FACE_DETECT_MODEL_REVISION and FACE_EMBED_MODEL_REVISION name — the
     # variables the router records per route (PASS_THROUGH_ROUTE_REVISIONS in
