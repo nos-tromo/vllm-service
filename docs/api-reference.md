@@ -349,7 +349,7 @@ curl http://vllm-router:4000/faces/detect \
   -d '{"images": ["<base64 JPEG/PNG>", "<base64 JPEG/PNG>"], "min_score": 0.7}'
 ```
 
-At most 8 images; `min_score` (in `[0, 1]`, default `0.7`) is optional.
+At most 8 images; `min_score` (a JSON number in `[0, 1]`, default `0.7`; a boolean or a string is a 400) is optional.
 Response, one result per image in order, faces by descending score:
 
 ```json
