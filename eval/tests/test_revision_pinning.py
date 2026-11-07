@@ -451,3 +451,42 @@ def test_legacy_pipeline_reads_the_revision_from_the_id(
         monkeypatch.setenv(DIARIZE_VARIABLE, value)
     calls = _build_pipeline(monkeypatch, legacy=True)
     assert calls == [(checkpoint, {"use_auth_token": None})]
+
+
+#: The model file each ``/faces/*`` route runs (``src/faces_server.py``'s defaults).
+FACES_ROUTE_FILES: dict[str, str] = {
+    "/faces/detect": "face_detection_yunet_2023mar.onnx",
+    "/faces/group": "face_recognition_sface_2021dec.onnx",
+}
+
+
+def test_faces_server_loads_each_route_at_the_revision_the_router_records(monkeypatch: pytest.MonkeyPatch) -> None:
+    """The faces backend serves two models; each route's model loads by its route-map variable.
+
+    The faces server pins per file through ``hf_hub_download``, so it is
+    imported over stubbed ``cv2`` and ``huggingface_hub`` here rather than run
+    through ``SERVERS``' ``from_pretrained`` loaders.
+    """
+    route_map = _router_map("PASS_THROUGH_ROUTE_REVISIONS")
+    assert set(route_map) == set(FACES_ROUTE_FILES)
+    commits = {variable: str(index) * 40 for index, variable in enumerate(sorted(set(route_map.values())), start=8)}
+    for variable, commit in commits.items():
+        monkeypatch.setenv(variable, commit)
+    loaded: dict[str, object] = {}
+
+    def _hf_hub_download(**kwargs: object) -> str:
+        loaded[str(kwargs["filename"])] = kwargs.get("revision")
+        return f"/nonexistent/{kwargs['filename']}"
+
+    cv2_stub = types.ModuleType("cv2")
+    cv2_stub.FaceDetectorYN = types.SimpleNamespace(create=lambda *_a, **_k: object())  # type: ignore[attr-defined]
+    cv2_stub.FaceRecognizerSF = types.SimpleNamespace(create=lambda *_a, **_k: object())  # type: ignore[attr-defined]
+    hub_stub = types.ModuleType("huggingface_hub")
+    hub_stub.hf_hub_download = _hf_hub_download  # type: ignore[attr-defined]
+    monkeypatch.setitem(sys.modules, "cv2", cv2_stub)
+    monkeypatch.setitem(sys.modules, "huggingface_hub", hub_stub)
+    monkeypatch.syspath_prepend(str(SRC))
+    _import_fresh("faces_server", monkeypatch)
+    assert {route: loaded[file] for route, file in FACES_ROUTE_FILES.items()} == {
+        route: commits[variable] for route, variable in route_map.items()
+    }
