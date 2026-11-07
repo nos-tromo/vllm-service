@@ -625,9 +625,9 @@ it would claim the remaining memory and starve them. `vad` is a CPU service
 (no GPU reservation), so its place in the chain is just ordering, not memory
 contention. `faces` (CPU, no GPU reservation either) and `topics` sit outside
 the chain: `faces` waits only for `volume-permissions`, and the router waits
-for it to be healthy (so a cache missing either ONNX file keeps the router
-down, as a missing CLIP model would), while the router waits only for `topics`
-to start. Healthchecks hit `http://localhost:8000/health` (vLLM backends,
+only for `faces` and `topics` to *start* — a failed topics self-check, or a
+cache missing either faces ONNX file (a host upgraded without fetching them),
+takes down only that service's routes, never inference. Healthchecks hit `http://localhost:8000/health` (vLLM backends,
 `clip`, `diarize`, `vad`, `faces`, and `topics`) and `/health/liveliness`
 (router).
 `gliner` has no `/health` route: its healthcheck is the same functional probe
@@ -1156,6 +1156,9 @@ Load-bearing points:
   `example_outputs/` with photos of people — transfer only the `.onnx` file and
   `LICENSE` of each. A first start with `HF_HUB_OFFLINE=0` does not populate the
   cache: hf-xet writes under `~/.cache/huggingface/xet` on the read-only rootfs.
+  **Upgrading a host to this release** needs the two files in `huggingface-cache`
+  first; without them only `faces` is down (the router waits only for it to
+  start, `docker/compose.yaml`), and `/faces/*` fails.
 
 Unit tests: `eval/tests/test_faces_server.py` (stubbed `cv2` and
 `huggingface_hub`, synthetic arrays only) and `eval/tests/test_faces_cluster.py`.

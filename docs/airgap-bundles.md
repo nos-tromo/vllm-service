@@ -110,8 +110,9 @@ The `faces` service needs one file from each of two repositories,
 (YuNet is MIT-licensed, SFace Apache-2.0). Transfer only those files and each
 repository's `LICENSE`: both repositories also hold `example_outputs/` with
 photographs of people, which have no place on the target host. The service
-never downloads; with either file missing it does not start, and with it the
-full-stack router waits.
+never downloads; with either file missing it does not start. The router waits
+only for it to start, so a host upgraded to this release without the two files
+loses only `/faces/*`, never the rest of inference.
 
 The version is embedded in the tarball filenames, so the operator just
 reads it off the file. Verify with `docker images | grep vllm-service`

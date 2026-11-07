@@ -271,6 +271,11 @@ SFace Apache-2.0, both from the OpenCV Zoo. InsightFace's SCRFD/ArcFace models
 are not used because their weights are licensed for non-commercial research
 only. How to fetch them: [deployment-shapes.md](deployment-shapes.md#faces-only).
 
+**Upgrading.** A host upgraded to the release that adds `faces` needs the two
+files in `huggingface-cache` before the service can start. Without them only
+`faces` is down: the router waits for it to start, not to be healthy, so the
+rest of inference comes up and only `/faces/detect` and `/faces/group` fail.
+
 **Revisions.** One backend, two models: each loads at its own revision
 variable, and the router records each per route (see
 [Model revisions](#model-revisions)).
