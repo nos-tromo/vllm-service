@@ -631,6 +631,45 @@ def test_group_track_without_faces_is_unassigned(client: TestClient) -> None:
     assert client.post("/faces/group", json={"tracks": [{"samples": [0], "faces": []}]}).json() == {"labels": [-1]}
 
 
+def _weak(person: int, samples: list[int]) -> dict[str, object]:
+    """A weak track (no face the client judged good) of ``person`` on screen at ``samples``."""
+    return {**_track(person, samples), "anchor": False}
+
+
+def test_group_weak_track_joins_its_person(client: TestClient) -> None:
+    """A weak track takes the label of the one person it matches."""
+    tracks = [_track(3, [0]), _track(5, [1]), _weak(3, [2])]
+    assert client.post("/faces/group", json={"tracks": tracks}).json() == {"labels": [0, 1, 0]}
+
+
+def test_group_weak_tracks_found_no_person(client: TestClient) -> None:
+    """Weak tracks alone stay unassigned, however alike."""
+    tracks = [_weak(3, [0]), _weak(3, [1])]
+    assert client.post("/faces/group", json={"tracks": tracks}).json() == {"labels": [-1, -1]}
+
+
+@pytest.mark.parametrize("flag", [None, True], ids=["missing", "true"])
+def test_group_track_is_an_anchor_unless_marked_weak(client: TestClient, flag: bool | None) -> None:
+    """Without ``anchor`` a track is an anchor, as before the field existed."""
+    second = _track(3, [1]) if flag is None else {**_track(3, [1]), "anchor": flag}
+    assert client.post("/faces/group", json={"tracks": [_track(3, [0]), second]}).json() == {"labels": [0, 0]}
+
+
+@pytest.mark.parametrize("flag", ["no", 0, 1, None], ids=["string", "zero", "one", "null"])
+def test_group_anchor_must_be_a_boolean(client: TestClient, flag: object) -> None:
+    """``anchor`` is a JSON boolean or absent; anything else is malformed."""
+    track = {**_track(3, [0]), "anchor": flag}
+    assert client.post("/faces/group", json={"tracks": [track]}).status_code == 400
+
+
+def test_group_log_counts_weak_and_joined_tracks(client: TestClient, caplog: pytest.LogCaptureFixture) -> None:
+    """The group log line says how many tracks were weak and how many of them joined a person."""
+    caplog.set_level("INFO")
+    client.post("/faces/group", json={"tracks": [_track(3, [0]), _weak(3, [1]), _weak(4, [2])]})
+    line = next(record.getMessage() for record in caplog.records if "faces.group" in record.getMessage())
+    assert "weak=2" in line and "joined=1" in line
+
+
 @pytest.mark.parametrize(
     "tracks",
     [

@@ -12,6 +12,14 @@ agglomerative clustering on cosine similarity, with one constraint: two tracks
 that share a sample index were on screen at the same time, so they are two
 people and never end up in one cluster, however alike they look.
 
+Tracks come in two roles. An anchor track holds at least one face the caller
+judged good (confident, large, roughly frontal); only anchors are clustered,
+so only they make up people. A weak track holds no such face, a profile say,
+whose features are less reliable. It may join the one person it is close
+enough to, but never founds a person and never links two: features that
+reliable faces would not back cannot merge anyone. A weak track that is close
+to no person, or to more than one, stays on its own.
+
 Nothing here is kept between calls; the vectors live only as long as the
 request that computed them.
 """
@@ -82,7 +90,7 @@ def _cooccurring(assigned: list[int], samples: list[frozenset[int]]) -> list[np.
     sample indices sent, not the number of track pairs times their sizes.
 
     Args:
-        assigned: The tracks that have a vector, as indices into ``samples``.
+        assigned: The tracks to cluster, as indices into ``samples``.
         samples: The sample indices of every track.
 
     Returns:
@@ -97,8 +105,10 @@ def _cooccurring(assigned: list[int], samples: list[frozenset[int]]) -> list[np.
     return [np.asarray(members) for members in sorted(groups)]
 
 
-def cluster_tracks(vectors: list[np.ndarray | None], samples: list[frozenset[int]], *, threshold: float) -> list[int]:
-    """Group tracks by average-linkage clustering under cannot-link constraints.
+def _average_linkage(
+    present: dict[int, np.ndarray], samples: list[frozenset[int]], seeds: list[int], threshold: float
+) -> np.ndarray:
+    """Cluster the seed tracks by average linkage under cannot-link constraints.
 
     Clusters start as single tracks. Each step merges the pair with the highest
     average pairwise cosine, while that average is at least ``threshold`` and
@@ -108,28 +118,18 @@ def cluster_tracks(vectors: list[np.ndarray | None], samples: list[frozenset[int
     anything either of its parts could not.
 
     Args:
-        vectors: One unit vector per track, or ``None`` for a track without one.
-        samples: The sample indices each track was on screen at, one set per track.
+        present: The unit vector of every track that has one, by track index.
+        samples: The sample indices of every track.
+        seeds: The tracks to cluster, as indices; each has a vector.
         threshold: The lowest average cosine at which two clusters merge.
 
     Returns:
-        One label per track: clusters numbered ``0, 1, …`` in the order of
-        their first track; ``-1`` for a track without a vector.
-
-    Raises:
-        ValueError: If ``vectors`` and ``samples`` differ in length.
+        Per position in ``seeds``, the position of the seed whose cluster it ended in.
     """
-    if len(vectors) != len(samples):
-        raise ValueError("vectors and samples must have one entry per track")
-    assigned = [index for index, vector in enumerate(vectors) if vector is not None]
-    labels = [-1] * len(vectors)
-    count = len(assigned)
-    if count == 0:
-        return labels
-
-    matrix = np.stack([np.asarray(vectors[index], dtype=np.float64) for index in assigned])
+    count = len(seeds)
+    matrix = np.stack([present[index] for index in seeds])
     similarity = matrix @ matrix.T
-    for members in _cooccurring(assigned, samples):
+    for members in _cooccurring(seeds, samples):
         similarity[np.ix_(members, members)] = -np.inf
     np.fill_diagonal(similarity, -np.inf)
 
@@ -149,9 +149,103 @@ def cluster_tracks(vectors: list[np.ndarray | None], samples: list[frozenset[int
         similarity[keep, keep] = -np.inf
         sizes[keep] += sizes[drop]
         owner[owner == drop] = keep
+    return owner
 
+
+def _attach(
+    present: dict[int, np.ndarray],
+    samples: list[frozenset[int]],
+    weak: list[int],
+    people: list[list[int]],
+    labels: list[int],
+    threshold: float,
+) -> None:
+    """Let each weak track join the one person it is close enough to, in place.
+
+    A track's closeness to a person is its mean cosine to the person's anchor
+    tracks, as in average linkage; joined weak tracks do not count, so they
+    never shift a person. A person is a candidate when that mean is at least
+    ``threshold`` and no track of the person, joined ones included, shares a
+    sample index with the weak track. The track joins only when exactly one
+    person is a candidate. Tracks go closest first, so of two weak tracks on
+    screen together the closer one joins.
+
+    Args:
+        present: The unit vector of every track that has one, by track index.
+        samples: The sample indices of every track.
+        weak: The weak tracks with a vector, as indices.
+        people: Per label, the anchor tracks of that person.
+        labels: One label per track, updated for the tracks that join.
+        threshold: The lowest mean cosine at which a weak track joins a person.
+    """
+    anchors_of = [np.stack([present[index] for index in members]) for members in people]
+    closeness = {index: [float(np.mean(matrix @ present[index])) for matrix in anchors_of] for index in weak}
+    on_screen = [set().union(*(samples[index] for index in members)) for members in people]
+    for index in sorted(weak, key=lambda track: (-max(closeness[track]), track)):
+        candidates = [
+            person
+            for person, value in enumerate(closeness[index])
+            if value >= threshold and not on_screen[person] & samples[index]
+        ]
+        if len(candidates) == 1:
+            labels[index] = candidates[0]
+            on_screen[candidates[0]] |= samples[index]
+
+
+def cluster_tracks(
+    vectors: list[np.ndarray | None],
+    samples: list[frozenset[int]],
+    *,
+    threshold: float,
+    anchors: list[bool] | None = None,
+) -> list[int]:
+    """Group tracks into people: anchors by clustering, weak tracks by joining one.
+
+    The anchor tracks are clustered by average linkage under cannot-link
+    constraints (:func:`_average_linkage`); each cluster is a person. Each weak
+    track then joins the one person it is close enough to, or none
+    (:func:`_attach`).
+
+    Args:
+        vectors: One unit vector per track, or ``None`` for a track without one.
+        samples: The sample indices each track was on screen at, one set per track.
+        threshold: The lowest average cosine at which two clusters merge, and
+            at which a weak track joins a person.
+        anchors: Per track, whether it is an anchor; ``None`` makes every
+            track one.
+
+    Returns:
+        One label per track: people numbered ``0, 1, …`` in the order of
+        their first anchor track; ``-1`` for a track without a vector and for
+        a weak track that joined no one.
+
+    Raises:
+        ValueError: If ``vectors``, ``samples`` and ``anchors`` differ in length.
+    """
+    if len(vectors) != len(samples):
+        raise ValueError("vectors and samples must have one entry per track")
+    roles = [True] * len(vectors) if anchors is None else list(anchors)
+    if len(roles) != len(vectors):
+        raise ValueError("anchors must have one entry per track")
+    present = {
+        index: np.asarray(vector, dtype=np.float64) for index, vector in enumerate(vectors) if vector is not None
+    }
+    labels = [-1] * len(vectors)
+    seeds = [index for index in present if roles[index]]
+    if not seeds:
+        return labels
+
+    owner = _average_linkage(present, samples, seeds, threshold)
     numbering: dict[int, int] = {}
-    for position, index in enumerate(assigned):
-        cluster = int(owner[position])
-        labels[index] = numbering.setdefault(cluster, len(numbering))
+    people: list[list[int]] = []
+    for position, index in enumerate(seeds):
+        label = numbering.setdefault(int(owner[position]), len(numbering))
+        if label == len(people):
+            people.append([])
+        people[label].append(index)
+        labels[index] = label
+
+    weak = [index for index in present if not roles[index]]
+    if weak:
+        _attach(present, samples, weak, people, labels, threshold)
     return labels

@@ -23,18 +23,23 @@ Endpoints:
 
     POST /faces/group
         Body JSON ``{"tracks": [{"samples": [3, 4, 5], "faces": [{"image":
-        "<base64 JPEG/PNG>", "landmarks": [[x, y], ... five]}]}, ...]}``: at
-        most 500 tracks of at most three faces each; a face is a crop of at
-        most 512 px a side with its five landmarks in the crop's pixels,
-        ``samples`` the indices of the frames the track was on screen in (at
-        most 3600 per track and 100,000 per request). Returns ``{"labels": [0, 0, 1, -1]}``,
-        one label per track. Per face, SFace ``alignCrop`` + ``feature``,
-        L2-normalized; per track, faces far from the track's medoid are dropped
-        and the rest averaged; tracks that share a sample index are never
-        merged; average-linkage clustering merges while the best pair's mean
-        cosine is at least ``FACE_GROUP_THRESHOLD`` (``faces_cluster.py``).
-        Labels are numbered by each group's first track; a track without a
-        decodable face gets ``-1``.
+        "<base64 JPEG/PNG>", "landmarks": [[x, y], ... five]}], "anchor":
+        true}, ...]}``: at most 500 tracks of at most three faces each; a face
+        is a crop of at most 512 px a side with its five landmarks in the
+        crop's pixels, ``samples`` the indices of the frames the track was on
+        screen in (at most 3600 per track and 100,000 per request), ``anchor``
+        an optional JSON boolean (default true): false marks a weak track, one
+        without a face the client judged good. Returns ``{"labels": [0, 0, 1,
+        -1]}``, one label per track. Per face, SFace ``alignCrop`` +
+        ``feature``, L2-normalized; per track, faces far from the track's
+        medoid are dropped and the rest averaged. The anchor tracks are
+        clustered: tracks that share a sample index are never merged, and
+        average linkage merges while the best pair's mean cosine is at least
+        ``FACE_GROUP_THRESHOLD``. Each weak track then joins the one person
+        whose anchors it matches by that mean cosine and who was not on screen
+        with it, or no one (``faces_cluster.py``). Labels are numbered by each
+        person's first anchor track; a track without a decodable face, and a
+        weak track that joined no one, gets ``-1``.
 
     GET /health
         Liveness probe; returns ``{"status": "ok", "detect_model": ...,
@@ -290,6 +295,9 @@ class GroupTrack(_Request):
 
     samples: Annotated[list[int], Field(max_length=MAX_SAMPLES_PER_TRACK)]
     faces: Annotated[list[GroupFace], Field(max_length=MAX_FACES_PER_TRACK)]
+    # Strict: a JSON boolean only. False marks a weak track, which may join a
+    # person but never founds or links one (faces_cluster.py).
+    anchor: Annotated[bool, Field(strict=True)] = True
 
 
 class GroupRequest(_Request):
@@ -736,7 +744,8 @@ def _group_all(tracks: list[GroupTrack], deadline: _Deadline) -> tuple[list[int]
         embedded += len(features)
         vectors.append(track_vector(np.stack(features)) if features else None)
     samples = [frozenset(track.samples) for track in tracks]
-    return cluster_tracks(vectors, samples, threshold=GROUP_THRESHOLD), embedded
+    anchors = [track.anchor for track in tracks]
+    return cluster_tracks(vectors, samples, threshold=GROUP_THRESHOLD, anchors=anchors), embedded
 
 
 @app.post("/faces/detect")
@@ -819,9 +828,12 @@ async def _group(request: Request) -> dict[str, list[int]]:
     deadline = _Deadline()
     payload = _parse(GroupRequest, await _read_body(request))
     labels, embedded = await anyio.to_thread.run_sync(lambda: _group_all(payload.tracks, deadline))
+    weak = [label for track, label in zip(payload.tracks, labels, strict=True) if not track.anchor]
     _log.info(
-        "faces.group tracks=%d faces=%d embedded=%d unassigned=%d groups=%d ms=%d",
+        "faces.group tracks=%d weak=%d joined=%d faces=%d embedded=%d unassigned=%d groups=%d ms=%d",
         len(labels),
+        len(weak),
+        sum(1 for label in weak if label >= 0),
         sum(len(track.faces) for track in payload.tracks),
         embedded,
         labels.count(-1),
