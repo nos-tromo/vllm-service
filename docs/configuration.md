@@ -6,6 +6,47 @@ the environment at startup. This document covers the settings that need more
 than a one-line comment. Per-shape defaults for the CPU-only containers live in
 [deployment-shapes.md](deployment-shapes.md).
 
+## Master key
+
+`OPENAI_API_KEY` is the router's master key: every client sends it as its
+Bearer token, and the router passes it on to the vLLM backends, whose
+`--api-key` it is too. The apps (docint, Nextext, translator,
+open-webui-service) hold the same value, and deploy's `make env` copies it from
+this repo's `.env` to theirs. `.env.example` leaves it empty, and compose
+refuses the full stack without one:
+
+```
+required variable OPENAI_API_KEY is missing a value: OPENAI_API_KEY must be set in .env (the router master key; the apps use the same value)
+```
+
+Every command that loads `docker/compose.yaml` stops this way, so set the key
+before the first `make build` or `make bundle` (any value will do on a build
+host; images do not carry it); `make down` and deploy's `make ps` need it too.
+The CPU-only shapes run no router and do not read it.
+
+## Shell precedence
+
+Compose hands some settings to the containers through `environment:` in the
+compose files rather than through `env_file`: the router's `OPENAI_API_KEY`,
+`TEXT_MODEL`, `EMBED_MODEL`, `RERANK_MODEL` and `WHISPER_MODEL`, every
+service's `HF_HUB_OFFLINE` and `TRANSFORMERS_OFFLINE`, and each other
+`${KEY:-default}` in a compose file (most `*_MODEL` and `*_DEVICE` keys of the
+FastAPI services and the CPU-only shapes, the `DIARIZE_VAD_*` gate,
+`TOPICS_*`). Compose takes their values from the environment of the shell
+that runs it first, and from `.env` second, so a variable exported there beats
+`.env`. Set in neither, a key takes its compose default, the value
+`.env.example` shows.
+
+The vLLM backends read their settings, the model ids and the master key
+included, from `env_file` alone, so `.env` only; the model revisions reach the
+router the same way. An exported router key therefore splits the stack: an
+exported `OPENAI_API_KEY` becomes the router's master key and the key it sends
+the backends, which still check the one in `.env` and answer 401; an exported
+`TEXT_MODEL` makes the router route to a model the chat backend does not serve.
+Run `make up` from a shell that exports none of them;
+`env | cut -d= -f1 | grep -xE 'OPENAI_API_KEY|[A-Z]+_MODEL'` lists any that
+are, by name only.
+
 ## Tool calling
 
 The `chat` backend starts with auto tool choice on, using the tool-call
@@ -70,7 +111,7 @@ Override defaults via `.env`:
 
 ```bash
 DIARIZE_MODEL=pyannote/speaker-diarization-community-1   # default (pyannote.audio 4.x; gated)
-DIARIZE_DEVICE=cpu                               # default in diarize-only
+DIARIZE_DEVICE=cuda                              # full stack; diarize-only pins cpu
 # DIARIZE_HOST_PORT=8004                          # host publish port for dev
 # DIARIZE_FB=0.4                                  # community-1 clustering: LOWER → MORE speakers; 0.4 validated best
 # DIARIZE_FA=0.07                                 # community-1 PLDA companion weight (leave at stock 0.07)
@@ -218,7 +259,9 @@ prints request bodies.
 
 `docker/litellm.config.yaml` is model-agnostic: all model names are read at
 startup from the environment variables `TEXT_MODEL`, `EMBED_MODEL`,
-`RERANK_MODEL`, and `WHISPER_MODEL`. To switch a model,
+`RERANK_MODEL`, and `WHISPER_MODEL`. Compose passes each to the router with
+the default its backend starts with, so a name left unset in `.env` still
+matches the model the backend serves. To switch a model,
 update the relevant variable in `.env` and restart the stack. No changes to
 `docker/litellm.config.yaml` are required. Switching `TEXT_MODEL` to another
 model family also needs the matching `CHAT_TOOL_CALL_PARSER`: a mismatch does

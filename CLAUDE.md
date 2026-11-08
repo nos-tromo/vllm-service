@@ -626,11 +626,24 @@ flag `--calculate-kv-scales` upstream, so the repo no longer exposes it.)
 
 `OPENAI_API_KEY` serves double duty: it is both the upstream API key passed to
 each vLLM `--api-key` and the LiteLLM `master_key` that gates the router.
+Compose guards it on the router (`${OPENAI_API_KEY:?…}`): with the key unset or
+empty, nothing that loads `docker/compose.yaml` runs (`up`, `build`, `bundle`,
+`down`); CI's `env-example` job checks both sides. The CPU-only shapes run no
+router and never read it.
 
-`HF_HUB_OFFLINE=1` and `TRANSFORMERS_OFFLINE=1` are the default — models are
+`HF_HUB_OFFLINE=1` and `TRANSFORMERS_OFFLINE=1` are the compose default in
+every service (router and topics included) — models are
 expected to already be present in the shared `huggingface-cache` volume. To
 download a new model, temporarily flip both to `0` (and set `HF_TOKEN` if the
 model is gated).
+
+The router gets its key, its model names (`TEXT_MODEL`, `EMBED_MODEL`,
+`RERANK_MODEL`, `WHISPER_MODEL`, with the backends' defaults) and the HF flags
+from `environment:` interpolation, which reads the operator's shell before
+`.env`; the vLLM backends read the same keys from `env_file` only. A shell
+export of one of them therefore splits router and backends
+(`docs/configuration.md#shell-precedence`). The revisions stay `env_file`-only
+(see "Revision pinning").
 
 ### Switching models
 
@@ -1023,6 +1036,10 @@ Smoke-test (vad-only, no auth):
 curl -fsS -X POST http://localhost:${VAD_HOST_PORT:-8006}/vad \
   -F 'file=@/path/to/recording.mp3'
 ```
+
+## Environment example
+
+`.env.example` follows deploy's shared format (deploy `docs/runbooks/env-sync.md`, For member authors); check with `python3 -B ../deploy/scripts/check_env_examples.py .`.
 
 ## Git & PR Workflow
 

@@ -46,10 +46,10 @@ also has `stop-<shape>`, `down-<shape>`, and `bundle-<shape>` targets; run
 ### Populating the model cache
 
 Every shape that needs weights expects them to already be present in the shared
-`huggingface-cache` volume — `.env.example` ships `HF_HUB_OFFLINE=1`, so
-nothing is downloaded at start. To populate the cache on a networked host,
-temporarily set `HF_HUB_OFFLINE=0` and `TRANSFORMERS_OFFLINE=0` in `.env` for
-the first start, then flip both back.
+`huggingface-cache` volume — `HF_HUB_OFFLINE` and `TRANSFORMERS_OFFLINE`
+default to `1` in every compose file, so nothing is downloaded at start. To
+populate the cache on a networked host, temporarily set `HF_HUB_OFFLINE=0` and
+`TRANSFORMERS_OFFLINE=0` in `.env` for the first start, then flip both back.
 
 Four shapes deviate: **diarize-only** needs gated weights and an `HF_TOKEN`
 (see [Diarize-only](#diarize-only)), **asr-only** downloads from
@@ -234,7 +234,7 @@ Override defaults via `.env` — only `CLIP_*` knobs apply in this shape:
 
 ```bash
 CLIP_MODEL=openai/clip-vit-base-patch32   # default
-CLIP_DEVICE=cpu                           # default in clip-only
+# CLIP_DEVICE: clip-only pins cpu; a value here does nothing
 # CLIP_HOST_PORT=8003                     # host publish port for dev
 ```
 
@@ -364,7 +364,7 @@ this shape:
 
 ```bash
 WHISPER_MODEL=openai/whisper-large-v3   # default
-ASR_DEVICE=cpu                          # default in asr-only
+# ASR_DEVICE: asr-only pins cpu; a value here does nothing
 # ASR_HOST_PORT=8005                     # host publish port for dev
 ```
 
@@ -393,7 +393,7 @@ Override defaults via `.env` — only `VAD_*` knobs apply in this shape:
 
 ```bash
 VAD_MODEL=silero_vad     # default (informational; one bundled model)
-VAD_DEVICE=cpu           # default in vad-only
+# VAD_DEVICE: vad-only pins cpu; a value here does nothing
 # VAD_USE_ONNX=false      # true runs the bundled ONNX graph
 # VAD_HOST_PORT=8006       # host publish port for dev
 ```
