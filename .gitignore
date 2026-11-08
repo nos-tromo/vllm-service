@@ -6,6 +6,8 @@
 
 .DS_Store
 !.env.example
+# The router's committed defaults (docker/compose.yaml env_file); no secrets.
+!docker/router/defaults.env
 
 # Distributable image bundle artifacts (do not commit)
 *.tar.gz

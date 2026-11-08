@@ -66,8 +66,6 @@ services:
     env_file: *env-file
     environment:
       <<: *no-proxy-env
-      HF_HUB_OFFLINE: ${HF_HUB_OFFLINE:-1}
-      TRANSFORMERS_OFFLINE: ${TRANSFORMERS_OFFLINE:-1}
       TOPICS_MAX_POINTS: ${TOPICS_MAX_POINTS:-150000}
       # The image pins these too; env_file would override the image, so they
       # are set here, where a shared .env cannot change them.

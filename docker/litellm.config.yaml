@@ -5,8 +5,8 @@
 #
 # Model names are read from environment variables via the os.environ/
 # syntax. Set TEXT_MODEL, EMBED_MODEL, RERANK_MODEL and WHISPER_MODEL in
-# .env; compose passes each to the router with the default its backend
-# starts with (docker/compose.yaml), so a name left unset in .env still
+# .env; the router's env_file starts from router/defaults.env, which holds
+# the default each backend starts with, so a name left unset in .env still
 # matches the model the backend serves. No changes are required here.
 #
 # Each deployment's model_info names it for the data-protection audit log

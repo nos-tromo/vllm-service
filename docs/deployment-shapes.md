@@ -47,7 +47,7 @@ also has `stop-<shape>`, `down-<shape>`, and `bundle-<shape>` targets; run
 
 Every shape that needs weights expects them to already be present in the shared
 `huggingface-cache` volume — `HF_HUB_OFFLINE` and `TRANSFORMERS_OFFLINE`
-default to `1` in every compose file, so nothing is downloaded at start. To
+default to `1` in every service, so nothing is downloaded at start. To
 populate the cache on a networked host, temporarily set `HF_HUB_OFFLINE=0` and
 `TRANSFORMERS_OFFLINE=0` in `.env` for the first start, then flip both back.
 

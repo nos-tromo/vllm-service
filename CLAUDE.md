@@ -626,24 +626,32 @@ flag `--calculate-kv-scales` upstream, so the repo no longer exposes it.)
 
 `OPENAI_API_KEY` serves double duty: it is both the upstream API key passed to
 each vLLM `--api-key` and the LiteLLM `master_key` that gates the router.
-Compose guards it on the router (`${OPENAI_API_KEY:?…}`): with the key unset or
+Compose checks it where it delivers it, in the router's
+`environment: OPENAI_API_KEY: ${OPENAI_API_KEY:?…}`: with the key unset or
 empty, nothing that loads `docker/compose.yaml` runs (`up`, `build`, `bundle`,
-`down`); CI's `env-example` job checks both sides. The CPU-only shapes run no
-router and never read it.
+`down`); CI's `env-example` job checks both sides. Keep check and delivery in
+one place: a check that reads another value than the router (a separate `x-`
+field, say) passes on a shell export while the router boots with no master
+key. The CPU-only shapes run no router and never read it.
 
-`HF_HUB_OFFLINE=1` and `TRANSFORMERS_OFFLINE=1` are the compose default in
-every service (router and topics included) — models are
+`HF_HUB_OFFLINE=1` and `TRANSFORMERS_OFFLINE=1` are the default in every
+service (compose for most, `docker/router/defaults.env` for the router, the
+image for topics) — models are
 expected to already be present in the shared `huggingface-cache` volume. To
 download a new model, temporarily flip both to `0` (and set `HF_TOKEN` if the
 model is gated).
 
-The router gets its key, its model names (`TEXT_MODEL`, `EMBED_MODEL`,
-`RERANK_MODEL`, `WHISPER_MODEL`, with the backends' defaults) and the HF flags
-from `environment:` interpolation, which reads the operator's shell before
-`.env`; the vLLM backends read the same keys from `env_file` only. A shell
-export of one of them therefore splits router and backends
-(`docs/configuration.md#shell-precedence`). The revisions stay `env_file`-only
-(see "Revision pinning").
+The router reads its model names (`TEXT_MODEL`, `EMBED_MODEL`,
+`RERANK_MODEL`, `WHISPER_MODEL`) and the HF flags from `env_file` only, as the
+vLLM backends do: `docker/router/defaults.env` (the backends' defaults) first,
+then `.env`, which wins. Never give the router one of these through
+`environment:` interpolation: that reads the operator's shell before `.env`,
+and a shell export would then point the router at a model the backends do not
+serve. The master key is the one exception, interpolated for its check; a
+differing shell export of it fails closed (401s from the backends) (`docs/configuration.md#shell-precedence` lists the settings
+compose does interpolate). `docker/router/` ships to the airgap host as a whole
+(deploy's `copy-bundles.sh`), and compose refuses to start without the
+defaults file; `.gitignore` excepts it from `*.env*`.
 
 ### Switching models
 

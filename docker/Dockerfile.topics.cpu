@@ -71,6 +71,11 @@ RUN groupadd --gid 10001 app \
        --shell /usr/sbin/nologin app \
     && install -d -o app -g app -m 0700 /run/numba
 ENV HOME=/home/app
+# The federation's airgap default, as in every other service. Compose passes
+# topics no HF flags, so a value in the shared .env (env_file) still overrides
+# these, and a shell export does not.
+ENV HF_HUB_OFFLINE=1 \
+    TRANSFORMERS_OFFLINE=1
 
 USER 10001:10001
 
