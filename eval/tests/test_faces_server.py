@@ -39,6 +39,8 @@ DIM = 128
 SET_INPUT_SIZES: list[tuple[int, int]] = []
 #: Every ``hf_hub_download`` call: its keyword arguments.
 DOWNLOADS: list[dict[str, object]] = []
+#: File names the fake cache does not hold: ``hf_hub_download`` raises for them.
+MISSING_FILES: set[str] = set()
 
 
 class _CvError(Exception):
@@ -140,8 +142,11 @@ def _resize(image: np.ndarray, dsize: tuple[int, int], interpolation: int = 0) -
 
 
 def _hf_hub_download(**kwargs: object) -> str:
-    """Record the call; return a fake local path."""
+    """Record the call; return a fake local path, or raise like a cache miss."""
     DOWNLOADS.append(dict(kwargs))
+    if kwargs["filename"] in MISSING_FILES:
+        # huggingface_hub's LocalEntryNotFoundError is a FileNotFoundError.
+        raise FileNotFoundError(f"cannot find {kwargs['filename']} in the local cache")
     return f"/nonexistent/{kwargs['filename']}"
 
 
@@ -814,11 +819,13 @@ def test_models_load_at_their_pinned_revisions(monkeypatch: pytest.MonkeyPatch) 
             "repo_id": "opencv/face_detection_yunet",
             "filename": "face_detection_yunet_2023mar.onnx",
             "revision": "a" * 40,
+            "local_files_only": True,
         },
         {
             "repo_id": "opencv/face_recognition_sface",
             "filename": "face_recognition_sface_2021dec.onnx",
             "revision": "b" * 40,
+            "local_files_only": True,
         },
     ]
 
@@ -850,9 +857,40 @@ def test_models_follow_their_variables(monkeypatch: pytest.MonkeyPatch) -> None:
     _import_server("_faces_server_custom")
     sys.modules.pop("_faces_server_custom", None)
     assert DOWNLOADS == [
-        {"repo_id": "example/detector", "filename": "detector.onnx"},
-        {"repo_id": "example/embedder", "filename": "embedder.onnx"},
+        {"repo_id": "example/detector", "filename": "detector.onnx", "local_files_only": True},
+        {"repo_id": "example/embedder", "filename": "embedder.onnx", "local_files_only": True},
     ]
+
+
+def test_models_never_download_whatever_hf_hub_offline_says(monkeypatch: pytest.MonkeyPatch) -> None:
+    """``HF_HUB_OFFLINE=0`` (left over from a gated first fetch) still loads from the cache only."""
+    monkeypatch.setenv("HF_HUB_OFFLINE", "0")
+    DOWNLOADS.clear()
+    _import_server("_faces_server_online_env")
+    sys.modules.pop("_faces_server_online_env", None)
+    assert len(DOWNLOADS) == 2
+    assert all(call.get("local_files_only") is True for call in DOWNLOADS)
+
+
+@pytest.mark.parametrize(("revision", "named"), [(None, "refs/main"), ("c" * 40, "c" * 40)], ids=["unpinned", "pinned"])
+def test_a_missing_model_file_stops_startup_with_what_to_fetch(
+    monkeypatch: pytest.MonkeyPatch, revision: str | None, named: str
+) -> None:
+    """A file missing from the cache names the repository, file and revision to fetch."""
+    if revision is None:
+        monkeypatch.delenv("FACE_EMBED_MODEL_REVISION", raising=False)
+    else:
+        monkeypatch.setenv("FACE_EMBED_MODEL_REVISION", revision)
+    monkeypatch.setattr(sys.modules[__name__], "MISSING_FILES", {"face_recognition_sface_2021dec.onnx"})
+    with pytest.raises(RuntimeError) as raised:
+        _import_server("_faces_server_missing")
+    sys.modules.pop("_faces_server_missing", None)
+    message = str(raised.value)
+    assert "face_recognition_sface_2021dec.onnx" in message
+    assert "opencv/face_recognition_sface" in message
+    assert named in message
+    assert "huggingface-cache" in message
+    assert raised.value.__cause__ is None
 
 
 @pytest.mark.parametrize("value", ["abc", "nan", "-0.1", "1.5"])

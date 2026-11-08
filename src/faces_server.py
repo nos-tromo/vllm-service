@@ -208,16 +208,31 @@ def _group_threshold() -> float:
 def _model_file(repo_id: str, filename: str, revision: str | None) -> str:
     """Return the local path of a model file in the Hub cache.
 
+    The cache is the only source, whatever ``HF_HUB_OFFLINE`` says: a value of
+    ``0`` left in a shared ``.env`` from a gated first fetch would otherwise
+    start a download that the read-only root filesystem breaks off with an
+    unrelated error.
+
     Args:
         repo_id: The Hub repository.
         filename: The file in it.
         revision: The commit to load, or ``None`` for the cache's ``refs/main``.
 
     Returns:
-        The path ``hf_hub_download`` resolves (offline: from the cache only).
+        The path ``hf_hub_download`` resolves from the cache.
+
+    Raises:
+        RuntimeError: When the file at that revision is not in the cache.
     """
     kwargs: dict[str, str] = {"revision": revision} if revision else {}
-    path: str = hf_hub_download(repo_id=repo_id, filename=filename, **kwargs)
+    try:
+        path: str = hf_hub_download(repo_id=repo_id, filename=filename, local_files_only=True, **kwargs)
+    except FileNotFoundError:
+        # huggingface_hub's LocalEntryNotFoundError is a FileNotFoundError.
+        raise RuntimeError(
+            f"{filename} of {repo_id} (revision {revision or 'refs/main'}) is not in the "
+            "Hugging Face cache; fetch it into the huggingface-cache volume (docs/airgap-bundles.md)"
+        ) from None
     return path
 
 
