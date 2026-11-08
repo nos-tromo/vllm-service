@@ -637,8 +637,8 @@ def _weak(person: int, samples: list[int]) -> dict[str, object]:
 
 
 def test_group_weak_track_joins_its_person(client: TestClient) -> None:
-    """A weak track takes the label of the one person it matches."""
-    tracks = [_track(3, [0]), _track(5, [1]), _weak(3, [2])]
+    """A weak track takes the label of the person it matches, one seen more than once."""
+    tracks = [_track(3, [0, 3]), _track(5, [1]), _weak(3, [2])]
     assert client.post("/faces/group", json={"tracks": tracks}).json() == {"labels": [0, 1, 0]}
 
 
@@ -662,12 +662,29 @@ def test_group_anchor_must_be_a_boolean(client: TestClient, flag: object) -> Non
     assert client.post("/faces/group", json={"tracks": [track]}).status_code == 400
 
 
-def test_group_log_counts_weak_and_joined_tracks(client: TestClient, caplog: pytest.LogCaptureFixture) -> None:
-    """The group log line says how many tracks were weak and how many of them joined a person."""
+def test_group_log_counts_weak_tracks_pieces_and_joins(client: TestClient, caplog: pytest.LogCaptureFixture) -> None:
+    """The group log line says how many tracks were weak, how many pieces could join, and how many did."""
     caplog.set_level("INFO")
-    client.post("/faces/group", json={"tracks": [_track(3, [0]), _weak(3, [1]), _weak(4, [2])]})
+    tracks = [_track(3, [0, 3]), _weak(3, [1]), _weak(4, [2]), _track(6, [4])]
+    client.post("/faces/group", json={"tracks": tracks})
     line = next(record.getMessage() for record in caplog.records if "faces.group" in record.getMessage())
-    assert "weak=2" in line and "joined=1" in line
+    assert "weak=2" in line and "pieces=3" in line and "joined=1" in line
+
+
+def test_group_passes_the_join_threshold(client: TestClient, monkeypatch: pytest.MonkeyPatch) -> None:
+    """Grouping uses the configured join threshold."""
+    seen: dict[str, object] = {}
+    real = faces_server.group_tracks
+
+    def spy(*args: object, **kwargs: object) -> object:
+        seen.update(kwargs)
+        return real(*args, **kwargs)
+
+    monkeypatch.setattr(faces_server, "group_tracks", spy)
+    monkeypatch.setattr(faces_server, "JOIN_THRESHOLD", 0.31)
+    assert client.post("/faces/group", json={"tracks": [_track(3, [0])]}).status_code == 200
+    assert seen["join_threshold"] == 0.31
+    assert seen["threshold"] == faces_server.GROUP_THRESHOLD
 
 
 @pytest.mark.parametrize(
@@ -939,3 +956,28 @@ def test_bad_group_threshold_stops_startup(monkeypatch: pytest.MonkeyPatch, valu
     with pytest.raises(ValueError, match="FACE_GROUP_THRESHOLD"):
         _import_server("_faces_server_bad_threshold")
     sys.modules.pop("_faces_server_bad_threshold", None)
+
+
+@pytest.mark.parametrize(("value", "expected"), [(None, 0.25), ("0.3", 0.3), ("0", 0.0), ("0.42", 0.42)])
+def test_join_threshold_follows_its_variable(
+    monkeypatch: pytest.MonkeyPatch, value: str | None, expected: float
+) -> None:
+    """``FACE_JOIN_THRESHOLD`` defaults to 0.25 and may go up to the group threshold."""
+    monkeypatch.delenv("FACE_GROUP_THRESHOLD", raising=False)
+    if value is None:
+        monkeypatch.delenv("FACE_JOIN_THRESHOLD", raising=False)
+    else:
+        monkeypatch.setenv("FACE_JOIN_THRESHOLD", value)
+    module = _import_server("_faces_server_join_threshold")
+    sys.modules.pop("_faces_server_join_threshold", None)
+    assert module.JOIN_THRESHOLD == expected
+
+
+@pytest.mark.parametrize("value", ["abc", "nan", "-0.1", "1.5", "0.5"])
+def test_bad_join_threshold_stops_startup(monkeypatch: pytest.MonkeyPatch, value: str) -> None:
+    """A join threshold that is not a number in [0, FACE_GROUP_THRESHOLD] fails the import."""
+    monkeypatch.delenv("FACE_GROUP_THRESHOLD", raising=False)
+    monkeypatch.setenv("FACE_JOIN_THRESHOLD", value)
+    with pytest.raises(ValueError, match="FACE_JOIN_THRESHOLD"):
+        _import_server("_faces_server_bad_join_threshold")
+    sys.modules.pop("_faces_server_bad_join_threshold", None)

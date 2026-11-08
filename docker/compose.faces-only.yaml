@@ -114,6 +114,7 @@ services:
       FACE_EMBED_MODEL: ${FACE_EMBED_MODEL:-opencv/face_recognition_sface}
       FACE_EMBED_MODEL_FILE: ${FACE_EMBED_MODEL_FILE:-face_recognition_sface_2021dec.onnx}
       FACE_GROUP_THRESHOLD: ${FACE_GROUP_THRESHOLD:-0.42}
+      FACE_JOIN_THRESHOLD: ${FACE_JOIN_THRESHOLD:-0.25}
     volumes:
       - huggingface-cache:/home/app/.cache/huggingface/hub
     tmpfs:

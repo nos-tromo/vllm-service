@@ -35,11 +35,15 @@ Endpoints:
         medoid are dropped and the rest averaged. The anchor tracks are
         clustered: tracks that share a sample index are never merged, and
         average linkage merges while the best pair's mean cosine is at least
-        ``FACE_GROUP_THRESHOLD``. Each weak track then joins the one person
-        whose anchors it matches by that mean cosine and who was not on screen
-        with it, or no one (``faces_cluster.py``). Labels are numbered by each
-        person's first anchor track; a track without a decodable face, and a
-        weak track that joined no one, gets ``-1``.
+        ``FACE_GROUP_THRESHOLD``; a cluster seen in at least two samples is a
+        person. Each weak track, and each anchor cluster seen only once, then
+        joins the person it is closest to (the mean of its three highest
+        cosines to the person's anchors) when that is at least
+        ``FACE_JOIN_THRESHOLD``, leads the next person by 0.1, and the two
+        were never on screen together; otherwise it stays on its own
+        (``faces_cluster.py``). Labels are numbered by each person's first
+        anchor track; a track without a decodable face, and a weak track that
+        joined no one, gets ``-1``.
 
     GET /health
         Liveness probe; returns ``{"status": "ok", "detect_model": ...,
@@ -78,6 +82,10 @@ Configuration:
     FACE_GROUP_THRESHOLD
         The lowest mean cosine at which two groups merge (default 0.42); a
         value that is not a number in ``[0, 1]`` stops the server at startup.
+    FACE_JOIN_THRESHOLD
+        The lowest closeness at which a weak track or an anchor seen once
+        joins a person (default 0.25); a value that is not a number in
+        ``[0, FACE_GROUP_THRESHOLD]`` stops the server at startup.
 
 Both files come from the ``huggingface-cache`` volume (``HF_HUB_OFFLINE=1``): a
 revision variable that is set loads that commit, unset or empty the cache's
@@ -115,7 +123,7 @@ from fastapi import FastAPI, HTTPException, Request  # noqa: E402
 from huggingface_hub import hf_hub_download  # noqa: E402
 from pydantic import BaseModel, ConfigDict, Field, ValidationError, model_validator  # noqa: E402
 
-from faces_cluster import cluster_tracks, track_vector  # noqa: E402
+from faces_cluster import Grouping, group_tracks, track_vector  # noqa: E402
 
 MAX_IMAGES = 8
 MAX_SIDE = 1280
@@ -142,6 +150,7 @@ RETRY_AFTER_S = 5
 NMS_IOU = 0.4
 DEFAULT_MIN_SCORE = 0.7
 DEFAULT_GROUP_THRESHOLD = 0.42
+DEFAULT_JOIN_THRESHOLD = 0.25
 #: Neither pass runs on an image whose short side is below this: no face fits.
 MIN_DETECT_SIDE = 16
 #: YuNet's own settings at load; the score threshold is set per request.
@@ -210,6 +219,34 @@ def _group_threshold() -> float:
     return value
 
 
+def _join_threshold(group_threshold: float) -> float:
+    """Read ``FACE_JOIN_THRESHOLD``.
+
+    Joining is the looser of the two decisions, so a value above the group
+    threshold would let a weak track join where anchors would not merge; that,
+    and a value that is not a number in ``[0, 1]``, stops the server at startup.
+
+    Args:
+        group_threshold: The group threshold the value may not exceed.
+
+    Returns:
+        The threshold.
+
+    Raises:
+        ValueError: When the value is not a number in ``[0, group_threshold]``.
+    """
+    raw = _setting("FACE_JOIN_THRESHOLD", str(DEFAULT_JOIN_THRESHOLD))
+    try:
+        value = float(raw)
+    except ValueError:
+        value = math.nan
+    if not (math.isfinite(value) and 0.0 <= value <= group_threshold):
+        raise ValueError(
+            f"FACE_JOIN_THRESHOLD must be a number in [0, FACE_GROUP_THRESHOLD={group_threshold}], got {raw!r}"
+        )
+    return value
+
+
 def _model_file(repo_id: str, filename: str, revision: str | None) -> str:
     """Return the local path of a model file in the Hub cache.
 
@@ -246,6 +283,7 @@ DETECT_MODEL_FILE = _setting("FACE_DETECT_MODEL_FILE", "face_detection_yunet_202
 EMBED_MODEL = _setting("FACE_EMBED_MODEL", "opencv/face_recognition_sface")
 EMBED_MODEL_FILE = _setting("FACE_EMBED_MODEL_FILE", "face_recognition_sface_2021dec.onnx")
 GROUP_THRESHOLD = _group_threshold()
+JOIN_THRESHOLD = _join_threshold(GROUP_THRESHOLD)
 
 detector = cv2.FaceDetectorYN.create(
     _model_file(DETECT_MODEL, DETECT_MODEL_FILE, _revision("FACE_DETECT_MODEL_REVISION")),
@@ -722,7 +760,7 @@ def _face_feature(face: GroupFace, deadline: _Deadline) -> np.ndarray | None:
     return feature / norm
 
 
-def _group_all(tracks: list[GroupTrack], deadline: _Deadline) -> tuple[list[int], int]:
+def _group_all(tracks: list[GroupTrack], deadline: _Deadline) -> tuple[Grouping, int]:
     """Group the tracks by person.
 
     Args:
@@ -730,7 +768,8 @@ def _group_all(tracks: list[GroupTrack], deadline: _Deadline) -> tuple[list[int]
         deadline: The request's deadline, checked before each face.
 
     Returns:
-        One label per track, and how many faces yielded a feature.
+        The grouping (one label per track, and how many pieces joined a
+        person), and how many faces yielded a feature.
     """
     vectors: list[np.ndarray | None] = []
     embedded = 0
@@ -745,7 +784,8 @@ def _group_all(tracks: list[GroupTrack], deadline: _Deadline) -> tuple[list[int]
         vectors.append(track_vector(np.stack(features)) if features else None)
     samples = [frozenset(track.samples) for track in tracks]
     anchors = [track.anchor for track in tracks]
-    return cluster_tracks(vectors, samples, threshold=GROUP_THRESHOLD, anchors=anchors), embedded
+    grouping = group_tracks(vectors, samples, threshold=GROUP_THRESHOLD, join_threshold=JOIN_THRESHOLD, anchors=anchors)
+    return grouping, embedded
 
 
 @app.post("/faces/detect")
@@ -827,13 +867,14 @@ async def _group(request: Request) -> dict[str, list[int]]:
     started = time.monotonic()
     deadline = _Deadline()
     payload = _parse(GroupRequest, await _read_body(request))
-    labels, embedded = await anyio.to_thread.run_sync(lambda: _group_all(payload.tracks, deadline))
-    weak = [label for track, label in zip(payload.tracks, labels, strict=True) if not track.anchor]
+    grouping, embedded = await anyio.to_thread.run_sync(lambda: _group_all(payload.tracks, deadline))
+    labels = grouping.labels
     _log.info(
-        "faces.group tracks=%d weak=%d joined=%d faces=%d embedded=%d unassigned=%d groups=%d ms=%d",
+        "faces.group tracks=%d weak=%d pieces=%d joined=%d faces=%d embedded=%d unassigned=%d groups=%d ms=%d",
         len(labels),
-        len(weak),
-        sum(1 for label in weak if label >= 0),
+        sum(1 for track in payload.tracks if not track.anchor),
+        grouping.pieces,
+        grouping.joined,
         sum(len(track.faces) for track in payload.tracks),
         embedded,
         labels.count(-1),
