@@ -264,8 +264,9 @@ FACE_EMBED_MODEL_FILE=face_recognition_sface_2021dec.onnx    # default; the file
 
 **Files.** Each repository holds the model in several variants (fp32, int8,
 int8bq), so the file is configured beside the repository; the defaults are the
-fp32 files. Both come from the `huggingface-cache` volume, offline; only the
-two files and each repository's `LICENSE` belong there (the repositories also
+fp32 files. Both come from the `huggingface-cache` volume, offline whatever
+`HF_HUB_OFFLINE` says (a `0` left in `.env` from a gated first fetch does not
+make the service download); only the two files and each repository's `LICENSE` belong there (the repositories also
 hold `example_outputs/` with photographs of people). YuNet is MIT-licensed and
 SFace Apache-2.0, both from the OpenCV Zoo. InsightFace's SCRFD/ArcFace models
 are not used because their weights are licensed for non-commercial research

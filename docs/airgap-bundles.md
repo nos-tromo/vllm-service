@@ -112,7 +112,8 @@ repository's `LICENSE` — fetch them with `fetch-model.sh --file <name> --file
 LICENSE <repo>` ([configuration.md](configuration.md#faces)): both repositories
 also hold `example_outputs/` with photographs of people, which have no place on
 the target host. The service
-never downloads; with either file missing it does not start. The router waits
+never downloads, whatever `HF_HUB_OFFLINE` says; with either file missing it
+stops at startup with an error naming the file to fetch. The router waits
 only for it to start, so a host upgraded to this release without the two files
 loses only `/faces/*`, never the rest of inference.
 

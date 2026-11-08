@@ -506,12 +506,26 @@ Each run prints `Revision:` as for a whole model: that commit goes into
 `huggingface-cache` volume (on an airgapped host, with the deploy repo's
 model-transfer scripts, see
 [airgap-bundles.md](airgap-bundles.md#loading-and-running-the-bundle)). Unlike
-the other shapes, flipping `HF_HUB_OFFLINE=0` for a first start does not
-populate the cache: `huggingface_hub`'s Xet transfer writes under
-`~/.cache/huggingface/xet`, which is on the container's read-only root
-filesystem, so populate it from outside. The server loads both at import, so a
-missing file — or a pinned revision the cache lacks — stops the container at
-startup instead of serving other weights.
+the other shapes, the service never downloads, so flipping `HF_HUB_OFFLINE=0`
+for a first start does not populate the cache; populate it from outside. On a
+development host with internet access, a one-off container from the faces image
+writes the four files straight into the volume (`HF_HOME` moves
+`huggingface_hub`'s Xet state off the hub cache):
+
+```bash
+docker run --rm -v huggingface-cache:/home/app/.cache/huggingface/hub \
+  -e HF_HUB_OFFLINE=0 -e HF_HOME=/tmp/hf \
+  --entrypoint python vllm-service-faces-cpu:<version> -c '
+from huggingface_hub import hf_hub_download as fetch
+for repo, name in [("opencv/face_detection_yunet", "face_detection_yunet_2023mar.onnx"),
+                   ("opencv/face_recognition_sface", "face_recognition_sface_2021dec.onnx")]:
+    for file in (name, "LICENSE"):
+        print(fetch(repo_id=repo, filename=file))'
+```
+
+The server loads both at import, so a missing file — or a pinned revision the
+cache lacks — stops the container at startup with an error naming the file,
+instead of serving other weights.
 InsightFace's models are not used: their weights are licensed for non-commercial
 research only.
 
