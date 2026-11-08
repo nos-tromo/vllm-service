@@ -23,6 +23,43 @@ jobs:
       dockerfiles-glob: 'docker/Dockerfile.*'
       shell-scripts-glob: 'scripts/*.sh'
 
+  # .env.example as a fresh host's .env, in every shape. The shared
+  # compose-config job above stubs its own .env, so it never sees the example.
+  env-example:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - name: Stub external network + volume
+        run: |
+          docker network create inference-net >/dev/null 2>&1 || true
+          docker volume create huggingface-cache >/dev/null 2>&1 || true
+      - name: docker compose config, every shape
+        run: |
+          cp .env.example .env
+          # The CPU-only shapes run no router and need no master key.
+          for shape in gliner rerank clip embed diarize asr vad topics; do
+            docker compose --env-file .env -f "docker/compose.$shape-only.yaml" config --quiet
+            docker compose --env-file .env -f "docker/compose.$shape-only.yaml" \
+              -f "docker/compose.$shape-only.override.yaml" config --quiet
+          done
+          # The full stack needs one, and .env.example leaves it empty: fill
+          # it with a synthetic CI-only value.
+          grep -q '^OPENAI_API_KEY=$' .env
+          sed -i 's|^OPENAI_API_KEY=$|OPENAI_API_KEY=ci-router-key-0123456789abcdef|' .env
+          docker compose --env-file .env -f docker/compose.yaml config --quiet
+          docker compose --env-file .env -f docker/compose.yaml -f docker/compose.override.yaml config --quiet
+      - name: the router master key is required
+        # The key left empty, as .env.example has it: compose must refuse to
+        # start the full stack, with the hint.
+        run: |
+          sed 's|^OPENAI_API_KEY=.*|OPENAI_API_KEY=|' .env > .env.nokey
+          if docker compose --env-file .env.nokey -f docker/compose.yaml config --quiet 2> refused.txt; then
+            echo "compose accepted an empty OPENAI_API_KEY" >&2
+            exit 1
+          fi
+          cat refused.txt
+          grep -q 'OPENAI_API_KEY must be set' refused.txt
+
   # Lint the bundled FastAPI servers (src/) with the org-wide strict regime.
   # Infra-first with no test suite, so it calls the canonical python-app-ci
   # workflow with run-tests: false — the lint job only (strict-config alignment

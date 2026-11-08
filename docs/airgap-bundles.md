@@ -39,7 +39,10 @@ rather than ever producing an unversioned artifact when:
 - no annotated tag is reachable from `HEAD`.
 
 Untracked and gitignored files such as `.env` are ignored by the dirty check
-and survive the checkout.
+and survive the checkout. The full-stack targets load `docker/compose.yaml`,
+which refuses to run while `OPENAI_API_KEY` is empty in `.env`
+([configuration.md](configuration.md#master-key)); any value will do on a build
+host, since no image carries it. The shape targets do not need it.
 
 **`make bundle-dev` is the dev path.** It skips the checkout and bundles the
 current working tree as-is, versioned `<commit-date>-<short-sha>` (today's date

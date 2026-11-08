@@ -144,7 +144,15 @@ services:
       - /run/audit:size=1m,uid=65534,gid=65534,mode=0700
     image: ghcr.io/berriai/litellm-non_root:v1.97.0@sha256:e2de74cae0d1f708bebe33bf3e03c3335029e27ff7f0dbddc7ff94d0edd63614
     logging: *default-logging
-    env_file: *env-file
+    # The model names litellm.config.yaml reads and the HF flags come from
+    # env files only, as for the backends, so a shell export cannot point the
+    # router at a model the backend does not serve: router/defaults.env holds
+    # the backends' defaults, and .env, read last, wins for every key it sets.
+    # The revisions come from .env alone, the master key from environment:.
+    env_file:
+      - path: ./router/defaults.env
+      - path: ../.env
+        required: false
     depends_on:
       chat:
         condition: service_healthy
@@ -167,7 +175,13 @@ services:
         condition: service_started
     environment:
       <<: *no-proxy-env
-      WHISPER_MODEL: ${WHISPER_MODEL:-openai/whisper-large-v3}
+      # The master key (litellm.config.yaml master_key, and the api_key it
+      # sends the backends). Checked where it is delivered, so the check and
+      # the router read one value: unset or empty, compose refuses the stack,
+      # and the router never starts without a key. It is the one router
+      # setting a shell export overrides; the backends read .env's (env_file),
+      # so a differing export fails closed, with 401s from the backends.
+      OPENAI_API_KEY: ${OPENAI_API_KEY:?OPENAI_API_KEY must be set in .env (the router master key; the apps use the same value)}
       # Data-protection audit log (docs/audit.md), set here, where a shared
       # .env cannot change it (environment: wins over env_file). The worker
       # startup hook opens each worker's audit chain; its events go to the

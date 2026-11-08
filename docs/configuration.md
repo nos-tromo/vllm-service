@@ -6,6 +6,59 @@ the environment at startup. This document covers the settings that need more
 than a one-line comment. Per-shape defaults for the CPU-only containers live in
 [deployment-shapes.md](deployment-shapes.md).
 
+## Master key
+
+`OPENAI_API_KEY` is the router's master key: every client sends it as its
+Bearer token, and the router passes it on to the vLLM backends, whose
+`--api-key` it is too. The apps (docint, Nextext, translator,
+open-webui-service) hold the same value, and deploy's `make env` copies it from
+this repo's `.env` to theirs. `.env.example` leaves it empty, and compose
+refuses the full stack without one:
+
+```
+required variable OPENAI_API_KEY is missing a value: OPENAI_API_KEY must be set in .env (the router master key; the apps use the same value)
+```
+
+Compose checks the key where it delivers it, in the router's `environment:`,
+so the check and the router read the same value and the router never boots
+without a master key. Every command that loads `docker/compose.yaml` stops
+this way, as data-plane's does for `QDRANT_API_KEY`, so set the key before the
+first `make build` or `make bundle` (any value will do on a build host; images
+do not carry it); `make down` and deploy's `make ps` need it too. The CPU-only
+shapes run no router and do not read it.
+
+## Shell precedence
+
+Except for the settings in the table below, every setting reaches the
+containers from env files only, so a value exported in the shell that runs
+`make up` does not apply: `.env` is the one source. The router reads
+`docker/router/defaults.env` first, which holds its model names (`TEXT_MODEL`,
+`EMBED_MODEL`, `RERANK_MODEL`, `WHISPER_MODEL`, at the defaults the backends
+start with) and the HF flags, then `.env`, which wins for every key it sets.
+Router and backends therefore agree on every model name the router routes by,
+whatever the shell exports. The topics image sets the HF flags itself, and
+`.env` overrides them there too.
+
+The exceptions are the settings compose itself fills in with `${KEY:-default}`
+(the master key with `${KEY:?…}`): for those, an exported value beats `.env`,
+and set in neither, a key takes the compose default, the value `.env.example`
+shows:
+
+| Compose file | Settings filled in by compose |
+|---|---|
+| `compose.yaml` | the router's `OPENAI_API_KEY`, `HF_HUB_OFFLINE` and `TRANSFORMERS_OFFLINE` (every service but router and topics), `PYTORCH_CUDA_ALLOC_CONF`, `CLIP_MODEL`, `CLIP_DEVICE`, `VLLM_MAX_AUDIO_CLIP_FILESIZE_MB`, `VLLM_MAX_AUDIO_DECODE_DURATION_S`, `DIARIZE_MODEL`, `DIARIZE_DEVICE`, `DIARIZE_VAD_URL`, `DIARIZE_VAD_GATE`, `DIARIZE_VAD_THRESHOLD`, `DIARIZE_VAD_PAD_MS`, `DIARIZE_VAD_TIMEOUT`, `VAD_MODEL`, `VAD_USE_ONNX`, `NER_RAY_MEMORY_THRESHOLD`, `TOPICS_MAX_POINTS`, `TOPICS_MEM_LIMIT` |
+| the CPU-only shapes | the HF flags (all but topics-only), `WHISPER_MODEL` (asr-only), `CLIP_MODEL` (clip-only), `EMBED_MODEL`, `EMBED_MAX_LENGTH`, `EMBED_MAX_BATCH_TOKENS` (embed-only), `RERANK_MODEL`, `RERANK_USE_FP16` (rerank-only), `DIARIZE_MODEL` (diarize-only), `VAD_MODEL`, `VAD_USE_ONNX` (vad-only), `NER_SHM_SIZE` (gliner-only), `TOPICS_MAX_POINTS`, `TOPICS_MEM_LIMIT` (topics-only) |
+| every file | `INFERENCE_NETWORK`, `EXTRA_NO_PROXY`, and the dev overlays' `*_HOST_PORT` |
+
+`OPENAI_API_KEY` is the one router setting a shell export overrides: compose
+delivers it to the router through `environment:`, where its check reads it,
+while the vLLM backends take theirs from `.env`. An exported key that differs
+from `.env` therefore fails closed, with 401s from the backends on every call;
+it never opens the router. Set the key in `.env`, and do not export it in the
+shell that runs `make up`.
+`env | cut -d= -f1 | grep -xE 'OPENAI_API_KEY|[A-Z_]+_MODEL|HF_HUB_OFFLINE'`
+lists, by name only, the exports that could matter.
+
 ## Tool calling
 
 The `chat` backend starts with auto tool choice on, using the tool-call
@@ -70,7 +123,7 @@ Override defaults via `.env`:
 
 ```bash
 DIARIZE_MODEL=pyannote/speaker-diarization-community-1   # default (pyannote.audio 4.x; gated)
-DIARIZE_DEVICE=cpu                               # default in diarize-only
+DIARIZE_DEVICE=cuda                              # full stack; diarize-only pins cpu
 # DIARIZE_HOST_PORT=8004                          # host publish port for dev
 # DIARIZE_FB=0.4                                  # community-1 clustering: LOWER → MORE speakers; 0.4 validated best
 # DIARIZE_FA=0.07                                 # community-1 PLDA companion weight (leave at stock 0.07)
@@ -218,8 +271,10 @@ prints request bodies.
 
 `docker/litellm.config.yaml` is model-agnostic: all model names are read at
 startup from the environment variables `TEXT_MODEL`, `EMBED_MODEL`,
-`RERANK_MODEL`, and `WHISPER_MODEL`. To switch a model,
-update the relevant variable in `.env` and restart the stack. No changes to
+`RERANK_MODEL`, and `WHISPER_MODEL`. The router falls back to
+`docker/router/defaults.env`, the defaults its backends start with, so a name
+left unset in `.env` still matches the model the backend serves. To switch a
+model, update the relevant variable in `.env` and restart the stack. No changes to
 `docker/litellm.config.yaml` are required. Switching `TEXT_MODEL` to another
 model family also needs the matching `CHAT_TOOL_CALL_PARSER`: a mismatch does
 not fail loudly, the model's tool calls just go unrecognised (see
