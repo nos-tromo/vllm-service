@@ -300,7 +300,10 @@ default `0.42` is stricter than OpenCV's 0.363 for a single same-person pair,
 because merging two people is worse than splitting one: raise it to split more,
 lower it to merge more. A value that is not a number in `[0, 1]` stops the
 server at startup. Tracks that were on screen together are never merged,
-whatever the threshold.
+whatever the threshold. The same threshold decides whether a weak track (one
+the client sends with `"anchor": false`, without a good face) joins a person;
+weak tracks never found or link people
+([api-reference.md](api-reference.md#post-facesgroup)).
 
 **Limits.** A request may carry at most 8 images (detect) or 500 tracks of at
 most 3 faces and 3600 sample indices each, 100,000 sample indices in all

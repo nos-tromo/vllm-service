@@ -383,16 +383,19 @@ curl http://vllm-router:4000/faces/group \
   -d '{"tracks": [
         {"samples": [3, 4, 5],
          "faces": [{"image": "<base64 JPEG crop>",
-                    "landmarks": [[38.3, 51.7], [73.5, 51.5], [56.0, 71.7], [41.5, 92.4], [70.7, 92.2]]}]}
+                    "landmarks": [[38.3, 51.7], [73.5, 51.5], [56.0, 71.7], [41.5, 92.4], [70.7, 92.2]]}],
+         "anchor": true}
       ]}'
 ```
 
 A track is a run of detections the caller already linked within one shot:
 `samples` are the indices of the frames it was on screen in, `faces` up to three
 crops of it, each with its five landmarks **in the crop's pixels** (YuNet's
-order), at most 512 px on a side (a larger crop counts as undecodable). At most
-500 tracks per request, at most 3600 sample indices per track and 100,000 in
-all. Response:
+order), at most 512 px on a side (a larger crop counts as undecodable).
+`anchor` (a JSON boolean, default `true`) says whether the track has a face the
+caller judged good enough to found a person on; `false` marks a weak track, a
+profile say. At most 500 tracks per request, at most 3600 sample indices per
+track and 100,000 in all. Response:
 
 ```json
 {"labels": [0, 0, 1, -1]}
@@ -401,13 +404,24 @@ all. Response:
 Per face, SFace aligns the crop on its landmarks (`alignCrop`) and computes a
 feature, L2-normalized. Per track, faces whose cosine to the track's medoid is
 below 0.3 are dropped (a track that runs on past a missed cut holds someone
-else's face) and the rest averaged. Tracks that share a sample index were on
-screen at the same time, so they are never merged, however alike they look.
-Average-linkage agglomerative clustering on cosine similarity merges groups
-while the best pair is at least `FACE_GROUP_THRESHOLD` (default `0.42` — stricter
-than OpenCV's 0.363 same-person threshold for a single pair, because merging two
-people is worse than splitting one). Labels are numbered by each group's first
-track; a track with no decodable face gets `-1`.
+else's face) and the rest averaged.
+
+The anchor tracks are clustered into people. Tracks that share a sample index
+were on screen at the same time, so they are never merged, however alike they
+look. Average-linkage agglomerative clustering on cosine similarity merges
+groups while the best pair is at least `FACE_GROUP_THRESHOLD` (default `0.42` —
+stricter than OpenCV's 0.363 same-person threshold for a single pair, because
+merging two people is worse than splitting one).
+
+Each weak track then joins a person when exactly one person's anchors match it
+by a mean cosine of at least the same threshold and none of that person's
+tracks, joined ones included, was on screen with it; the closest weak tracks go
+first. A weak track never founds a person and never links two, so the less
+reliable features of profile faces cannot merge anyone; one that matches no
+person, or more than one, stays on its own.
+
+Labels are numbered by each person's first anchor track; a track with no
+decodable face, and a weak track that joined no one, gets `-1`.
 
 ### Health and errors
 
