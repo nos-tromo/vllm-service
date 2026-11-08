@@ -1136,7 +1136,15 @@ Load-bearing points:
   exact average-linkage clustering with cannot-link constraints (tracks that
   share a sample index were on screen together and never merge), merging while
   the best pair is ≥ `FACE_GROUP_THRESHOLD` (0.42; stricter than OpenCV's 0.363
-  pair threshold — merging two people is worse than splitting one).
+  pair threshold — merging two people is worse than splitting one). Only
+  anchors (`"anchor": true`) are clustered; a cluster seen in ≥ 2 samples is a
+  person. Weak tracks and anchor clusters seen once then join the person whose
+  three closest anchors they match by a mean cosine ≥ `FACE_JOIN_THRESHOLD`
+  (0.25), leading the next person by ≥ 0.1, never on screen together; they
+  never found or link people, and people never merge at this step. On
+  hand-held, hard-cut video every track is one sample long, so blurred and
+  profile faces only reach their person this way (SFace scores them well
+  below 0.42 against it, but far lower against everyone else).
 - **Limits:** ≤ 8 images, ≤ 500 tracks, ≤ 3 faces per track, ≤ 3600 samples
   per track and ≤ 100,000 per request (400); body ≤ 32 MiB by
   `Content-Length` and as read (413); no image decodes (422). A decoded image

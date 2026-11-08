@@ -368,3 +368,20 @@ git commit -m "docs: the faces service, its contract, shape and licences"
 git add pyproject.toml uv.lock
 git commit -m "chore: release v0.9.0"
 ```
+
+---
+
+## Addendum: two-stage grouping
+
+After the end-to-end runs, `faces_cluster.py` gained the join stage the
+design's addendum describes: `group_tracks(..., threshold, join_threshold,
+anchors)` returns the labels with the piece counts, `cluster_tracks` its
+labels; `MIN_PERSON_SAMPLES = 2`, `JOIN_TOP_K = 3`, `JOIN_MARGIN = 0.10`.
+`faces_server.py` reads `FACE_JOIN_THRESHOLD` (default 0.25, refused at
+startup outside `[0, FACE_GROUP_THRESHOLD]`) and both compose files pass it.
+Tests: `eval/tests/test_faces_cluster.py` (join between the thresholds, below
+it, without a clear lead, top-three closeness, established people kept apart,
+a person seen once takes no one, cannot-link against joined pieces, no
+chaining, contiguous labels, the counts) and `eval/tests/test_faces_server.py`
+(the variable, its bounds, that it reaches the grouping, the log line).
+

@@ -102,6 +102,7 @@ decodes; 503 with `Retry-After: 5` when the model lock is not free within 30 s.
 | `FACE_DETECT_MODEL` / `FACE_DETECT_MODEL_FILE` / `FACE_DETECT_MODEL_REVISION` | `opencv/face_detection_yunet` / `face_detection_yunet_2023mar.onnx` / unset |
 | `FACE_EMBED_MODEL` / `FACE_EMBED_MODEL_FILE` / `FACE_EMBED_MODEL_REVISION` | `opencv/face_recognition_sface` / `face_recognition_sface_2021dec.onnx` / unset |
 | `FACE_GROUP_THRESHOLD` | `0.42` |
+| `FACE_JOIN_THRESHOLD` | `0.25` (addendum) |
 
 ## Shapes
 
@@ -114,3 +115,25 @@ dev port 8009), the ninth `-only` shape.
 
 Attributes of any kind (age, sex, emotion, origin), matching against a gallery
 or across requests, any state kept between requests, `/metrics`.
+
+## Addendum: anchors and joining (after the end-to-end runs)
+
+End-to-end runs showed two ways one person splits. A track the client judges
+without a good face (a profile, a covered face) was left out of grouping; and
+on hand-held, hard-cut video every track is a single sample, so a small or
+blurred face that still passes the client's bar founds a person of its own.
+SFace scores such faces well below the group threshold against their own
+person, but far lower still against everyone else.
+
+So tracks carry a role (`"anchor"`, default `true`) and grouping has two
+stages. Anchors are clustered as above; a cluster seen in at least two samples
+is a person. Each weak track, and each anchor cluster seen in a single sample,
+may then join one person: its closeness is the mean of its three highest
+cosines to the person's anchor tracks (a person filmed from many angles is
+matched by the views that resemble it), and it joins the closest person when
+that is at least `FACE_JOIN_THRESHOLD` (0.25, at most the group threshold), at
+least 0.1 above the next, and the two were never on screen together. Pieces go
+closest first, joined pieces do not count as anchors, pieces never found or
+link people, and people never merge at this step — a wrong merge of two people
+stays the costlier error. `faces.group` logs `weak=`, `pieces=` and `joined=`.
+

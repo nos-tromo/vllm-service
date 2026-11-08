@@ -259,6 +259,7 @@ FACE_EMBED_MODEL_FILE=face_recognition_sface_2021dec.onnx    # default; the file
 # FACE_DETECT_MODEL_REVISION=<commit>
 # FACE_EMBED_MODEL_REVISION=<commit>
 # FACE_GROUP_THRESHOLD=0.42             # lowest mean cosine at which two groups merge
+# FACE_JOIN_THRESHOLD=0.25              # lowest closeness at which a weak track or a face seen once joins a person
 # FACES_HOST_PORT=8009                  # host publish port for dev (faces-only)
 ```
 
@@ -300,10 +301,20 @@ default `0.42` is stricter than OpenCV's 0.363 for a single same-person pair,
 because merging two people is worse than splitting one: raise it to split more,
 lower it to merge more. A value that is not a number in `[0, 1]` stops the
 server at startup. Tracks that were on screen together are never merged,
-whatever the threshold. The same threshold decides whether a weak track (one
-the client sends with `"anchor": false`, without a good face) joins a person;
-weak tracks never found or link people
-([api-reference.md](api-reference.md#post-facesgroup)).
+whatever the threshold.
+
+**Join threshold.** `FACE_JOIN_THRESHOLD` (default `0.25`) decides what may
+join a person after the clustering: a weak track (one the client sends with
+`"anchor": false`, without a good face) and an anchor cluster seen in a single
+sample (often a small or blurred face, whose features fall short of the group
+threshold even against its own person). Such a piece joins the person it is
+closest to — the mean of its three highest cosines to the person's anchor
+tracks — when that is at least the join threshold, at least 0.1 above the next
+person, and the two were never on screen together. Only people seen in two
+samples or more can be joined; pieces never found or link people, and two
+people are never merged at this step. Raise it to split more, lower it to
+merge more; a value that is not a number in `[0, FACE_GROUP_THRESHOLD]` stops
+the server at startup ([api-reference.md](api-reference.md#post-facesgroup)).
 
 **Limits.** A request may carry at most 8 images (detect) or 500 tracks of at
 most 3 faces and 3600 sample indices each, 100,000 sample indices in all

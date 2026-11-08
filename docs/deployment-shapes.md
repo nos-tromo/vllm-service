@@ -539,6 +539,7 @@ FACE_EMBED_MODEL_FILE=face_recognition_sface_2021dec.onnx    # default
 # FACE_DETECT_MODEL_REVISION=<commit>   # pin each model's snapshot
 # FACE_EMBED_MODEL_REVISION=<commit>
 # FACE_GROUP_THRESHOLD=0.42             # lowest mean cosine at which two groups merge
+# FACE_JOIN_THRESHOLD=0.25              # lowest closeness at which a piece joins a person
 # FACES_HOST_PORT=8009                  # host publish port for dev
 ```
 

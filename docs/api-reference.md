@@ -413,12 +413,17 @@ groups while the best pair is at least `FACE_GROUP_THRESHOLD` (default `0.42` â€
 stricter than OpenCV's 0.363 same-person threshold for a single pair, because
 merging two people is worse than splitting one).
 
-Each weak track then joins a person when exactly one person's anchors match it
-by a mean cosine of at least the same threshold and none of that person's
-tracks, joined ones included, was on screen with it; the closest weak tracks go
-first. A weak track never founds a person and never links two, so the less
-reliable features of profile faces cannot merge anyone; one that matches no
-person, or more than one, stays on its own.
+A cluster seen in at least two samples is a person. Each weak track, and each
+anchor cluster seen in a single sample (a small or blurred face, say), then
+joins the person it is closest to, the mean of its three highest cosines to
+the person's anchor tracks, when that closeness is at least
+`FACE_JOIN_THRESHOLD` (default `0.25`), at least 0.1 above the next person, and
+none of that person's tracks, joined ones included, was on screen with it. The
+closest pieces go first, and joined pieces do not count toward the next one's
+closeness. A piece never founds a person and never links two, and two people
+are never merged at this step, so the less reliable features of profile or
+blurred faces cannot merge anyone; a weak track that joins no one stays on its
+own, an anchor cluster as a person of its own.
 
 Labels are numbered by each person's first anchor track; a track with no
 decodable face, and a weak track that joined no one, gets `-1`.
