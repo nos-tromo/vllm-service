@@ -85,6 +85,45 @@ runtime; every log line goes to stderr. Each deployment's `model_info.id` in
 `docker/litellm.config.yaml` names the compose service the event records as
 the recipient.
 
+### Prefix-cache isolation
+
+`chat` caches prompt prefixes, and a cache hit shortens the time to the first
+token, so a caller who can time requests could test whether another caller's
+prompt is cached. vLLM shares cached blocks only between requests with the same
+`cache_salt`. A second router callback, `docker/router/cache_salt.py`
+(`cache_salt.handler`), sets that salt on every completion call and replaces
+any salt the client sent. The salt depends on the caller's partition:
+
+| Request carries | Partition |
+|---|---|
+| an Open WebUI user token that verifies against `AUDIT_OPENWEBUI_JWT_SECRET` | that user |
+| `X-Cache-Scope: <64 lowercase hex>`, the per-user pseudonym docint, Nextext and translator send | that scope |
+| any other `X-OpenWebUI-*` header | all Open WebUI users together |
+| none of these | every other caller together |
+
+The rows are checked in order. The salt is an HMAC-SHA256 of the partition
+under `OPENAI_API_KEY`, so it cannot be guessed, is the same in every router
+worker, and passes vLLM's salt check (64 hex characters). The pseudonym is not
+logged or recorded; it only selects the partition. Each app derives it from
+the user name under a key that exists only in that app's process, so the
+router cannot map it back to a user. An app restart therefore starts that
+app's users with a cold cache.
+
+Only `completion` and `text_completion` calls are salted. vLLM does not cache
+prefixes for the embedding, reranking and Whisper models, and pass-through
+bodies are forwarded unchanged. Some sharing remains:
+
+- An app sends no scope for work done for no user (CLI runs, maintenance
+  jobs). That work shares the last partition.
+- Without `AUDIT_OPENWEBUI_JWT_SECRET`, all Open WebUI users share one
+  partition, and a caller that reaches `chat` directly on `inference-net`
+  bypasses the router and its salt.
+
+Keep vLLM's default `--prefix-caching-hash-algo` (`sha256`), and leave
+`--enable-prompt-tokens-details` unset: it would report cache hits in
+`usage`, without any timing. `CHAT_ENABLE_PREFIX_CACHING=false` turns caching
+off completely ([configuration.md](configuration.md#prefix-caching)).
+
 ### The gliner watchdog
 
 The gliner container is supervised by `scripts/gliner_watchdog.sh` (installed as
