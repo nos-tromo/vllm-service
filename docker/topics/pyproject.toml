@@ -15,7 +15,7 @@ dependencies = [
     "uvicorn[standard]>=0.54.0",
     "python-multipart>=0.0.33",
     "pydantic>=2.14.2",
-    "anyio>=4",
+    "anyio>=4.16.0",
 ]
 
 [dependency-groups]
