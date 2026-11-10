@@ -1,21 +1,22 @@
 # CPU-only deployment shapes
 
 For hosts that cannot run the CUDA stack (Mac dev boxes, ROCm or CPU-only
-Linux running Ollama for chat/embed), this repo also ships eight standalone
+Linux running Ollama for chat/embed), this repo also ships nine standalone
 CPU deployments — one container each, no LiteLLM router, no GPU
 reservation.
 
-The eight can be co-deployed on the same host so the consuming app has all
+The nine can be co-deployed on the same host so the consuming app has all
 of `/gliner`, `/rerank`, `/clip/*`, `/v1/embeddings`, `/pooling`,
-`/tokenize`, `/diarize`, `/v1/audio/transcriptions`, `/vad`, and
-`/topics/fit` available without the full CUDA stack.
+`/tokenize`, `/diarize`, `/v1/audio/transcriptions`, `/vad`,
+`/topics/fit`, and `/faces/{detect,group}` available without the full CUDA
+stack.
 
 Each is its own compose project (`docker/compose.<shape>.yaml`), not a profile
 of the full stack, and each is built and run through its own `make` targets.
 
 ## How every shape works
 
-The eight are eight instances of one template. Everything in this section
+The nine are nine instances of one template. Everything in this section
 applies to all of them, except where it names the shape that deviates; the
 per-shape sections below cover only what differs.
 
@@ -23,7 +24,7 @@ per-shape sections below cover only what differs.
 
 Substitute the shape's `make` suffix from the table below (`gliner-only`,
 `rerank-only`, `clip-only`, `embed-only`, `diarize-only`, `asr-only`,
-`vad-only`, `topics-only`):
+`vad-only`, `topics-only`, `faces-only`):
 
 ```bash
 make network            # if not already created
@@ -51,19 +52,22 @@ default to `1` in every service, so nothing is downloaded at start. To
 populate the cache on a networked host, temporarily set `HF_HUB_OFFLINE=0` and
 `TRANSFORMERS_OFFLINE=0` in `.env` for the first start, then flip both back.
 
-Four shapes deviate: **diarize-only** needs gated weights and an `HF_TOKEN`
+Five shapes deviate: **diarize-only** needs gated weights and an `HF_TOKEN`
 (see [Diarize-only](#diarize-only)), **asr-only** downloads from
 openai-whisper's own CDN rather than the HF Hub (see [ASR-only](#asr-only)),
 and **vad-only** and **topics-only** download nothing at all (see
 [VAD-only](#vad-only) and [Topics-only](#topics-only); the latter has no weights
-and mounts no cache). Per-shape download sizes are in the table below.
+and mounts no cache). **faces-only** needs one named file from each of two Hub
+repositories, and only that file (see [Faces-only](#faces-only)). Per-shape
+download sizes are in the table below.
 
 ### Pinning the model revision
 
-Four shapes load their model at a recorded commit, read from the same variable
+Five shapes load their model at a recorded commit, read from the same variable
 the full stack uses: `RERANK_MODEL_REVISION` (rerank-only),
-`CLIP_MODEL_REVISION` (clip-only), `EMBED_MODEL_REVISION` (embed-only) and
-`DIARIZE_MODEL_REVISION` (diarize-only). Set, the shape loads that snapshot and
+`CLIP_MODEL_REVISION` (clip-only), `EMBED_MODEL_REVISION` (embed-only),
+`DIARIZE_MODEL_REVISION` (diarize-only), and `FACE_DETECT_MODEL_REVISION` and
+`FACE_EMBED_MODEL_REVISION`, one per model (faces-only). Set, the shape loads that snapshot and
 does not start if the cache lacks it; unset, it serves the cache's `refs/main`,
 as before. gliner-only cannot be pinned (`gliner.serve` takes no revision);
 asr-only, vad-only and topics-only have no Hub revision to pin. Details:
@@ -76,7 +80,7 @@ Bearer-token gate, and `inference-net` is a private Docker network shared
 only between trusted compose projects (the same posture `data-net` uses
 for Qdrant).
 
-That holds for all eight — none of them runs a router, so none of them has a
+That holds for all nine — none of them runs a router, so none of them has a
 gate. The full stack's master-key gate is described in
 [api-reference.md](api-reference.md#authentication).
 
@@ -104,7 +108,7 @@ inert in that shape. The per-shape blocks below list the knobs, and
 semantics — the embed batch budget and the diarize speaker-granularity
 weights — are explained in [configuration.md](configuration.md).
 
-## The eight shapes
+## The nine shapes
 
 | Shape | `make` suffix | Image | Exposes, reached at |
 |---|---|---|---|
@@ -116,6 +120,7 @@ weights — are explained in [configuration.md](configuration.md).
 | ASR-only | `asr-only` | `vllm-service-asr-cpu` | `/v1/audio/transcriptions`, `/v1/audio/translations` at `http://asr-only:8000` |
 | VAD-only | `vad-only` | `vllm-service-vad-cpu` | `/vad` at `http://vad-only:8000` |
 | Topics-only | `topics-only` | `vllm-service-topics-cpu` | `/topics/fit` at `http://topics-only:8000` |
+| Faces-only | `faces-only` | `vllm-service-faces-cpu` | `/faces/detect`, `/faces/group` at `http://faces-only:8000` |
 
 Every container listens on port 8000 inside `inference-net`; the compose file
 is `docker/compose.<make suffix>.yaml` and the dev overlay
@@ -131,6 +136,7 @@ is `docker/compose.<make suffix>.yaml` and the dev overlay
 | ASR-only | `WHISPER_MODEL`, `ASR_*` | `ASR_HOST_PORT` | openai-whisper CDN, ~3 GB (`large-v3`) | no |
 | VAD-only | `VAD_*` | `VAD_HOST_PORT` | bundled in the `silero-vad` package | n/a |
 | Topics-only | `TOPICS_*` | `TOPICS_HOST_PORT` | none (the caller supplies the vectors) | n/a |
+| Faces-only | `FACE_*` | `FACES_HOST_PORT` | HF Hub, two single files: ~230 KB (YuNet) + ~39 MB (SFace) | no |
 
 ## NER-only
 
@@ -459,3 +465,89 @@ watches `docker/topics` but leaves out major and minor bumps of the fit's
 libraries, since those can change its results; security updates still open.
 
 Request and response shapes: [api-reference.md](api-reference.md#topics).
+
+## Faces-only
+
+`docker/compose.faces-only.yaml` is a standalone compose project for the same
+audience as the other `-only` shapes. It runs one container, `faces-only`, built
+from `Dockerfile.faces.cpu` (the uv base image's Python 3.11, installed from the
+locked closure in `docker/faces/`: `opencv-python-headless`, NumPy, FastAPI,
+`huggingface_hub`; no torch). No LiteLLM router, no GPU reservation. The
+container ships `src/faces_server.py` — the same FastAPI app the full-stack
+`faces` service runs, around the clustering in `src/faces_cluster.py` — so it
+exposes the **same JSON `/faces/detect` and `/faces/group` contracts**, and
+consumers target either backend by changing only the base URL. The features that
+drive grouping never leave the container.
+
+**Weights.** Two ONNX files from the OpenCV Zoo, each one file of a Hub
+repository that holds several variants (fp32, int8, int8bq), so the file name is
+pinned as well as the repository:
+
+| Model | Repository | File | Licence |
+|---|---|---|---|
+| YuNet (detection) | `opencv/face_detection_yunet` | `face_detection_yunet_2023mar.onnx` | MIT |
+| SFace (features) | `opencv/face_recognition_sface` | `face_recognition_sface_2021dec.onnx` | Apache-2.0 |
+
+Both repositories also ship `example_outputs/` with photographs of people, which
+have no place on a deployment host. Fetch only the `.onnx` file and `LICENSE` of
+each, never the whole repository, with the deploy repo's `scripts/fetch-model.sh`
+and its repeatable `--file` option (given before the model id) on a networked
+host:
+
+```bash
+./fetch-model.sh --file face_detection_yunet_2023mar.onnx --file LICENSE opencv/face_detection_yunet
+./fetch-model.sh --file face_recognition_sface_2021dec.onnx --file LICENSE opencv/face_recognition_sface
+```
+
+Each run prints `Revision:` as for a whole model: that commit goes into
+`FACE_DETECT_MODEL_REVISION` and `FACE_EMBED_MODEL_REVISION` respectively. (With
+`hf download <repo> <file> LICENSE` directly, the commit is the name of the
+`snapshots/<commit>` directory it prints.) Then move the cache into the
+`huggingface-cache` volume (on an airgapped host, with the deploy repo's
+model-transfer scripts, see
+[airgap-bundles.md](airgap-bundles.md#loading-and-running-the-bundle)). Unlike
+the other shapes, the service never downloads, so flipping `HF_HUB_OFFLINE=0`
+for a first start does not populate the cache; populate it from outside. On a
+development host with internet access, a one-off container from the faces image
+writes the four files straight into the volume (`HF_HOME` moves
+`huggingface_hub`'s Xet state off the hub cache):
+
+```bash
+docker run --rm -v huggingface-cache:/home/app/.cache/huggingface/hub \
+  -e HF_HUB_OFFLINE=0 -e HF_HOME=/tmp/hf \
+  --entrypoint python vllm-service-faces-cpu:<version> -c '
+from huggingface_hub import hf_hub_download as fetch
+for repo, name in [("opencv/face_detection_yunet", "face_detection_yunet_2023mar.onnx"),
+                   ("opencv/face_recognition_sface", "face_recognition_sface_2021dec.onnx")]:
+    for file in (name, "LICENSE"):
+        print(fetch(repo_id=repo, filename=file))'
+```
+
+The server loads both at import, so a missing file — or a pinned revision the
+cache lacks — stops the container at startup with an error naming the file,
+instead of serving other weights.
+InsightFace's models are not used: their weights are licensed for non-commercial
+research only.
+
+Override defaults via `.env` — only `FACE_*` knobs apply in this shape:
+
+```bash
+FACE_DETECT_MODEL=opencv/face_detection_yunet               # default
+FACE_DETECT_MODEL_FILE=face_detection_yunet_2023mar.onnx     # default
+FACE_EMBED_MODEL=opencv/face_recognition_sface              # default
+FACE_EMBED_MODEL_FILE=face_recognition_sface_2021dec.onnx    # default
+# FACE_DETECT_MODEL_REVISION=<commit>   # pin each model's snapshot
+# FACE_EMBED_MODEL_REVISION=<commit>
+# FACE_GROUP_THRESHOLD=0.42             # lowest mean cosine at which two groups merge
+# FACE_JOIN_THRESHOLD=0.25              # lowest closeness at which a piece joins a person
+# FACES_HOST_PORT=8009                  # host publish port for dev
+```
+
+Requests are held in memory (at most 32 MiB each), so `/tmp` is a small tmpfs,
+not a disk-backed spool. At most four requests are in flight at once; a fifth
+gets `503` with `Retry-After: 5` before any of its body is read. The models
+serve one call at a time; a request that waits more than 30 s for them, or runs
+past its 120 s deadline, gets the same `503`. The container reports
+healthy within seconds of starting.
+
+Request and response shapes: [api-reference.md](api-reference.md#faces).
