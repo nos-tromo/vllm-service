@@ -236,6 +236,22 @@ def test_vllm_launch_without_revision_passes_no_flag(service: str, value: str | 
     assert "--tokenizer-revision" not in argv
 
 
+@pytest.mark.parametrize(
+    ("value", "flag"),
+    [(None, "--enable-prefix-caching"), ("true", "--enable-prefix-caching"), ("false", "--no-enable-prefix-caching")],
+    ids=["unset", "true", "false"],
+)
+def test_chat_launch_switches_prefix_caching(value: str | None, flag: str, tmp_path: Path) -> None:
+    """``CHAT_ENABLE_PREFIX_CACHING`` turns caching off by flag, not by omission.
+
+    vLLM caches prefixes by default, so leaving the flag out would not switch
+    it off.
+    """
+    env = {} if value is None else {"CHAT_ENABLE_PREFIX_CACHING": value}
+    argv = _launch_argv("chat", env, tmp_path)
+    assert [arg for arg in argv if arg.endswith("enable-prefix-caching")] == [flag]
+
+
 class _FakeLoaded:
     """What a stubbed ``from_pretrained`` returns: enough for each server's import."""
 

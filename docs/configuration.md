@@ -92,6 +92,23 @@ reasoning parser's name, one from newer upstream documentation) does stop
 `CHAT_TOOL_CALL_PARSER` now takes effect, and its name is checked: it used to
 be ignored while the toggle defaulted to off.
 
+## Prefix caching
+
+`chat` reuses the KV cache of prompt prefixes it has already seen. Multi-turn
+chats and RAG prompts that share a system prompt are where this saves the most.
+
+```bash
+# Default. Any other value turns prefix caching off.
+CHAT_ENABLE_PREFIX_CACHING=true
+```
+
+The router keeps each user's cached prefixes apart with vLLM's `cache_salt`
+([architecture.md](architecture.md#prefix-cache-isolation)), so caching stays
+on in multi-user deployments. Any value other than `true` now passes
+`--no-enable-prefix-caching`. It used to pass no flag at all, which left
+caching on, because vLLM enables it by default. Apply a change with
+`docker compose --env-file .env -f docker/compose.yaml up -d chat`.
+
 ## Embedding batch budget
 
 Applies to the `embed-only` shape (`src/embed_server.py`).
