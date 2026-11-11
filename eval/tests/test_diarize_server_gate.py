@@ -68,6 +68,8 @@ def _fake_pipeline(payload: object, **kwargs: object) -> _FakeAnnotation:
 # test_smoke_e2e.py) rather than this test's fake single-turn pipeline.
 _torch_stub = types.ModuleType("torch")
 _torch_stub.from_numpy = lambda array: _FakeWaveform()  # type: ignore[attr-defined]
+_cache_frees: list[None] = []
+_torch_stub.cuda = types.SimpleNamespace(empty_cache=lambda: _cache_frees.append(None))  # type: ignore[attr-defined]
 _inserted_torch = sys.modules.setdefault("torch", _torch_stub) is _torch_stub
 
 _pipeline_stub = types.ModuleType("diarize_pipeline")
@@ -100,6 +102,20 @@ _UPLOAD = {"file": ("clip.wav", io.BytesIO(b"fake-bytes"), "audio/wav")}
 def _decoded_audio(monkeypatch: pytest.MonkeyPatch) -> None:
     """Bypass ffmpeg: every upload decodes to a second of silence."""
     monkeypatch.setattr(diarize_server, "decode_audio", lambda data: np.zeros(16000, dtype=np.float32))
+
+
+def test_gpu_cache_is_freed_after_every_request(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Every request frees the GPU cache, also when the pipeline fails: the GPU is shared with chat."""
+    monkeypatch.delenv("DIARIZE_VAD_URL", raising=False)
+    _cache_frees.clear()
+    assert client.post("/diarize", files=_UPLOAD).status_code == 200
+
+    def _fail(payload: object, **kwargs: object) -> None:
+        raise RuntimeError("synthetic pipeline failure")
+
+    monkeypatch.setattr(diarize_server, "pipeline", _fail)
+    assert client.post("/diarize", files=_UPLOAD).status_code == 500
+    assert len(_cache_frees) == 2
 
 
 def test_no_vad_url_returns_ungated_turns(monkeypatch: pytest.MonkeyPatch) -> None:
