@@ -40,11 +40,12 @@ backends with a single LiteLLM Proxy router. The Docker assets live under
 `docker/Dockerfile.diarize.cpu`, `docker/Dockerfile.asr.cpu`,
 `docker/Dockerfile.vad.cpu`, `docker/Dockerfile.topics.cpu`, `docker/topics/`,
 `docker/Dockerfile.faces.cpu`, `docker/faces/`,
-`docker/litellm.config.yaml`, and `docker/router/` — the router's audit
-callback, mounted into the pinned LiteLLM image, see "Audit log" below) plus `.env`
+`docker/litellm.config.yaml`, and `docker/router/` — the router's audit and
+prefix-cache salt callbacks, mounted into the pinned LiteLLM image, see "Audit log"
+and "Prefix-cache isolation" below) plus `.env`
 and `.dockerignore` at the repo root. Besides `docker/router/router_audit.py`
 (and its vendored `audit_event.py` / `audit_runtime.py`, which are never
-edited), the only Python sources are
+edited) and `docker/router/cache_salt.py`, the only Python sources are
 `src/rerank_server.py`, `src/clip_server.py`, `src/embed_server.py`,
 `src/diarize_server.py` (and its `src/diarize_audio.py`,
 `src/diarize_pipeline.py`, `src/diarize_compat.py`, and
@@ -592,6 +593,36 @@ Design points that are load-bearing, all verified against the pinned
   and the lock is on the router's own tmpfs, not on `media-tmp`.
 - **Airgap transfer:** the host needs `docker/router/` beside
   `docker/litellm.config.yaml`; the bind mount refuses to start without it.
+
+### Prefix-cache isolation (router callback)
+
+`docker/router/cache_salt.py` (`cache_salt.handler`, registered after the audit
+callback) sets vLLM's `cache_salt` on every `completion`/`text_completion` call,
+so callers cannot time each other's cached prompt prefixes
+(`docs/architecture.md#prefix-cache-isolation` is the reference;
+`eval/tests/test_cache_salt.py` the tests). Load-bearing points, verified
+against the pinned `litellm-non_root:v1.97.0`:
+
+- **The partition, in order:** a verified Open WebUI JWT (`user:<email>`,
+  reusing `router_audit`'s verifier and `AUDIT_OPENWEBUI_JWT_SECRET`), an
+  `X-Cache-Scope` of 64 lowercase hex (`scope:<value>`, the apps' per-user
+  pseudonym), any other `X-OpenWebUI-*` header (`open-webui`), else `service`.
+  The salt is `HMAC-SHA256(OPENAI_API_KEY, "vllm-cache-salt/v1\0" + partition)`
+  as hex. A blank key stops the router at import.
+- **Always overwrite:** the hook sets `data["cache_salt"]` and removes any
+  `cache_salt` from `extra_body`, so no client chooses its own partition. It
+  never logs the scope or writes it to the audit log.
+- **The hook must be defined on the class itself:** LiteLLM calls a callback's
+  `async_pre_call_hook` only if `vars(cls)` has it (`proxy/utils.py`). It uses
+  a returned dict as the request data.
+- **Delivery:** LiteLLM passes a body field outside the OpenAI parameters to
+  `openai`/`hosted_vllm` deployments in `extra_body` (`utils.py`,
+  `add_provider_specific_params_to_optional_params`), and `drop_params` does
+  not remove it. Re-check this, and the hook dispatch above, when bumping the
+  router image.
+- **Only completions** are salted: vLLM does not cache prefixes for the
+  encoder-only embed/rerank models or for Whisper, and pass-through bodies are
+  forwarded verbatim.
 
 ### Dependency overlay
 

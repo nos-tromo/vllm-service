@@ -225,7 +225,12 @@ litellm_settings:
   # event per model call (docker/router/router_audit.py, docs/audit.md). The
   # module is mounted from docker/router/ and found through PYTHONPATH
   # (docker/compose.yaml); without it the router does not start.
-  callbacks: ["prometheus", "router_audit.handler"]
+  #
+  # cache_salt.handler gives every completion call the vLLM cache_salt of its
+  # caller (an Open WebUI user, an app's X-Cache-Scope pseudonym, or one shared
+  # partition), so callers cannot probe each other's cached prompt prefixes
+  # by timing (docker/router/cache_salt.py, docs/architecture.md).
+  callbacks: ["prometheus", "router_audit.handler", "cache_salt.handler"]
 
   # Serve `/metrics` unauthenticated, opting out of the auth default LiteLLM
   # introduced in v1.85.0. Deliberate, not an oversight: the vLLM backends'

@@ -53,6 +53,19 @@ the gateway's) so the event can be matched to the calling app's own events.
 Open WebUI's signed `X-OpenWebUI-User-Jwt` names its user. Nothing else from a
 request is recorded.
 
+## Cache scope
+
+On chat and text completions, an app sends `X-Cache-Scope: <64 lowercase hex>`,
+a pseudonym of the user the call runs for. Calls with the same scope share
+`chat`'s prompt-prefix cache, and calls with different scopes never do. The
+router turns the scope into vLLM's `cache_salt` and does not record it. A value
+of any other form is ignored, so the call shares the cache with other callers
+that send no scope. Derive the scope per user under a key that only the app
+knows, e.g.
+`HMAC-SHA256(per-process random key, "cache-scope/v1\0" + user)`. A `cache_salt`
+in the request body is always replaced
+([architecture.md](architecture.md#prefix-cache-isolation)).
+
 ## Two addresses for the same contract
 
 Every capability below can be reached two ways, and the request and response
