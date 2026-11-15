@@ -109,6 +109,48 @@ on in multi-user deployments. Any value other than `true` now passes
 caching on, because vLLM enables it by default. Apply a change with
 `docker compose --env-file .env -f docker/compose.yaml up -d chat`.
 
+## Chat context length
+
+`chat` serves `CHAT_MAX_MODEL_LEN` tokens of context: 32768 by default, where
+it used to be 8192. The limit is per request and covers the prompt plus the
+output it asks for; a request over it is rejected with HTTP 400. The default
+leaves room for agentic chats, whose tool results travel in the prompt and no
+longer fit in 8192.
+
+```bash
+# Default. The most tokens one request can hold, prompt and output together.
+CHAT_MAX_MODEL_LEN=32768
+```
+
+The price is KV cache. The cache has to fit in the memory `chat` is allowed
+(`CHAT_GPU_MEMORY_UTILIZATION`, default `0.5` of each of its GPUs, less the
+weights), and the context length decides how many full-length requests that
+memory holds: at 32768 tokens, a quarter of what it held at 8192.
+
+- vLLM has to fit at least one request of the full length in the cache. When
+  it cannot, `chat` stops at startup with an error that names the longest
+  context the memory would hold. Raise `CHAT_GPU_MEMORY_UTILIZATION`, lower
+  `CHAT_MAX_MODEL_LEN`, or set `CHAT_KV_CACHE_DTYPE=fp8`, which stores the
+  cache in about half the memory. The value also cannot exceed what the model
+  itself supports, which stops `chat` the same way.
+- When it starts, `chat` logs a `Maximum concurrency for … tokens per request`
+  line: the number of full-length requests the cache holds at once. Shorter
+  requests share the same cache, so more than that run in parallel, up to
+  `CHAT_MAX_NUM_SEQS` (default `8`). When long chats do fill the cache, vLLM
+  preempts a request and recomputes it later, which shows as latency, not as
+  an error.
+- `chat` starts before the other GPU backends, which claim their own
+  `*_GPU_MEMORY_UTILIZATION` share after it. Raise `chat`'s share only as far
+  as the backends on the same GPU leave room for, and check the GPU's free
+  memory once the whole stack is up.
+
+`CHAT_MAX_NUM_BATCHED_TOKENS` (default `16384`) need not follow the context:
+vLLM prefills a longer prompt in chunks of that size. Apps that size their
+prompts to the window take it from their own settings (docint's
+`OPENAI_CTX_WINDOW`, for instance), not from this value, so raising it here
+changes what they may send only once they are told to. Apply a change with
+`docker compose --env-file .env -f docker/compose.yaml up -d chat`.
+
 ## Embedding batch budget
 
 Applies to the `embed-only` shape (`src/embed_server.py`).

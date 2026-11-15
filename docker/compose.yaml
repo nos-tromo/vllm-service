@@ -254,7 +254,7 @@ services:
         --host 0.0.0.0
         --port 8000
         --gpu-memory-utilization "$${CHAT_GPU_MEMORY_UTILIZATION:-0.5}"
-        --max-model-len "$${CHAT_MAX_MODEL_LEN:-8192}"
+        --max-model-len "$${CHAT_MAX_MODEL_LEN:-32768}"
         --max-num-seqs "$${CHAT_MAX_NUM_SEQS:-8}"
         --max-num-batched-tokens "$${CHAT_MAX_NUM_BATCHED_TOKENS:-16384}";
         if [ -n "$${TEXT_MODEL_REVISION:-}" ]; then
