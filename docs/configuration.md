@@ -10,8 +10,8 @@ than a one-line comment. Per-shape defaults for the CPU-only containers live in
 
 `OPENAI_API_KEY` is the router's master key: every client sends it as its
 Bearer token, and the router passes it on to the vLLM backends, whose
-`--api-key` it is too. The apps (docint, Nextext, translator,
-open-webui-service) hold the same value, and deploy's `make env` copies it from
+`--api-key` it is too. The apps (docint, Nextext, translator, ghostwriter)
+hold the same value, and deploy's `make env` copies it from
 this repo's `.env` to theirs. `.env.example` leaves it empty, and compose
 refuses the full stack without one:
 
@@ -364,15 +364,13 @@ The request and response bodies are in [api-reference.md](api-reference.md#faces
 ## Audit log
 
 The router writes one data-protection audit event per model call
-([audit.md](audit.md)). Two settings go in `.env`:
+([audit.md](audit.md)). One setting goes in `.env`:
 
 ```bash
 # Default: empty, every call type is audited. Otherwise a comma-separated list of
 # completion, text_completion, embedding, rerank, transcription, pass_through_endpoint, ...
 # An unknown name stops the router.
 AUDIT_ROUTER_CALL_TYPES=
-# The secret open-webui-service signs its user token with; unset, no Open WebUI user is named.
-AUDIT_OPENWEBUI_JWT_SECRET=
 ```
 
 Leave a call type out only if every app that calls it records those calls

@@ -22,7 +22,7 @@ succeeds again and the trail records how many events could not be written.
 ``docs/audit.md`` lists what each path does.
 
 Facts are read defensively: whatever fails while one is read (a malformed
-response, a hostile token), the event is still written, without that fact
+response, a hostile header), the event is still written, without that fact
 and marked ``incomplete``. Request headers are taken only from what the proxy
 itself records, never from a request body: a pass-through route's payload is
 the client's body.
@@ -32,12 +32,9 @@ from __future__ import annotations
 
 import asyncio
 import atexit
-import base64
 import contextlib
 import contextvars
 import hashlib
-import hmac
-import json
 import os
 import re
 import threading
@@ -91,20 +88,6 @@ PROXY_SUCCESS_HOOK_TYPES: Final = frozenset(
 #: Call types whose output tokens count generated text.
 _TEXT_OUTPUT_TYPES: Final = frozenset({"completion", "text_completion", "responses", "anthropic_messages"})
 
-#: Open WebUI's signed user token (``FORWARD_USER_INFO_HEADER_JWT``).
-OPENWEBUI_JWT_HEADER: Final = "x-openwebui-user-jwt"
-#: Open WebUI's chat id header (``FORWARD_SESSION_INFO_HEADER_CHAT_ID``).
-OPENWEBUI_CHAT_HEADER: Final = "x-openwebui-chat-id"
-#: The ``iss`` claim Open WebUI puts in its user token.
-OPENWEBUI_ISSUER: Final = "open-webui"
-#: Open WebUI's unsigned user headers, sent when it has no token secret.
-_OPENWEBUI_PLAIN_HEADERS: Final = ("x-openwebui-user-email", "x-openwebui-user-id", "x-openwebui-user-name")
-#: Clock skew tolerated on a token's ``exp`` and ``iat``, in seconds.
-JWT_LEEWAY_S: Final = 30.0
-#: Longest token accepted, in characters.
-MAX_JWT_LENGTH: Final = 4096
-
-_B64URL: Final = re.compile(r"[A-Za-z0-9_-]+")
 _RELEASE_TAG: Final = re.compile(r"v\d")
 _T = TypeVar("_T")
 _SYSTEM: Final = Actor(user=None, via="system")
@@ -274,20 +257,6 @@ def _int(value: object) -> int | None:
         The integer, or ``None`` (also for booleans).
     """
     return value if isinstance(value, int) and not isinstance(value, bool) else None
-
-
-def _number(value: object) -> float | None:
-    """Return a value if it is a plain number.
-
-    Args:
-        value: Any value.
-
-    Returns:
-        The number as a float, or ``None`` (also for booleans).
-    """
-    if isinstance(value, int | float) and not isinstance(value, bool):
-        return float(value)
-    return None
 
 
 def _count(value: object) -> int | None:
@@ -474,87 +443,6 @@ def _revision(value: object) -> str | None:
     return value.strip() if isinstance(value, str) and value.strip() else None
 
 
-def _b64url(segment: str) -> bytes:
-    """Decode one unpadded base64url segment of a token.
-
-    Args:
-        segment: The segment.
-
-    Returns:
-        The decoded bytes.
-
-    Raises:
-        ValueError: If the segment is not base64url.
-    """
-    if not _B64URL.fullmatch(segment):
-        raise ValueError("not base64url")
-    return base64.urlsafe_b64decode(segment + "=" * (-len(segment) % 4))
-
-
-def verify_openwebui_token(token: str, secret: bytes, *, now: float) -> dict[str, Any] | None:
-    """Check an Open WebUI user token and return its claims.
-
-    Open WebUI signs its token with HS256 and the shared secret
-    (``FORWARD_USER_INFO_HEADER_JWT_SECRET``), naming itself as issuer and
-    expiring the token after a few minutes. The signature is checked with
-    HS256 before anything the token carries is parsed, so unsigned input
-    never reaches the JSON decoder; whatever fails while the token is
-    decoded, it is simply not verified.
-
-    Args:
-        token: The ``X-OpenWebUI-User-Jwt`` header value.
-        secret: The shared secret.
-        now: The current Unix time.
-
-    Returns:
-        The claims, or ``None`` when the token is malformed, signed with
-        another key or algorithm, from another issuer, expired, or issued in
-        the future.
-    """
-    try:
-        return _verify_openwebui_token(token, secret, now)
-    except Exception:  # e.g. a RecursionError from deeply nested JSON
-        return None
-
-
-def _verify_openwebui_token(token: str, secret: bytes, now: float) -> dict[str, Any] | None:
-    """Check a token as :func:`verify_openwebui_token` describes; may raise.
-
-    Args:
-        token: The token.
-        secret: The shared secret.
-        now: The current Unix time.
-
-    Returns:
-        The claims of a valid token, else ``None``.
-    """
-    if len(token) > MAX_JWT_LENGTH:
-        return None
-    parts = token.split(".")
-    if len(parts) != 3 or not all(_B64URL.fullmatch(part) for part in parts):
-        return None
-    head, body, signature = parts
-    expected = hmac.new(secret, f"{head}.{body}".encode("ascii"), hashlib.sha256).digest()
-    if not hmac.compare_digest(expected, _b64url(signature)):
-        return None
-    # Signed with the shared secret: only now is what it signed parsed.
-    header = json.loads(_b64url(head))
-    claims = json.loads(_b64url(body))
-    if not isinstance(header, dict) or header.get("alg") != "HS256" or not isinstance(claims, dict):
-        return None
-    if claims.get("iss") != OPENWEBUI_ISSUER:
-        return None
-    expires = _number(claims.get("exp"))
-    if expires is None or expires + JWT_LEEWAY_S < now:
-        return None
-    issued = claims.get("iat")
-    if issued is not None:
-        issued_at = _number(issued)
-        if issued_at is None or issued_at - JWT_LEEWAY_S > now:
-            return None
-    return claims
-
-
 def _configured_passthrough_targets() -> dict[str, str]:
     """Map every configured pass-through path to its backend's host.
 
@@ -640,7 +528,6 @@ class RouterAudit(CustomLogger):
         environ: Mapping[str, str] | None = None,
         emitter_factory: Callable[[], AuditEmitter] | None = None,
         passthrough_targets: Callable[[], Mapping[str, str]] = _configured_passthrough_targets,
-        clock: Callable[[], float] = time.time,
         monotonic: Callable[[], float] = time.monotonic,
     ) -> None:
         """Read the configuration; nothing is written until the first event.
@@ -653,7 +540,6 @@ class RouterAudit(CustomLogger):
                 writing to the stream ``AUDIT_OUTPUT`` selects.
             passthrough_targets: Returns the backend host of each
                 pass-through path.
-            clock: The Unix time, for token expiry.
             monotonic: A monotonic clock, for call durations.
 
         Raises:
@@ -664,14 +550,11 @@ class RouterAudit(CustomLogger):
         env = os.environ if environ is None else environ
         self._env = env
         self._call_types = parse_call_types(env.get("AUDIT_ROUTER_CALL_TYPES"))
-        secret = (env.get("AUDIT_OPENWEBUI_JWT_SECRET") or "").strip()
-        self._jwt_secret = secret.encode("utf-8") if secret else None
         self._output = env.get("AUDIT_OUTPUT")
         self._version = service_version(env.get("AUDIT_SERVICE_VERSION"))
         self._emitter_factory = emitter_factory or self._open_emitter
         self._passthrough_targets = passthrough_targets
         self._targets: Mapping[str, str] = {}
-        self._clock = clock
         self._monotonic = monotonic
         self._lock = threading.RLock()
         self._emitter: AuditEmitter | None = None
@@ -693,11 +576,10 @@ class RouterAudit(CustomLogger):
         """Describe the operating mode for the ``config.audit`` event.
 
         Returns:
-            The audited call types and whether Open WebUI's signed user
-            token is checked; no secrets.
+            The audited call types; no secrets.
         """
         call_types: object = "all" if self._call_types is None else sorted(self._call_types)
-        return {"call_types": call_types, "openwebui_jwt": self._jwt_secret is not None}
+        return {"call_types": call_types}
 
     def open(self) -> AuditEmitter:
         """Return this process's emitter, starting its chain on first use.
@@ -814,33 +696,18 @@ class RouterAudit(CustomLogger):
         return self._call_types is None or call_type in self._call_types
 
     def _identity(self, headers: Mapping[str, Any] | None) -> tuple[Actor, dict[str, object]]:
-        """Map a request's forwarded user identity to the event's actor.
+        """Map a request to the event's actor.
 
         Every caller shares the master key, so the router cannot tell them
-        apart by themselves. Open WebUI names its user in a token it signs
-        with a secret the router shares; only a valid token names the actor.
+        apart: the actor is the calling service, whatever identity headers
+        the request carries.
 
         Args:
-            headers: The request headers.
+            headers: The request headers (not read).
 
         Returns:
-            The actor, and the criteria saying how the identity was decided.
+            The calling service as actor, and no identity criteria.
         """
-        token = _header(headers, OPENWEBUI_JWT_HEADER)
-        if token is not None:
-            claims = None
-            if self._jwt_secret is not None:
-                claims = verify_openwebui_token(token, self._jwt_secret, now=self._clock())
-            email = claims.get("email") if claims is not None else None
-            if not isinstance(email, str) or not email.strip():
-                return _CALLER, {"forwarded_identity": "invalid"}
-            identity: dict[str, object] = {"caller": "open-webui", "forwarded_identity": "signed"}
-            chat_id = clean_request_id(_header(headers, OPENWEBUI_CHAT_HEADER))
-            if chat_id is not None:
-                identity["chat_id"] = chat_id
-            return Actor(user=email.strip(), via="service"), identity
-        if any(_header(headers, name) is not None for name in _OPENWEBUI_PLAIN_HEADERS):
-            return _CALLER, {"forwarded_identity": "unsigned"}
         return _CALLER, {}
 
     def _see_headers(self, call: _Call, headers: Mapping[str, Any] | None) -> None:
