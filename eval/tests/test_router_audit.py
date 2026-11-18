@@ -25,6 +25,8 @@ import yaml
 from starlette.datastructures import Headers
 from typing_extensions import override
 
+from eval.tests.openwebui_token import LEFTOVER_SECRET, TOKEN_EMAIL, signed_token
+
 if importlib.util.find_spec("litellm") is not None:
     pytest.skip("router_audit tests stub LiteLLM; run them where it is not installed", allow_module_level=True)
 
@@ -826,15 +828,23 @@ def test_stray_openwebui_headers_name_only_the_caller() -> None:
 
 
 def test_a_leftover_jwt_secret_changes_nothing() -> None:
-    """``AUDIT_OPENWEBUI_JWT_SECRET`` in the environment is ignored; ``config.audit`` has no ``openwebui_jwt`` key."""
-    audit, stream = _audit({"AUDIT_OPENWEBUI_JWT_SECRET": "synthetic-leftover-secret"})
-    audit.open()
+    """``AUDIT_OPENWEBUI_JWT_SECRET`` in the environment is ignored; ``config.audit`` has no ``openwebui_jwt`` key.
+
+    A token that secret signed names no one either: the call is the caller's alone.
+    """
+    audit, stream = _audit({"AUDIT_OPENWEBUI_JWT_SECRET": LEFTOVER_SECRET})
+    _run(lambda: _chat_call(audit, {"x-openwebui-user-jwt": signed_token(LEFTOVER_SECRET)}))
     plain_audit, plain_stream = _audit()
-    plain_audit.open()
-    (_, config) = _events(stream)
-    (_, plain_config) = _events(plain_stream)
+    _run(lambda: _chat_call(plain_audit))
+    config, plain_config = _events(stream)[1], _events(plain_stream)[1]
+    (event,) = _ai_calls(stream)
+    (plain,) = _ai_calls(plain_stream)
     assert config["criteria"] == plain_config["criteria"] == {"call_types": "all"}
-    assert "synthetic-leftover-secret" not in stream.getvalue()
+    assert event["actor"] == {"user": None, "via": "service"}
+    assert event["criteria"] == plain["criteria"]
+    assert LEFTOVER_SECRET not in stream.getvalue()
+    assert TOKEN_EMAIL not in stream.getvalue()
+    assert "0b7e6a2c" not in stream.getvalue()
     _assert_chain(stream)
 
 

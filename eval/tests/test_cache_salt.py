@@ -22,6 +22,8 @@ from unittest import mock
 import pytest
 import yaml
 
+from eval.tests.openwebui_token import LEFTOVER_SECRET, signed_token
+
 if importlib.util.find_spec("litellm") is not None:
     pytest.skip("cache_salt tests stub LiteLLM; run them where it is not installed", allow_module_level=True)
 
@@ -197,9 +199,10 @@ def test_stray_openwebui_headers_do_not_hide_a_scope_header(headers: dict[str, s
 
 
 def test_a_leftover_jwt_secret_changes_nothing() -> None:
-    """``AUDIT_OPENWEBUI_JWT_SECRET`` in the environment is ignored."""
-    salter = _salter(AUDIT_OPENWEBUI_JWT_SECRET="synthetic-leftover-secret")
-    assert _salt_of({"x-openwebui-user-jwt": "synthetic.stray.token"}, salter=salter) == SERVICE
+    """``AUDIT_OPENWEBUI_JWT_SECRET`` in the environment is ignored, even for a token it signed."""
+    salter = _salter(AUDIT_OPENWEBUI_JWT_SECRET=LEFTOVER_SECRET)
+    token = signed_token(LEFTOVER_SECRET)
+    assert _salt_of({"x-openwebui-user-jwt": token}, salter=salter) == SERVICE
     assert _salt_of({"x-cache-scope": SCOPE_A}, salter=salter) == _salt_of({"x-cache-scope": SCOPE_A})
 
 
