@@ -138,6 +138,6 @@ Reference material lives in [docs/](docs/README.md).
 - Consumers in the federation: [docint](https://github.com/nos-tromo/docint),
   [Nextext](https://github.com/nos-tromo/Nextext),
   [translator](https://github.com/nos-tromo/translator),
-  [open-webui-service](https://github.com/nos-tromo/open-webui-service).
+  [ghostwriter](https://github.com/nos-tromo/ghostwriter).
 - Issues: <https://github.com/nos-tromo/vllm-service/issues>
 - Licensed under the Apache License 2.0 — see [LICENSE](LICENSE).

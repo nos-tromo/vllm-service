@@ -561,7 +561,7 @@ Design points that are load-bearing, all verified against the pinned
   pre-call hooks enforce (so the router's retries are refused too) until an
   `admin`/`audit.recovered` event records the gap.
 - **Facts are read defensively, the write is not:** every fact (headers,
-  token, deployment details, response, stream chunks, pass-through targets
+  deployment details, response, stream chunks, pass-through targets
   and revisions) goes through `_read`, so whatever fails while reading it the event is still
   written, marked `incomplete`; any failure of the write itself counts as an
   unwritten event and fails closed.
@@ -572,11 +572,8 @@ Design points that are load-bearing, all verified against the pinned
   `litellm_params.proxy_server_request` — a pass-through payload is the
   client's JSON body, which can carry header-shaped fields but never a
   `Headers` object.
-- **Identity:** callers share the master key, so the actor is
-  `Actor(None, "service")` unless Open WebUI's HS256-signed
-  `X-OpenWebUI-User-Jwt` verifies against `AUDIT_OPENWEBUI_JWT_SECRET` (the
-  signature is checked before any JSON in it is parsed); plain
-  `X-OpenWebUI-User-*` headers are never trusted.
+- **Identity:** callers share the master key, so the actor is always
+  `Actor(None, "service")`.
 - **Recipient = deployment:** `model_info.id` in `docker/litellm.config.yaml`
   names the compose service (`chat`, `embed`, `rerank`, `asr`); pass-through
   routes resolve their backend host from `pass_through_endpoints`.
@@ -603,10 +600,8 @@ so callers cannot time each other's cached prompt prefixes
 `eval/tests/test_cache_salt.py` the tests). Load-bearing points, verified
 against the pinned `litellm-non_root:v1.97.0`:
 
-- **The partition, in order:** a verified Open WebUI JWT (`user:<email>`,
-  reusing `router_audit`'s verifier and `AUDIT_OPENWEBUI_JWT_SECRET`), an
-  `X-Cache-Scope` of 64 lowercase hex (`scope:<value>`, the apps' per-user
-  pseudonym), any other `X-OpenWebUI-*` header (`open-webui`), else `service`.
+- **The partition:** an `X-Cache-Scope` of 64 lowercase hex (`scope:<value>`,
+  the apps' per-user pseudonym), else `service`.
   The salt is `HMAC-SHA256(OPENAI_API_KEY, "vllm-cache-salt/v1\0" + partition)`
   as hex. A blank key stops the router at import.
 - **Always overwrite:** the hook sets `data["cache_salt"]` and removes any
@@ -1227,7 +1222,7 @@ curl -fsS -X POST http://localhost:${FACES_HOST_PORT:-8009}/faces/detect \
 
 - Never commit directly to `main`; always branch (`feat/`, `fix/`) and open a PR.
 - Never create a NEW PR when an existing PR for the work is open — push additional commits to that branch.
-- Release order is strict: bump VERSION file -> commit -> tag. Never tag before the VERSION bump.
+- Release order is strict: bump `version` in `pyproject.toml` -> commit -> tag. Never tag before the version bump.
 - Use single, non-compound shell commands for `gh` operations (no `&&` chains); if `gh pr merge` is blocked, fall back to the GitHub MCP merge tool.
 
 ## Verification

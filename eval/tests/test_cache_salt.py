@@ -7,10 +7,7 @@ synthetic.
 """
 
 import asyncio
-import base64
 import enum
-import hashlib
-import hmac
 import importlib.util
 import json
 import os
@@ -29,9 +26,7 @@ if importlib.util.find_spec("litellm") is not None:
     pytest.skip("cache_salt tests stub LiteLLM; run them where it is not installed", allow_module_level=True)
 
 ROOT = Path(__file__).resolve().parents[2]
-NOW = 1_800_000_000.0
 MASTER_KEY = "synthetic-master-key"
-SECRET = "synthetic-shared-secret"
 SCOPE_A = "a" * 64
 SCOPE_B = "0123456789abcdef" * 4
 
@@ -94,57 +89,16 @@ finally:
         del sys.modules[_name]
 
 
-def _b64(raw: bytes) -> str:
-    """Encode bytes as unpadded base64url.
-
-    Args:
-        raw: The bytes.
-
-    Returns:
-        The encoded text.
-    """
-    return base64.urlsafe_b64encode(raw).rstrip(b"=").decode()
-
-
-def _token(secret: str = SECRET, **overrides: object) -> str:
-    """Mint an Open WebUI user token the way Open WebUI does.
-
-    Args:
-        secret: The signing secret.
-        **overrides: Claims to replace.
-
-    Returns:
-        The token.
-    """
-    claims: dict[str, object] = {
-        "sub": "0b7e6a2c-0000-4000-8000-0000000000aa",
-        "email": "alice@example.org",
-        "name": "Alice Example",
-        "role": "user",
-        "iss": "open-webui",
-        "iat": int(NOW),
-        "exp": int(NOW) + 60,
-        **overrides,
-    }
-    header = _b64(json.dumps({"alg": "HS256", "typ": "JWT"}).encode())
-    body = _b64(json.dumps(claims).encode())
-    signature = hmac.new(secret.encode(), f"{header}.{body}".encode(), hashlib.sha256).digest()
-    return f"{header}.{body}.{_b64(signature)}"
-
-
 def _salter(**env: str) -> Any:
-    """Build a callback with a fixed clock.
+    """Build a callback.
 
     Args:
-        **env: Settings replacing the defaults (master key, JWT secret).
+        **env: Settings replacing the defaults (master key).
 
     Returns:
         The callback.
     """
-    return cache_salt.CacheSalt(
-        environ={"OPENAI_API_KEY": MASTER_KEY, "AUDIT_OPENWEBUI_JWT_SECRET": SECRET, **env},
-        clock=lambda: NOW,
-    )
+    return cache_salt.CacheSalt(environ={"OPENAI_API_KEY": MASTER_KEY, **env})
 
 
 def _data(headers: Mapping[str, str] | None = None, **body: object) -> dict[str, Any]:
@@ -194,16 +148,13 @@ def _salt_of(
 
 
 SERVICE = _salt_of()
-OPEN_WEBUI = _salt_of({"x-openwebui-user-id": "0b7e6a2c-0000-4000-8000-0000000000aa"})
 
 
-def test_verified_user_gets_a_salt_of_their_own() -> None:
-    """Each verified Open WebUI user has a stable salt shared with no one else."""
-    alice = _salt_of({"x-openwebui-user-jwt": _token()})
-    bob = _salt_of({"x-openwebui-user-jwt": _token(email="bob@example.org", sub="bob")})
-    assert alice == _salt_of({"x-openwebui-user-jwt": _token()})
-    assert alice != bob
-    assert {alice, bob}.isdisjoint({SERVICE, OPEN_WEBUI})
+def test_partition_salts_are_unchanged() -> None:
+    """The salts of the ``service`` and ``scope:<pseudonym>`` partitions are fixed, so warm caches stay warm."""
+    assert SERVICE == "bfc545c515bb74a75c680c63f1e14e540b6f7be8fa08823aa242d64bfbbf01f6"
+    assert _salt_of({"x-cache-scope": SCOPE_A}) == "a8f1ba463c55bcb3ba3f2c78b92c837bdc792eb491377b9a7b2dab3368c2f0f6"
+    assert _salt_of({"x-cache-scope": SCOPE_B}) == "8eee54e826e3c714ed10cde4f6b2e45a16c276766a9017f3085c6e5720697a1b"
 
 
 def test_scope_header_gets_a_salt_of_its_own() -> None:
@@ -212,13 +163,7 @@ def test_scope_header_gets_a_salt_of_its_own() -> None:
     b = _salt_of({"x-cache-scope": SCOPE_B})
     assert a == _salt_of({"x-cache-scope": SCOPE_A})
     assert a != b
-    assert {a, b}.isdisjoint({SERVICE, OPEN_WEBUI})
-
-
-def test_verified_user_wins_over_scope_header() -> None:
-    """A verified user token decides the partition before a scope header does."""
-    alice = _salt_of({"x-openwebui-user-jwt": _token()})
-    assert _salt_of({"x-openwebui-user-jwt": _token(), "x-cache-scope": SCOPE_A}) == alice
+    assert {a, b}.isdisjoint({SERVICE})
 
 
 @pytest.mark.parametrize(
@@ -230,32 +175,32 @@ def test_malformed_scope_header_is_ignored(scope: str) -> None:
     assert _salt_of({"x-cache-scope": scope}) == SERVICE
 
 
-@pytest.mark.parametrize(
-    "headers",
-    [
-        {"x-openwebui-user-jwt": _token(secret="another-secret")},
-        {"x-openwebui-user-jwt": _token(exp=int(NOW) - 3600)},
-        {"x-openwebui-user-jwt": _token(email="")},
-        {"x-openwebui-user-jwt": "not-a-token"},
-        {"x-openwebui-user-email": "alice@example.org"},
-        {"x-openwebui-user-name": "Alice Example"},
-    ],
-)
-def test_unverified_open_webui_calls_share_the_open_webui_salt(headers: dict[str, str]) -> None:
-    """Open WebUI calls that name no verified user share one partition, apart from the apps."""
-    assert _salt_of(headers) == OPEN_WEBUI
+STRAY_OPEN_WEBUI_HEADERS = [
+    {"x-openwebui-user-jwt": "synthetic.stray.token"},
+    {"x-openwebui-user-email": "someone@example.org"},
+    {"x-openwebui-user-id": "synthetic-user-id"},
+    {"x-openwebui-user-name": "Synthetic Person"},
+    {"x-openwebui-chat-id": "synthetic-chat-id"},
+]
 
 
-def test_without_a_jwt_secret_open_webui_users_share_one_salt() -> None:
-    """Without the shared secret no token verifies, so Open WebUI users share one partition."""
-    salter = _salter(AUDIT_OPENWEBUI_JWT_SECRET="")
-    assert _salt_of({"x-openwebui-user-jwt": _token()}, salter=salter) == OPEN_WEBUI
+@pytest.mark.parametrize("headers", STRAY_OPEN_WEBUI_HEADERS)
+def test_stray_openwebui_headers_fall_into_the_service_partition(headers: dict[str, str]) -> None:
+    """Without ``X-Cache-Scope``, a call carrying ``X-OpenWebUI-*`` headers is partitioned as service."""
+    assert _salt_of(headers) == SERVICE
 
 
-def test_unverified_token_does_not_hide_a_scope_header() -> None:
-    """A token that fails to verify leaves the scope header in charge."""
-    headers = {"x-openwebui-user-jwt": _token(secret="another-secret"), "x-cache-scope": SCOPE_A}
-    assert _salt_of(headers) == _salt_of({"x-cache-scope": SCOPE_A})
+@pytest.mark.parametrize("headers", STRAY_OPEN_WEBUI_HEADERS)
+def test_stray_openwebui_headers_do_not_hide_a_scope_header(headers: dict[str, str]) -> None:
+    """A scope header decides the partition whatever else the call carries."""
+    assert _salt_of({**headers, "x-cache-scope": SCOPE_A}) == _salt_of({"x-cache-scope": SCOPE_A})
+
+
+def test_a_leftover_jwt_secret_changes_nothing() -> None:
+    """``AUDIT_OPENWEBUI_JWT_SECRET`` in the environment is ignored."""
+    salter = _salter(AUDIT_OPENWEBUI_JWT_SECRET="synthetic-leftover-secret")
+    assert _salt_of({"x-openwebui-user-jwt": "synthetic.stray.token"}, salter=salter) == SERVICE
+    assert _salt_of({"x-cache-scope": SCOPE_A}, salter=salter) == _salt_of({"x-cache-scope": SCOPE_A})
 
 
 def test_client_chosen_salt_is_replaced() -> None:
@@ -306,7 +251,7 @@ def test_missing_headers_fall_back_to_the_service_salt() -> None:
 
 def test_salt_passes_vllm_validation() -> None:
     """The salt fits vLLM's check: at most 128 hex characters, so no ``@``, slash, backslash or NUL."""
-    for salt in (SERVICE, OPEN_WEBUI, _salt_of({"x-cache-scope": SCOPE_A})):
+    for salt in (SERVICE, _salt_of({"x-cache-scope": SCOPE_A})):
         assert 0 < len(salt) <= 128
         assert set(salt) <= set(string.hexdigits.lower())
 

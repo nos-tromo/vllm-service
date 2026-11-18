@@ -9,10 +9,7 @@ with ``verify_chain`` over the captured audit stream. All data is synthetic.
 """
 
 import asyncio
-import base64
 import enum
-import hashlib
-import hmac
 import importlib.util
 import json
 import sys
@@ -91,8 +88,6 @@ finally:
     for _name in _inserted_stubs:
         del sys.modules[_name]
 
-NOW = 1_800_000_000.0
-SECRET = "synthetic-shared-secret"
 REVISION = "0123456789abcdef0123456789abcdef01234567"
 ANSWER = "Synthetic answer for Alice Example."
 PROMPT = "Summarize the note about Alice Example."
@@ -186,10 +181,9 @@ def _audit(
     """
     out = stream if stream is not None else _Stream()
     audit = router_audit.RouterAudit(
-        environ={"AUDIT_OPENWEBUI_JWT_SECRET": SECRET, **(env or {})},
+        environ=env or {},
         emitter_factory=lambda: AuditEmitter("vllm-service", "0.7.0", stream=out, heartbeat_interval_s=0),
         passthrough_targets=targets,
-        clock=lambda: NOW,
         monotonic=clock if clock is not None else _Clock(),
     )
     return audit, out
@@ -359,45 +353,6 @@ async def _iterate(chunks: list[Any]) -> AsyncIterator[Any]:
         yield chunk
 
 
-def _b64(raw: bytes) -> str:
-    """Encode unpadded base64url.
-
-    Args:
-        raw: The bytes.
-
-    Returns:
-        The encoded text.
-    """
-    return base64.urlsafe_b64encode(raw).rstrip(b"=").decode("ascii")
-
-
-def _token(secret: str = SECRET, alg: str = "HS256", **overrides: object) -> str:
-    """Mint an Open WebUI user token the way Open WebUI does.
-
-    Args:
-        secret: The signing secret.
-        alg: The header's algorithm.
-        **overrides: Claims to replace.
-
-    Returns:
-        The token.
-    """
-    claims: dict[str, object] = {
-        "sub": "0b7e6a2c-0000-4000-8000-0000000000aa",
-        "email": "alice@example.org",
-        "name": "Alice Example",
-        "role": "user",
-        "iss": "open-webui",
-        "iat": int(NOW),
-        "exp": int(NOW) + 300,
-        **overrides,
-    }
-    header = _b64(json.dumps({"alg": alg, "typ": "JWT"}).encode())
-    body = _b64(json.dumps(claims).encode())
-    signature = hmac.new(secret.encode(), f"{header}.{body}".encode(), hashlib.sha256).digest()
-    return f"{header}.{body}.{_b64(signature)}"
-
-
 async def _chat_call(audit: Any, headers: Mapping[str, str] | None = None) -> None:
     """Run a non-streaming chat call through every hook LiteLLM calls.
 
@@ -459,7 +414,7 @@ def test_opening_writes_start_and_mode_once() -> None:
     assert audit.open() is first
     events = _events(stream)
     assert [(e["action"], e["operation"]) for e in events] == [("lifecycle", "start"), ("admin", "config.audit")]
-    assert events[1]["criteria"] == {"call_types": ["completion", "rerank"], "openwebui_jwt": True}
+    assert events[1]["criteria"] == {"call_types": ["completion", "rerank"]}
     assert events[0]["service"] == "vllm-service"
     _assert_no_content(stream)
     _assert_chain(stream)
@@ -848,61 +803,38 @@ def test_client_disconnect_mid_stream_is_an_error_event() -> None:
     _assert_chain(stream)
 
 
-def test_signed_openwebui_token_names_the_user() -> None:
-    """Open WebUI's signed token identifies its user, with the caller noted."""
+def test_stray_openwebui_headers_name_only_the_caller() -> None:
+    """A call with leftover ``X-OpenWebUI-*`` headers is recorded as the caller alone, with no identity criteria."""
     audit, stream = _audit()
-    headers = {"x-openwebui-user-jwt": _token(), "x-openwebui-chat-id": "0b7e6a2c-0000-4000-8000-000000000001"}
+    headers = {
+        "x-openwebui-user-jwt": "synthetic.stray.token",
+        "x-openwebui-user-email": "someone@example.org",
+        "x-openwebui-chat-id": "0b7e6a2c-0000-4000-8000-000000000001",
+    }
     _run(lambda: _chat_call(audit, headers))
     (event,) = _ai_calls(stream)
-    assert event["actor"] == {"user": "alice@example.org", "via": "service"}
-    assert event["criteria"]["caller"] == "open-webui"
-    assert event["criteria"]["forwarded_identity"] == "signed"
-    assert event["criteria"]["chat_id"] == "0b7e6a2c-0000-4000-8000-000000000001"
-    _assert_chain(stream)
-
-
-@pytest.mark.parametrize(
-    "token",
-    [
-        _token(secret="another-secret"),
-        _token(exp=int(NOW) - 60),
-        _token(iat=int(NOW) + 600),
-        _token(iss="someone-else"),
-        _token(alg="none"),
-        _token(email=""),
-        "not.a.token",
-        "x" * 5000,
-    ],
-)
-def test_invalid_openwebui_token_names_nobody(token: str) -> None:
-    """A token that does not verify leaves the actor unnamed."""
-    audit, stream = _audit()
-    _run(lambda: _chat_call(audit, {"x-openwebui-user-jwt": token}))
-    (event,) = _ai_calls(stream)
+    plain_audit, plain_stream = _audit()
+    _run(lambda: _chat_call(plain_audit))
+    (plain,) = _ai_calls(plain_stream)
     assert event["actor"] == {"user": None, "via": "service"}
-    assert event["criteria"]["forwarded_identity"] == "invalid"
-    assert "caller" not in event["criteria"]
+    assert event["criteria"] == plain["criteria"]
+    assert event["outcome"] == "ok"
+    assert "incomplete" not in event["criteria"]
+    assert "someone@example.org" not in stream.getvalue()
+    assert "0b7e6a2c" not in stream.getvalue()
     _assert_chain(stream)
 
 
-def test_token_without_a_shared_secret_names_nobody() -> None:
-    """Without the secret the router cannot check a token, so it trusts none."""
-    audit, stream = _audit({"AUDIT_OPENWEBUI_JWT_SECRET": ""})
-    _run(lambda: _chat_call(audit, {"x-openwebui-user-jwt": _token()}))
-    (event,) = _ai_calls(stream)
-    assert event["actor"]["user"] is None
-    assert event["criteria"]["forwarded_identity"] == "invalid"
-    _assert_chain(stream)
-
-
-def test_unsigned_openwebui_headers_name_nobody() -> None:
-    """Any master-key holder could send these, so they are noted, not trusted."""
-    audit, stream = _audit()
-    _run(lambda: _chat_call(audit, {"x-openwebui-user-email": "mallory@example.org"}))
-    (event,) = _ai_calls(stream)
-    assert event["actor"]["user"] is None
-    assert event["criteria"]["forwarded_identity"] == "unsigned"
-    assert "mallory" not in stream.getvalue()
+def test_a_leftover_jwt_secret_changes_nothing() -> None:
+    """``AUDIT_OPENWEBUI_JWT_SECRET`` in the environment is ignored; ``config.audit`` has no ``openwebui_jwt`` key."""
+    audit, stream = _audit({"AUDIT_OPENWEBUI_JWT_SECRET": "synthetic-leftover-secret"})
+    audit.open()
+    plain_audit, plain_stream = _audit()
+    plain_audit.open()
+    (_, config) = _events(stream)
+    (_, plain_config) = _events(plain_stream)
+    assert config["criteria"] == plain_config["criteria"] == {"call_types": "all"}
+    assert "synthetic-leftover-secret" not in stream.getvalue()
     _assert_chain(stream)
 
 
@@ -937,26 +869,6 @@ def test_another_process_opens_its_own_chain(monkeypatch: pytest.MonkeyPatch) ->
     assert len({first.instance, second.instance, third.instance}) == 3
     assert len([e for e in _events(stream) if e["operation"] == "start"]) == 3
     _assert_chain(stream)
-
-
-_HS256 = '{"alg":"HS256","typ":"JWT"}'
-_NESTED = "[" * 1400 + "]" * 1400
-
-
-def _signed(header: str, body: str, secret: str = SECRET) -> str:
-    """Sign arbitrary token parts with HS256.
-
-    Args:
-        header: The header JSON.
-        body: The claims JSON, or anything else.
-        secret: The signing secret.
-
-    Returns:
-        The token.
-    """
-    head, payload = _b64(header.encode()), _b64(body.encode())
-    signature = hmac.new(secret.encode(), f"{head}.{payload}".encode(), hashlib.sha256).digest()
-    return f"{head}.{payload}.{_b64(signature)}"
 
 
 class _Unreadable:
@@ -1011,7 +923,7 @@ class _HostileHeaders(Mapping[str, str]):
 def test_pass_through_body_cannot_supply_headers() -> None:
     """A pass-through payload is the client's body: header-shaped fields in it change nothing."""
     audit, stream = _audit()
-    planted = {"x-request-id": "req-spoofed", "x-openwebui-user-jwt": _token(), "x-openwebui-user-email": "x@x"}
+    planted = {"x-request-id": "req-spoofed"}
 
     async def scenario() -> None:
         body: dict[str, Any] = {
@@ -1037,7 +949,7 @@ def test_pass_through_body_cannot_supply_headers() -> None:
 def test_failed_pass_through_takes_headers_only_from_litellm() -> None:
     """A failure before LiteLLM recorded the request's headers leaves them out."""
     audit, stream = _audit()
-    planted = {"x-request-id": "req-spoofed", "x-openwebui-user-jwt": _token()}
+    planted = {"x-request-id": "req-spoofed"}
 
     async def scenario() -> None:
         body: dict[str, Any] = {"text": "Alice", "litellm_params": {"proxy_server_request": {"headers": planted}}}
@@ -1066,38 +978,6 @@ def test_model_list_headers_come_only_from_the_proxys_record() -> None:
     _run(scenario)
     (event,) = _ai_calls(stream)
     assert "request_id" not in event
-    _assert_chain(stream)
-
-
-def test_a_tokens_content_is_parsed_only_after_its_signature(monkeypatch: pytest.MonkeyPatch) -> None:
-    """Unsigned input never reaches the JSON decoder."""
-
-    def no_parsing(*args: object, **kwargs: object) -> object:
-        raise AssertionError("parsed before the signature was checked")
-
-    monkeypatch.setattr(router_audit.json, "loads", no_parsing)
-    for token in (_token(secret="another-secret"), _signed(_HS256, _NESTED, secret="another-secret"), "a.b.c", "a.b."):
-        assert router_audit.verify_openwebui_token(token, SECRET.encode(), now=NOW) is None
-
-
-def test_a_token_that_breaks_the_decoder_is_simply_not_verified(monkeypatch: pytest.MonkeyPatch) -> None:
-    """Even a correctly signed token cannot make verification raise."""
-    assert router_audit.verify_openwebui_token(_signed(_HS256, _NESTED), SECRET.encode(), now=NOW) is None
-
-    def exhausted(*args: object, **kwargs: object) -> object:
-        raise RecursionError("maximum recursion depth exceeded")
-
-    monkeypatch.setattr(router_audit.json, "loads", exhausted)
-    assert router_audit.verify_openwebui_token(_token(), SECRET.encode(), now=NOW) is None
-
-
-def test_a_hostile_token_still_leaves_a_record() -> None:
-    """The call is recorded; the token only fails to name a user."""
-    audit, stream = _audit()
-    _run(lambda: _chat_call(audit, {"x-openwebui-user-jwt": _signed(_HS256, _NESTED)}))
-    (event,) = _ai_calls(stream)
-    assert event["actor"]["user"] is None
-    assert event["criteria"]["forwarded_identity"] == "invalid"
     _assert_chain(stream)
 
 
@@ -1344,7 +1224,6 @@ def test_unreadable_revision_costs_the_fact_never_the_event() -> None:
         environ=_UnreadableRevisions(),
         emitter_factory=lambda: AuditEmitter("vllm-service", "0.8.0", stream=stream, heartbeat_interval_s=0),
         passthrough_targets=_config_targets,
-        clock=lambda: NOW,
         monotonic=_Clock(),
     )
     _run(lambda: _pass_through_call(audit, "/clip/embed_text"))

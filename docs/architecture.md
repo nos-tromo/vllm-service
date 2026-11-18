@@ -96,12 +96,10 @@ any salt the client sent. The salt depends on the caller's partition:
 
 | Request carries | Partition |
 |---|---|
-| an Open WebUI user token that verifies against `AUDIT_OPENWEBUI_JWT_SECRET` | that user |
-| `X-Cache-Scope: <64 lowercase hex>`, the per-user pseudonym docint, Nextext and translator send | that scope |
-| any other `X-OpenWebUI-*` header | all Open WebUI users together |
-| none of these | every other caller together |
+| `X-Cache-Scope: <64 lowercase hex>`, the per-user pseudonym docint, Nextext, translator and Ghostwriter send | that scope |
+| none | every other caller together |
 
-The rows are checked in order. The salt is an HMAC-SHA256 of the partition
+The salt is an HMAC-SHA256 of the partition
 under `OPENAI_API_KEY`, so it cannot be guessed, is the same in every router
 worker, and passes vLLM's salt check (64 hex characters). The pseudonym is not
 logged or recorded; it only selects the partition. Each app derives it from
@@ -115,9 +113,8 @@ bodies are forwarded unchanged. Some sharing remains:
 
 - An app sends no scope for work done for no user (CLI runs, maintenance
   jobs). That work shares the last partition.
-- Without `AUDIT_OPENWEBUI_JWT_SECRET`, all Open WebUI users share one
-  partition, and a caller that reaches `chat` directly on `inference-net`
-  bypasses the router and its salt.
+- A caller that reaches `chat` directly on `inference-net` bypasses the
+  router and its salt.
 
 Keep vLLM's default `--prefix-caching-hash-algo` (`sha256`), and leave
 `--enable-prompt-tokens-details` unset: it would report cache hits in

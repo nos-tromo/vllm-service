@@ -14,7 +14,7 @@ routed-endpoint model and the quick start) with topic-by-topic deep dives.
 | [configuration.md](configuration.md) | The env knobs that need explaining — tool calling, the embed batch budget, diarization speaker granularity, the topic-model fit limits — how to switch models, and pinning each to its recorded revision |
 | [api-reference.md](api-reference.md) | Endpoint surface, the master-key auth model, and every request/response body for both the routed and standalone addresses |
 | [airgap-bundles.md](airgap-bundles.md) | Producing versioned image tarballs on a build host and loading them on an airgapped target |
-| [audit.md](audit.md) | The data-protection audit log: the `ai_call` event the router writes for every model call, what is and is not fail-closed, Open WebUI's signed user identity |
+| [audit.md](audit.md) | The data-protection audit log: the `ai_call` event the router writes for every model call, what is and is not fail-closed |
 | [development.md](development.md) | The `ruff` + `pyrefly (strict)` regime for the Python sources, and the unit tests |
 
 ## Who this is for

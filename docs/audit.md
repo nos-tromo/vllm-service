@@ -21,7 +21,7 @@ LiteLLM image with the federation's audit library (`audit_event.py`,
 
 Every router worker process writes one hash-chained stream (`service`
 `vllm-service`): `lifecycle` `start`, one `admin` `config.audit` event with
-the operating mode (`call_types`, `openwebui_jwt`), a heartbeat a minute,
+the operating mode (`call_types`), a heartbeat a minute,
 and `shutdown` when the worker stops. Each model call adds one event:
 
 | Field | Value |
@@ -29,7 +29,7 @@ and `shutdown` when the worker stops. Each model call adds one event:
 | `action` | `ai_call` |
 | `operation` | `router.<call type>`: LiteLLM's call type without its async prefix, see [Routes](#routes) |
 | `outcome` | `ok`, or `error` for a call that failed after it was sent |
-| `actor` | `{"user": null, "via": "service"}`: every caller shares the master key, so the router cannot tell them apart; an Open WebUI user only with a valid signed token, see [Open WebUI's users](#open-webuis-users) |
+| `actor` | `{"user": null, "via": "service"}`: every caller shares the master key, so the router cannot tell them apart |
 | `request_id` | the caller's `X-Request-ID`, which the apps forward from the gateway; unset when absent or malformed. It is taken only from the request headers as the proxy received them, never from a request body |
 | `recipient` | `model:<deployment>`, the compose service that received the data: `chat`, `embed`, `rerank`, `asr`, or the pass-through backend (`embed-sparse`, `gliner`, `clip`, `diarize`, `vad`, `faces`, `topics`) |
 | `ai.model_alias` | the model the caller requested; the request path for a pass-through route |
@@ -44,7 +44,6 @@ and `shutdown` when the worker stops. Each model call adds one event:
 | `criteria.attempts` | how many times the router sent the call to a deployment, retries included (not on pass-through routes) |
 | `criteria.batch`, `criteria.documents` | the number of embedding inputs, of rerank documents |
 | `criteria.error` | the error's class name, for `outcome: "error"`, or `client_disconnected` |
-| `criteria.caller`, `criteria.forwarded_identity`, `criteria.chat_id` | how a forwarded user identity was handled, see below |
 | `criteria.incomplete` | `true` when a fact could not be read (a malformed response, header or setting): the event is written without that fact rather than not at all |
 
 There is no `purpose`: the apps never send it to the router, they record it
@@ -102,33 +101,6 @@ that is `audit.recovered`.
 | A call failed because its event could not be written | not written again | counted in the next `audit.recovered` |
 | The chain itself | the worker startup hook | the worker does not start |
 
-## Open WebUI's users
-
-Open WebUI v0.12.4 can name its user on every call it makes to the router
-(chat, RAG embeddings, speech-to-text). Its plain `X-OpenWebUI-User-*`
-headers are not trusted: any holder of the master key can send them. With a
-shared secret, Open WebUI sends one HS256-signed token instead, which the
-router checks. To enable it, set in open-webui-service:
-
-```bash
-ENABLE_FORWARD_USER_INFO_HEADERS=true
-FORWARD_USER_INFO_HEADER_JWT_SECRET=<a long random secret>
-```
-
-and the same secret here as `AUDIT_OPENWEBUI_JWT_SECRET`. The router checks
-the token's HS256 signature before it parses anything the token carries, and
-a token it cannot decode counts as not verified. A valid token (issuer
-`open-webui`, unexpired, ±30 s clock skew) gives
-`actor: {"user": "<email>", "via": "service"}` and
-`criteria: {"caller": "open-webui", "forwarded_identity": "signed"}`, plus
-Open WebUI's chat id as `criteria.chat_id`. The email is the account key
-Open WebUI takes from the gateway's `X-Auth-Email`; the display name is not
-used, because users can change it. Any other token, or a token while no
-secret is set here, gives `forwarded_identity: "invalid"`; plain headers
-give `"unsigned"`; both leave the user unnamed. The token is a bearer token:
-whoever sees it on `inference-net` can reuse it until it expires
-(`FORWARD_USER_INFO_HEADER_JWT_EXPIRES_SECONDS`, default 300).
-
 ## Volume
 
 There is one event per call, not per item: a batch of 64 embedding inputs
@@ -155,12 +127,11 @@ startup.
 | Variable | Default | Effect |
 |---|---|---|
 | `AUDIT_ROUTER_CALL_TYPES` | empty: all | Comma-separated call types to audit (`completion`, `text_completion`, `embedding`, `rerank`, `transcription`, `pass_through_endpoint`, ...). An unknown name stops the router. |
-| `AUDIT_OPENWEBUI_JWT_SECRET` | unset | The secret Open WebUI signs its user token with. Unset: no Open WebUI user is named. |
 | `TEXT_MODEL_REVISION`, `EMBED_MODEL_REVISION`, `RERANK_MODEL_REVISION`, `WHISPER_MODEL_REVISION`, `CLIP_MODEL_REVISION`, `DIARIZE_MODEL_REVISION`, `FACE_DETECT_MODEL_REVISION`, `FACE_EMBED_MODEL_REVISION` | unset | Recorded as `ai.revision` (via `model_info.revision` for the model-list deployments, via `PASS_THROUGH_REVISIONS` in `router_audit.py` for the pass-through backends `embed-sparse`, `clip` and `diarize`, and via `PASS_THROUGH_ROUTE_REVISIONS` per route for `/faces/detect` and `/faces/group`), and loaded by the same deployment, so the event names the commit served. Unset: not recorded, and the backend serves the cache's `refs/main`. See [Model revisions](configuration.md#model-revisions). |
 | `AUDIT_OUTPUT` | `container` (compose) | `stdout` writes to the process's own stdout instead. |
 | `AUDIT_SERVICE_VERSION` | `VLLM_SERVICE_VERSION` (compose) | The `service_version` of the events; a release tag loses its `v`. |
 
-The first three rows go in `.env`; compose sets the last two. The apps' purpose and
+The first two rows go in `.env`; compose sets the last two. The apps' purpose and
 command-line settings (`AUDIT_REQUIRE_PURPOSE`, `AUDIT_CASE_REF`,
 `AUDIT_REASON`, `AUDIT_CLI_USER`) do not apply: no purpose reaches the
 router, and it has no command-line operations.

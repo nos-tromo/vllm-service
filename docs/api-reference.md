@@ -50,8 +50,7 @@ obs-plane — see [architecture.md](architecture.md#networking).
 The router writes one data-protection audit event per model call
 ([audit.md](audit.md)). Send the request's `X-Request-ID` (the apps forward
 the gateway's) so the event can be matched to the calling app's own events.
-Open WebUI's signed `X-OpenWebUI-User-Jwt` names its user. Nothing else from a
-request is recorded.
+Nothing else from a request is recorded.
 
 ## Cache scope
 
