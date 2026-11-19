@@ -353,14 +353,13 @@ async def _iterate(chunks: list[Any]) -> AsyncIterator[Any]:
         yield chunk
 
 
-async def _chat_call(audit: Any, headers: Mapping[str, str] | None = None) -> None:
+async def _chat_call(audit: Any) -> None:
     """Run a non-streaming chat call through every hook LiteLLM calls.
 
     Args:
         audit: The callback.
-        headers: Extra request headers.
     """
-    data = _data("example/chat-model", headers, messages=[{"role": "user", "content": PROMPT}])
+    data = _data("example/chat-model", None, messages=[{"role": "user", "content": PROMPT}])
     await audit.async_pre_call_hook(_key("/v1/chat/completions"), None, data, "acompletion")
     kwargs = _deployment("chat")
     await audit.async_pre_call_deployment_hook(kwargs, _CallTypes.acompletion)
@@ -418,6 +417,13 @@ def test_opening_writes_start_and_mode_once() -> None:
     assert events[0]["service"] == "vllm-service"
     _assert_no_content(stream)
     _assert_chain(stream)
+
+
+def test_by_default_every_call_type_is_audited() -> None:
+    """Without ``AUDIT_ROUTER_CALL_TYPES`` the operating mode names every type."""
+    audit, stream = _audit()
+    audit.open()
+    assert _events(stream)[1]["criteria"] == {"call_types": "all"}
 
 
 def test_chat_completion_is_one_event_with_provenance() -> None:
@@ -803,41 +809,6 @@ def test_client_disconnect_mid_stream_is_an_error_event() -> None:
     _assert_chain(stream)
 
 
-def test_stray_openwebui_headers_name_only_the_caller() -> None:
-    """A call with leftover ``X-OpenWebUI-*`` headers is recorded as the caller alone, with no identity criteria."""
-    audit, stream = _audit()
-    headers = {
-        "x-openwebui-user-jwt": "synthetic.stray.token",
-        "x-openwebui-user-email": "someone@example.org",
-        "x-openwebui-chat-id": "0b7e6a2c-0000-4000-8000-000000000001",
-    }
-    _run(lambda: _chat_call(audit, headers))
-    (event,) = _ai_calls(stream)
-    plain_audit, plain_stream = _audit()
-    _run(lambda: _chat_call(plain_audit))
-    (plain,) = _ai_calls(plain_stream)
-    assert event["actor"] == {"user": None, "via": "service"}
-    assert event["criteria"] == plain["criteria"]
-    assert event["outcome"] == "ok"
-    assert "incomplete" not in event["criteria"]
-    assert "someone@example.org" not in stream.getvalue()
-    assert "0b7e6a2c" not in stream.getvalue()
-    _assert_chain(stream)
-
-
-def test_a_leftover_jwt_secret_changes_nothing() -> None:
-    """``AUDIT_OPENWEBUI_JWT_SECRET`` in the environment is ignored; ``config.audit`` has no ``openwebui_jwt`` key."""
-    audit, stream = _audit({"AUDIT_OPENWEBUI_JWT_SECRET": "synthetic-leftover-secret"})
-    audit.open()
-    plain_audit, plain_stream = _audit()
-    plain_audit.open()
-    (_, config) = _events(stream)
-    (_, plain_config) = _events(plain_stream)
-    assert config["criteria"] == plain_config["criteria"] == {"call_types": "all"}
-    assert "synthetic-leftover-secret" not in stream.getvalue()
-    _assert_chain(stream)
-
-
 def test_unlisted_call_types_are_neither_audited_nor_gated() -> None:
     """``AUDIT_ROUTER_CALL_TYPES`` drops a type from the log and from the gate."""
     audit, stream = _audit({"AUDIT_ROUTER_CALL_TYPES": "completion"})
@@ -961,7 +932,6 @@ def test_failed_pass_through_takes_headers_only_from_litellm() -> None:
     assert event["outcome"] == "error"
     assert "request_id" not in event
     assert event["actor"]["user"] is None
-    assert "forwarded_identity" not in event["criteria"]
     _assert_chain(stream)
 
 

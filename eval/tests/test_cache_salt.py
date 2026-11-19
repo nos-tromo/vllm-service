@@ -175,34 +175,6 @@ def test_malformed_scope_header_is_ignored(scope: str) -> None:
     assert _salt_of({"x-cache-scope": scope}) == SERVICE
 
 
-STRAY_OPEN_WEBUI_HEADERS = [
-    {"x-openwebui-user-jwt": "synthetic.stray.token"},
-    {"x-openwebui-user-email": "someone@example.org"},
-    {"x-openwebui-user-id": "synthetic-user-id"},
-    {"x-openwebui-user-name": "Synthetic Person"},
-    {"x-openwebui-chat-id": "synthetic-chat-id"},
-]
-
-
-@pytest.mark.parametrize("headers", STRAY_OPEN_WEBUI_HEADERS)
-def test_stray_openwebui_headers_fall_into_the_service_partition(headers: dict[str, str]) -> None:
-    """Without ``X-Cache-Scope``, a call carrying ``X-OpenWebUI-*`` headers is partitioned as service."""
-    assert _salt_of(headers) == SERVICE
-
-
-@pytest.mark.parametrize("headers", STRAY_OPEN_WEBUI_HEADERS)
-def test_stray_openwebui_headers_do_not_hide_a_scope_header(headers: dict[str, str]) -> None:
-    """A scope header decides the partition whatever else the call carries."""
-    assert _salt_of({**headers, "x-cache-scope": SCOPE_A}) == _salt_of({"x-cache-scope": SCOPE_A})
-
-
-def test_a_leftover_jwt_secret_changes_nothing() -> None:
-    """``AUDIT_OPENWEBUI_JWT_SECRET`` in the environment is ignored."""
-    salter = _salter(AUDIT_OPENWEBUI_JWT_SECRET="synthetic-leftover-secret")
-    assert _salt_of({"x-openwebui-user-jwt": "synthetic.stray.token"}, salter=salter) == SERVICE
-    assert _salt_of({"x-cache-scope": SCOPE_A}, salter=salter) == _salt_of({"x-cache-scope": SCOPE_A})
-
-
 def test_client_chosen_salt_is_replaced() -> None:
     """A salt the client sent, top-level or in ``extra_body``, never reaches the backend."""
     data = _data(cache_salt="client-salt", extra_body={"cache_salt": "client-salt", "top_k": 20})

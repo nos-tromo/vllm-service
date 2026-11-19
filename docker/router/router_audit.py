@@ -40,7 +40,7 @@ import re
 import threading
 import time
 from collections.abc import AsyncGenerator, Callable, Mapping
-from dataclasses import dataclass, field
+from dataclasses import dataclass
 from typing import Any, Final, TypeVar
 from urllib.parse import urlsplit
 
@@ -194,8 +194,6 @@ class _Call:
     batch: int | None = None
     documents: int | None = None
     request_id: str | None = None
-    actor: Actor = _CALLER
-    identity: dict[str, object] = field(default_factory=dict)
     headers_seen: bool = False
     attempts: int = 0
     deployment: str | None = None
@@ -668,7 +666,7 @@ class RouterAudit(CustomLogger):
                 emitter.emit(
                     "ai_call",
                     f"router.{call.call_type}",
-                    call.actor,
+                    _CALLER,
                     outcome=outcome,
                     request_id=call.request_id,
                     criteria=criteria,
@@ -695,23 +693,8 @@ class RouterAudit(CustomLogger):
         """
         return self._call_types is None or call_type in self._call_types
 
-    def _identity(self, headers: Mapping[str, Any] | None) -> tuple[Actor, dict[str, object]]:
-        """Map a request to the event's actor.
-
-        Every caller shares the master key, so the router cannot tell them
-        apart: the actor is the calling service, whatever identity headers
-        the request carries.
-
-        Args:
-            headers: The request headers (not read).
-
-        Returns:
-            The calling service as actor, and no identity criteria.
-        """
-        return _CALLER, {}
-
     def _see_headers(self, call: _Call, headers: Mapping[str, Any] | None) -> None:
-        """Take the request id and the actor from the first headers seen.
+        """Take the request id from the first headers seen.
 
         Args:
             call: The call.
@@ -721,7 +704,6 @@ class RouterAudit(CustomLogger):
             return
         call.headers_seen = True
         call.request_id = _read(call, lambda: clean_request_id(_header(headers, REQUEST_ID_HEADER.lower())), None)
-        call.actor, call.identity = _read(call, lambda: self._identity(headers), (_CALLER, {}))
 
     def _target(self, route: str | None) -> str | None:
         """Return the backend host a pass-through route forwards to.
@@ -839,7 +821,6 @@ class RouterAudit(CustomLogger):
             criteria["batch"] = call.batch
         if call.documents is not None:
             criteria["documents"] = call.documents
-        criteria.update(call.identity)
         if call.incomplete:
             criteria["incomplete"] = True
         ai = AiCall(
