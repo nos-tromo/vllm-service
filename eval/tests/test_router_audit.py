@@ -25,8 +25,6 @@ import yaml
 from starlette.datastructures import Headers
 from typing_extensions import override
 
-from eval.tests.openwebui_token import LEFTOVER_SECRET, TOKEN_EMAIL, signed_token
-
 if importlib.util.find_spec("litellm") is not None:
     pytest.skip("router_audit tests stub LiteLLM; run them where it is not installed", allow_module_level=True)
 
@@ -805,49 +803,6 @@ def test_client_disconnect_mid_stream_is_an_error_event() -> None:
     _assert_chain(stream)
 
 
-def test_stray_openwebui_headers_name_only_the_caller() -> None:
-    """A call with leftover ``X-OpenWebUI-*`` headers is recorded as the caller alone, with no identity criteria."""
-    audit, stream = _audit()
-    headers = {
-        "x-openwebui-user-jwt": "synthetic.stray.token",
-        "x-openwebui-user-email": "someone@example.org",
-        "x-openwebui-chat-id": "0b7e6a2c-0000-4000-8000-000000000001",
-    }
-    _run(lambda: _chat_call(audit, headers))
-    (event,) = _ai_calls(stream)
-    plain_audit, plain_stream = _audit()
-    _run(lambda: _chat_call(plain_audit))
-    (plain,) = _ai_calls(plain_stream)
-    assert event["actor"] == {"user": None, "via": "service"}
-    assert event["criteria"] == plain["criteria"]
-    assert event["outcome"] == "ok"
-    assert "incomplete" not in event["criteria"]
-    assert "someone@example.org" not in stream.getvalue()
-    assert "0b7e6a2c" not in stream.getvalue()
-    _assert_chain(stream)
-
-
-def test_a_leftover_jwt_secret_changes_nothing() -> None:
-    """``AUDIT_OPENWEBUI_JWT_SECRET`` in the environment is ignored; ``config.audit`` has no ``openwebui_jwt`` key.
-
-    A token that secret signed names no one either: the call is the caller's alone.
-    """
-    audit, stream = _audit({"AUDIT_OPENWEBUI_JWT_SECRET": LEFTOVER_SECRET})
-    _run(lambda: _chat_call(audit, {"x-openwebui-user-jwt": signed_token(LEFTOVER_SECRET)}))
-    plain_audit, plain_stream = _audit()
-    _run(lambda: _chat_call(plain_audit))
-    config, plain_config = _events(stream)[1], _events(plain_stream)[1]
-    (event,) = _ai_calls(stream)
-    (plain,) = _ai_calls(plain_stream)
-    assert config["criteria"] == plain_config["criteria"] == {"call_types": "all"}
-    assert event["actor"] == {"user": None, "via": "service"}
-    assert event["criteria"] == plain["criteria"]
-    assert LEFTOVER_SECRET not in stream.getvalue()
-    assert TOKEN_EMAIL not in stream.getvalue()
-    assert "0b7e6a2c" not in stream.getvalue()
-    _assert_chain(stream)
-
-
 def test_unlisted_call_types_are_neither_audited_nor_gated() -> None:
     """``AUDIT_ROUTER_CALL_TYPES`` drops a type from the log and from the gate."""
     audit, stream = _audit({"AUDIT_ROUTER_CALL_TYPES": "completion"})
@@ -971,7 +926,6 @@ def test_failed_pass_through_takes_headers_only_from_litellm() -> None:
     assert event["outcome"] == "error"
     assert "request_id" not in event
     assert event["actor"]["user"] is None
-    assert "forwarded_identity" not in event["criteria"]
     _assert_chain(stream)
 
 

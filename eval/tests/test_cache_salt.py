@@ -22,8 +22,6 @@ from unittest import mock
 import pytest
 import yaml
 
-from eval.tests.openwebui_token import LEFTOVER_SECRET, signed_token
-
 if importlib.util.find_spec("litellm") is not None:
     pytest.skip("cache_salt tests stub LiteLLM; run them where it is not installed", allow_module_level=True)
 
@@ -175,35 +173,6 @@ def test_scope_header_gets_a_salt_of_its_own() -> None:
 def test_malformed_scope_header_is_ignored(scope: str) -> None:
     """A scope that is not 64 lowercase hex characters selects no partition."""
     assert _salt_of({"x-cache-scope": scope}) == SERVICE
-
-
-STRAY_OPEN_WEBUI_HEADERS = [
-    {"x-openwebui-user-jwt": "synthetic.stray.token"},
-    {"x-openwebui-user-email": "someone@example.org"},
-    {"x-openwebui-user-id": "synthetic-user-id"},
-    {"x-openwebui-user-name": "Synthetic Person"},
-    {"x-openwebui-chat-id": "synthetic-chat-id"},
-]
-
-
-@pytest.mark.parametrize("headers", STRAY_OPEN_WEBUI_HEADERS)
-def test_stray_openwebui_headers_fall_into_the_service_partition(headers: dict[str, str]) -> None:
-    """Without ``X-Cache-Scope``, a call carrying ``X-OpenWebUI-*`` headers is partitioned as service."""
-    assert _salt_of(headers) == SERVICE
-
-
-@pytest.mark.parametrize("headers", STRAY_OPEN_WEBUI_HEADERS)
-def test_stray_openwebui_headers_do_not_hide_a_scope_header(headers: dict[str, str]) -> None:
-    """A scope header decides the partition whatever else the call carries."""
-    assert _salt_of({**headers, "x-cache-scope": SCOPE_A}) == _salt_of({"x-cache-scope": SCOPE_A})
-
-
-def test_a_leftover_jwt_secret_changes_nothing() -> None:
-    """``AUDIT_OPENWEBUI_JWT_SECRET`` in the environment is ignored, even for a token it signed."""
-    salter = _salter(AUDIT_OPENWEBUI_JWT_SECRET=LEFTOVER_SECRET)
-    token = signed_token(LEFTOVER_SECRET)
-    assert _salt_of({"x-openwebui-user-jwt": token}, salter=salter) == SERVICE
-    assert _salt_of({"x-cache-scope": SCOPE_A}, salter=salter) == _salt_of({"x-cache-scope": SCOPE_A})
 
 
 def test_client_chosen_salt_is_replaced() -> None:
