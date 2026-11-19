@@ -353,14 +353,13 @@ async def _iterate(chunks: list[Any]) -> AsyncIterator[Any]:
         yield chunk
 
 
-async def _chat_call(audit: Any, headers: Mapping[str, str] | None = None) -> None:
+async def _chat_call(audit: Any) -> None:
     """Run a non-streaming chat call through every hook LiteLLM calls.
 
     Args:
         audit: The callback.
-        headers: Extra request headers.
     """
-    data = _data("example/chat-model", headers, messages=[{"role": "user", "content": PROMPT}])
+    data = _data("example/chat-model", None, messages=[{"role": "user", "content": PROMPT}])
     await audit.async_pre_call_hook(_key("/v1/chat/completions"), None, data, "acompletion")
     kwargs = _deployment("chat")
     await audit.async_pre_call_deployment_hook(kwargs, _CallTypes.acompletion)
@@ -418,6 +417,13 @@ def test_opening_writes_start_and_mode_once() -> None:
     assert events[0]["service"] == "vllm-service"
     _assert_no_content(stream)
     _assert_chain(stream)
+
+
+def test_by_default_every_call_type_is_audited() -> None:
+    """Without ``AUDIT_ROUTER_CALL_TYPES`` the operating mode names every type."""
+    audit, stream = _audit()
+    audit.open()
+    assert _events(stream)[1]["criteria"] == {"call_types": "all"}
 
 
 def test_chat_completion_is_one_event_with_provenance() -> None:
