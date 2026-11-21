@@ -1,4 +1,4 @@
-FROM ghcr.io/astral-sh/uv:python3.11-trixie-slim@sha256:7a0b97c592d27e887e0bb9be01c45135c8f0fc00719faa19ec1f8cbcc73d9b69
+FROM ghcr.io/astral-sh/uv:python3.11-trixie-slim@sha256:839b8b68a4bf47933fbd4e64f2550fc6f36d7e15aceca8b1cc7e1ade1eb2f1c5
 
 # curl is needed for the docker-compose healthcheck against /health.
 # build-essential covers transitive deps that build from source on
