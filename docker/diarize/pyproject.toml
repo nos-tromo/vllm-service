@@ -10,7 +10,7 @@ dependencies = [
     "pyannote.core==6.0.1",
     "pyannote.database==6.2.0",
     "pyannote.metrics==4.2.0",
-    "pyannote.pipeline==4.0.0",
+    "pyannote.pipeline==4.1.0",
     "lightning==2.6.6",
     "huggingface-hub==0.36.2",
     "fastapi==0.163.1",
