@@ -443,6 +443,13 @@ Clients must use the exact model ID set in `.env` as the `model` field in
 their requests (e.g. `"model": "BAAI/bge-m3"`). The `/v1/models` endpoint
 returns the currently active IDs.
 
+On a federation host deploy's `make env` writes the four IDs, and the chat
+context `CHAT_MAX_MODEL_LEN` (default 40000), from this repo into every app
+whose endpoint for that capability is the router (docint, Nextext,
+translator, ghostwriter); an app on another endpoint is left alone. Until it
+has run, deploy's `make up` stops at its `env-check`, so after a switch run
+`make env` there before `make up`. Ghostwriter refuses a context below 22000.
+
 When you switch a model, update its revision with it (see
 [Model revisions](#model-revisions)): `TEXT_MODEL_REVISION`,
 `EMBED_MODEL_REVISION`, `RERANK_MODEL_REVISION` and `WHISPER_MODEL_REVISION`
