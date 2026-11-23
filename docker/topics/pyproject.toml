@@ -13,7 +13,7 @@ dependencies = [
     "packaging>=24",
     "fastapi>=0.163.0",
     "uvicorn[standard]>=0.54.0",
-    "python-multipart>=0.0.33",
+    "python-multipart>=0.0.34",
     "pydantic>=2.14.3",
     "anyio>=4.16.0",
 ]
