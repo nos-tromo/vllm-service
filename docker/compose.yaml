@@ -248,13 +248,13 @@ services:
     command:
       - >-
         export CUDA_VISIBLE_DEVICES="$${CHAT_CUDA_VISIBLE_DEVICES:-0}";
-        set -- vllm serve "$${TEXT_MODEL:-$${TEXT_MODEL:-Qwen/Qwen3.8-27B-FP8}}"
+        set -- vllm serve "$${TEXT_MODEL:-Qwen/Qwen3.8-27B-FP8}"
         --tensor-parallel-size "$${CHAT_TENSOR_PARALLEL_SIZE:-1}"
         --api-key "$${OPENAI_API_KEY:-sk-no-key-required}"
         --host 0.0.0.0
         --port 8000
         --gpu-memory-utilization "$${CHAT_GPU_MEMORY_UTILIZATION:-0.5}"
-        --max-model-len "$${CHAT_MAX_MODEL_LEN:-8192}"
+        --max-model-len "$${CHAT_MAX_MODEL_LEN:-40000}"
         --max-num-seqs "$${CHAT_MAX_NUM_SEQS:-8}"
         --max-num-batched-tokens "$${CHAT_MAX_NUM_BATCHED_TOKENS:-16384}";
         if [ -n "$${TEXT_MODEL_REVISION:-}" ]; then
