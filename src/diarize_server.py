@@ -1,4 +1,4 @@
-"""Speaker-diarization server (pyannote/speaker-diarization-3.1).
+"""Speaker-diarization server (pyannote/speaker-diarization-community-1).
 
 Mirrors the pyannote pipeline Nextext runs in-process
 (``nextext.core.transcription``) over HTTP so Nextext can drop its local
@@ -25,7 +25,7 @@ Endpoints:
         "device": ...}``.
 
 Model identity is fixed at container startup via ``DIARIZE_MODEL``
-(default ``pyannote/speaker-diarization-3.1``). Loaded once at module
+(default ``pyannote/speaker-diarization-community-1``). Loaded once at module
 import so the first request is hot. The checkpoints are gated on the
 Hugging Face Hub — see .env.example for the one-time download procedure.
 

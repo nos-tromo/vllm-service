@@ -1,0 +1,30 @@
+[project]
+name = "vllm-service-diarize"
+version = "0.0.0"
+# 3.11 for the CPU image (uv's base), 3.12 for the CUDA image (the PyTorch base ships Ubuntu's Python).
+requires-python = ">=3.11,<3.13"
+dependencies = [
+    # The release the eval reports were measured on (eval/reports/); 4.1.x needs its own eval.
+    "pyannote.audio==4.0.7",
+    # Its helper libraries at the versions the root uv.lock's eval-run group resolves.
+    "pyannote.core==6.0.1",
+    "pyannote.database==6.2.0",
+    "pyannote.metrics==4.2.0",
+    "pyannote.pipeline==4.0.0",
+    "lightning==2.6.6",
+    "huggingface-hub==0.36.2",
+    "fastapi==0.163.0",
+    "uvicorn[standard]==0.54.0",
+    "python-multipart==0.0.33",
+    "pydantic==2.14.3",
+    "requests==2.34.2",
+    "numpy==2.4.6",
+]
+
+[tool.uv]
+package = false
+environments = ["sys_platform == 'linux'", "sys_platform == 'darwin'"]
+# The torch stack is installed by the Dockerfiles from the PyTorch indexes (the CPU build, or
+# the CUDA base image) at pinned versions, so none of it belongs in the lock; this also drops
+# what only torch pulls in (the nvidia-* wheels, triton). pyannote.audio requires all three.
+exclude-dependencies = ["torch", "torchaudio", "torchcodec"]
