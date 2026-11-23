@@ -1134,7 +1134,7 @@ wheels = [
 
 [[package]]
 name = "pyannote-pipeline"
-version = "4.0.0"
+version = "4.1.0"
 source = { registry = "https://pypi.org/simple" }
 dependencies = [
     { name = "filelock" },
@@ -1142,11 +1142,12 @@ dependencies = [
     { name = "pyannote-core" },
     { name = "pyannote-database" },
     { name = "pyyaml" },
+    { name = "scipy" },
     { name = "tqdm" },
 ]
-sdist = { url = "https://files.pythonhosted.org/packages/d2/47/a6a49d82ea640fe320e227247402965ebc3a62a0fb2bfed13f6b17a45025/pyannote_pipeline-4.0.0.tar.gz", hash = "sha256:aa0156f76de132269f4069eca6d884d245e017e2c94f6426c3255ff45dd3c6da", size = 348865, upload-time = "2025-09-09T14:42:53.276Z" }
+sdist = { url = "https://files.pythonhosted.org/packages/0c/92/92f12076f3aefb346b192c6424067718ca46913d4c059743685dafc96228/pyannote_pipeline-4.1.0.tar.gz", hash = "sha256:b5a7bc909ce6d175a6cf5f860dac6f8ef9d231437b506b0cfaed856bb0c7f325", size = 1108256, upload-time = "2026-10-14T19:38:42.764Z" }
 wheels = [
-    { url = "https://files.pythonhosted.org/packages/d8/83/51290b8a17a3007bc4e4a5ea897f0765f30a6598d58670ba12d35ac0cc36/pyannote_pipeline-4.0.0-py3-none-any.whl", hash = "sha256:6b0bfc19e684d89cc1608bb39448e15ff1231d4a87e99fc7e812e7891b8cd555", size = 22215, upload-time = "2025-09-09T14:42:52.236Z" },
+    { url = "https://files.pythonhosted.org/packages/a2/41/86644f9e0beee6e39758ca192283eb24adcd890231855d641e6a97b19366/pyannote_pipeline-4.1.0-py3-none-any.whl", hash = "sha256:0f0b303a5b7cea638ce2266f14a2ea539b8bb5441e336539f878cf8d8fb78dd6", size = 23899, upload-time = "2026-10-14T19:38:41.508Z" },
 ]
 
 [[package]]
@@ -1644,7 +1645,7 @@ requires-dist = [
     { name = "pyannote-core", specifier = "==6.0.1" },
     { name = "pyannote-database", specifier = "==6.2.0" },
     { name = "pyannote-metrics", specifier = "==4.2.0" },
-    { name = "pyannote-pipeline", specifier = "==4.0.0" },
+    { name = "pyannote-pipeline", specifier = "==4.1.0" },
     { name = "pydantic", specifier = "==2.14.3" },
     { name = "python-multipart", specifier = "==0.0.33" },
     { name = "requests", specifier = "==2.34.2" },
