@@ -571,7 +571,7 @@ services:
     read_only: true
     # /tmp spools whole audio uploads — disk-backed scratch volume
     # (media-tmp, in `volumes:` below), same rationale as router-tmp.
-    # Speaker diarization (pyannote/speaker-diarization-3.1). Like clip,
+    # Speaker diarization (pyannote/speaker-diarization-community-1). Like clip,
     # NOT a vLLM container — pyannote's PyanNet segmentation + WeSpeaker
     # embedding + agglomerative clustering are not vLLM-supported
     # architectures, so a FastAPI wrapper (src/diarize_server.py)

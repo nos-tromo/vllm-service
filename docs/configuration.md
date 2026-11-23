@@ -109,6 +109,52 @@ on in multi-user deployments. Any value other than `true` now passes
 caching on, because vLLM enables it by default. Apply a change with
 `docker compose --env-file .env -f docker/compose.yaml up -d chat`.
 
+## Vision
+
+Applies to a `TEXT_MODEL` that sees (a vision-language model). docint's visual
+answers and Ghostwriter's pictures send images to `chat` through the router, and
+four points decide whether a request gets through: the images allowed per
+request, the context length, the size of the body, and how the images arrive.
+
+```bash
+CHAT_LIMIT_MM_PER_PROMPT={"image":8,"video":0}
+CHAT_MAX_MODEL_LEN=40000
+```
+
+A longer context needs KV-cache memory on the GPU, so size `CHAT_MAX_MODEL_LEN`
+with the card in mind: a model that does not fit it at the share of memory
+`CHAT_GPU_MEMORY_UTILIZATION` allows stops `chat` at startup. A larger share, or
+`CHAT_KV_CACHE_DTYPE` (a quantized cache), makes room.
+
+**Images per request.** `CHAT_LIMIT_MM_PER_PROMPT` (vLLM's
+`--limit-mm-per-prompt`) must allow at least the larger of docint's
+`VISUAL_ANSWER_MAX_IMAGES` (6) and Ghostwriter's `GHOSTWRITER_MAX_IMAGES` (8),
+so `"image":8`. A request over the limit is refused with 400. docint then
+degrades to a caption-only answer, and Ghostwriter retries the round once
+without images and tells the user (its `images_dropped` notice). Raise
+`"image"` together with either app's cap. `"video":0` because neither app sends
+video input: Ghostwriter sends a clip's frames as images.
+
+**Context length.** `CHAT_MAX_MODEL_LEN` must be at least Ghostwriter's
+`GHOSTWRITER_CONTEXT_TOKENS` (default 40000; Ghostwriter refuses to start with
+less than 22000, and keeps its answer reserve inside that number). The default
+of 8192 is too small for it. Every image counts against the same context, so a
+model with a small window leaves little room for the text.
+
+**Body size.** One Ghostwriter request carries at most 8 images under 1 MiB
+each, about 11 MiB of base64 with the text, so plan for 12 MiB. The router sets
+no limit: LiteLLM's own request-size limit (`max_request_size_mb`) takes effect
+only with an enterprise license, and vLLM does not limit a body either (a
+router-wide limit is tracked in
+[issue #158](https://github.com/nos-tromo/vllm-service/issues/158)). A proxy
+placed in front of the router must pass at least 16 MiB. Its 413 shows in
+Ghostwriter as `images_dropped`, because the round is refused before any text
+goes and is retried without images.
+
+**Data URLs only.** Images arrive as base64 data URLs in the request body. No
+backend fetches an image by URL, so none needs to reach the network (the stack
+is airgap-first).
+
 ## Embedding batch budget
 
 Applies to the `embed-only` shape (`src/embed_server.py`).
