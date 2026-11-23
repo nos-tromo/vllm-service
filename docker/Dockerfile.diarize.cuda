@@ -52,19 +52,32 @@ RUN pip install --no-cache-dir --break-system-packages \
 # locked artifact against its hash (the lock covers the base's Python 3.12 as
 # well as 3.11). build_pipeline handles 4.x's renamed auth kwarg (token=) and
 # diarize_server extracts .speaker_diarization from 4.x's DiarizeOutput.
+# pip check then fails the build if a locked package needs another torch stack
+# than the base's (a bump of pyannote.audio, lightning or torchmetrics that wants
+# a newer torch), which --no-deps would not notice.
 COPY --from=lock /build/requirements.txt /tmp/requirements.txt
 RUN pip install --no-cache-dir --break-system-packages --no-deps --require-hashes \
     -r /tmp/requirements.txt \
-    && rm /tmp/requirements.txt
+    && rm /tmp/requirements.txt \
+    && pip check
 
-# Build-time smoke test — fail the build (not the running container) on a
-# base-image bump that breaks either compatibility shim in diarize_compat.py:
-#   * torchaudio: 2.9+ removed symbols pyannote 3.x imports — exercise the full
-#     import chain (lightning, speechbrain, ...) plus Audio construction.
+# pyannote.audio 4.x sends usage telemetry (OpenTelemetry spans to
+# otel.pyannote.ai: pipeline loads, every pipeline run with its audio duration
+# and speaker counts, model inits) unless PYANNOTE_METRICS_ENABLED is false;
+# the package defaults it to true. Nothing is fetched or sent at runtime, so it
+# is off here, for the smoke test below and for the running container.
+ENV PYANNOTE_METRICS_ENABLED=false
+
+# Build-time smoke test (mirrors Dockerfile.diarize.cpu): fail the build, not
+# the running container, on dependency drift or a base-image bump. It needs no
+# gated weights, so it stops short of Pipeline.from_pretrained and instantiation:
+#   * imports: torch and torchcodec load (the pins above fit each other) and the
+#     pyannote.audio import chain (lightning, pyannote.pipeline and its optuna,
+#     ...) succeeds with diarize_compat applied, plus Audio construction.
 #   * torch.load weights_only: round-trip the exact trusted checkpoint globals
-#     through the weights_only=True loader. Needs no gated weights, yet still
-#     catches a renamed symbol or a broken allowlist here — instead of only on
-#     the first real Pipeline.from_pretrained in production.
+#     through the weights_only=True loader. Catches a renamed symbol or a broken
+#     allowlist here — instead of only on the first real Pipeline.from_pretrained
+#     in production.
 COPY src/diarize_compat.py /app/diarize_compat.py
 COPY src/diarize_gate.py /app/diarize_gate.py
 RUN PYTHONPATH=/app python -c "import tempfile, os, torch, torchcodec, diarize_compat; from diarize_gate import crop_turns_to_speech; from pyannote.audio import Pipeline; import pyannote.audio.pipelines; from pyannote.audio.core.io import Audio; Audio(sample_rate=16000); p = tempfile.NamedTemporaryFile(suffix='.ckpt', delete=False).name; torch.save({'g': list(diarize_compat.TRUSTED_CHECKPOINT_GLOBALS), 'w': torch.zeros(1)}, p); torch.load(p, weights_only=True); os.unlink(p); print('diarize build smoke: OK')"
@@ -86,8 +99,14 @@ RUN groupadd --gid 10001 app \
        --shell /usr/sbin/nologin app \
     && mkdir -p /home/app/.cache/huggingface/hub \
     && chown -R app:app /home/app/.cache
+# The root filesystem is read-only at runtime and /tmp is the one writable path
+# (compose mounts a volume there), so matplotlib (which pyannote.audio imports
+# at load) and fontconfig keep their caches in it; unset, they fail to create
+# ~/.config/matplotlib and report "No writable cache directories" at every start.
 ENV HOME=/home/app \
-    HF_HUB_CACHE=/home/app/.cache/huggingface/hub
+    HF_HUB_CACHE=/home/app/.cache/huggingface/hub \
+    MPLCONFIGDIR=/tmp/matplotlib \
+    XDG_CACHE_HOME=/tmp/.cache
 
 USER 10001:10001
 

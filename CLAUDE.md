@@ -1017,7 +1017,21 @@ is the torch-2.11 row of torchcodec's compatibility table — re-pick the pins
 when bumping the PyTorch base image (the build smoke test fails on a
 mismatch). The old `huggingface_hub<1.0` cap is gone — it was only needed for
 the `use_auth_token` alias pyannote 3.x passed (the lock pins `huggingface-hub`
-0.36.2, the eval group's version). Endpoints:
+0.36.2, the eval group's version).
+
+Both Dockerfiles also set `ENV PYANNOTE_METRICS_ENABLED=false`. pyannote.audio
+4.x sends OpenTelemetry usage spans (pipeline loads, each pipeline run with its
+audio duration and speaker counts, model inits) to `otel.pyannote.ai` unless that
+variable is false, and the package defaults it to true; the airgap rule (nothing
+fetches data, models or telemetry at runtime) makes it off in the image, before
+the build smoke test too (`eval/tests/test_diarize_image.py` checks it). After
+the lock install the build also runs a dependency check (`uv pip check` in the
+CPU image, `pip check` in the CUDA one), so a bump of the locked packages that
+needs another torch stack than the pinned one fails the build instead of
+installing silently (`--no-deps` does not look). The containers run `read_only`
+with `/tmp` the one writable path, so `MPLCONFIGDIR` and `XDG_CACHE_HOME` point
+into `/tmp` (matplotlib, which pyannote imports, and fontconfig otherwise log
+"mkdir -p failed" and "No writable cache directories" at every start). Endpoints:
 
 ```
 POST /diarize               # multipart `file=<bytes>` + optional integer

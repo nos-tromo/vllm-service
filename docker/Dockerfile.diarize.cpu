@@ -33,22 +33,37 @@ RUN uv pip install --system --no-cache --compile-bytecode \
 # installs with --no-deps: the lock holds every other runtime dependency.
 # --locked fails the build if the lock has drifted from docker/diarize/pyproject.toml,
 # and --require-hashes checks each locked artifact against its hash. Every package
-# ships a wheel, so nothing is compiled.
-WORKDIR /build
+# ships a wheel, so nothing is compiled. (torch's own dependencies, sympy and the
+# like, come with the torch install above, pinned only at the top level.)
+# uv pip check then fails the build if a locked package needs another torch
+# stack than the one pinned above (a bump of pyannote.audio, lightning or
+# torchmetrics that wants a newer torch), which --no-deps would not notice.
+# The build files are used from /build without making it the working directory,
+# which stays the base image's.
 COPY docker/diarize/pyproject.toml docker/diarize/uv.lock /build/
-RUN uv export --locked --no-dev --no-emit-project --format requirements-txt -o /build/requirements.txt \
+RUN cd /build \
+    && uv export --locked --no-dev --no-emit-project --format requirements-txt -o /build/requirements.txt \
     && uv pip install --system --no-cache --no-deps --require-hashes --compile-bytecode \
-        -r /build/requirements.txt
+        -r /build/requirements.txt \
+    && uv pip check --system
+
+# pyannote.audio 4.x sends usage telemetry (OpenTelemetry spans to
+# otel.pyannote.ai: pipeline loads, every pipeline run with its audio duration
+# and speaker counts, model inits) unless PYANNOTE_METRICS_ENABLED is false;
+# the package defaults it to true. Nothing is fetched or sent at runtime, so it
+# is off here, for the smoke test below and for the running container.
+ENV PYANNOTE_METRICS_ENABLED=false
 
 # Build-time smoke test (mirrors Dockerfile.diarize.cuda): fail the build, not
-# the running container, on dependency drift that breaks either compat shim in
-# diarize_compat.py:
-#   * torchaudio: exercise the full pyannote import chain (lightning,
-#     speechbrain, ...) plus Audio construction with the shims applied.
+# the running container, on dependency drift. It needs no gated weights, so it
+# stops short of Pipeline.from_pretrained and instantiation:
+#   * imports: torch and torchcodec load (the pins above fit each other) and the
+#     pyannote.audio import chain (lightning, pyannote.pipeline and its optuna,
+#     ...) succeeds with diarize_compat applied, plus Audio construction.
 #   * torch.load weights_only: round-trip the exact trusted checkpoint globals
-#     through the weights_only=True loader. Needs no gated weights, yet still
-#     catches a renamed symbol or a broken allowlist here — instead of only on
-#     the first real Pipeline.from_pretrained in production.
+#     through the weights_only=True loader. Catches a renamed symbol or a broken
+#     allowlist here — instead of only on the first real Pipeline.from_pretrained
+#     in production.
 COPY src/diarize_compat.py /app/diarize_compat.py
 COPY src/diarize_gate.py /app/diarize_gate.py
 RUN PYTHONPATH=/app python -c "import tempfile, os, torch, torchcodec, diarize_compat; from diarize_gate import crop_turns_to_speech; from pyannote.audio import Pipeline; import pyannote.audio.pipelines; from pyannote.audio.core.io import Audio; Audio(sample_rate=16000); p = tempfile.NamedTemporaryFile(suffix='.ckpt', delete=False).name; torch.save({'g': list(diarize_compat.TRUSTED_CHECKPOINT_GLOBALS), 'w': torch.zeros(1)}, p); torch.load(p, weights_only=True); os.unlink(p); print('diarize build smoke: OK')"
@@ -72,8 +87,14 @@ RUN groupadd --gid 10001 app \
        --shell /usr/sbin/nologin app \
     && mkdir -p /home/app/.cache/huggingface/hub \
     && chown -R app:app /home/app/.cache
+# The root filesystem is read-only at runtime and /tmp is the one writable path
+# (compose mounts a volume there), so matplotlib (which pyannote.audio imports
+# at load) and fontconfig keep their caches in it; unset, they fail to create
+# ~/.config/matplotlib and report "No writable cache directories" at every start.
 ENV HOME=/home/app \
-    HF_HUB_CACHE=/home/app/.cache/huggingface/hub
+    HF_HUB_CACHE=/home/app/.cache/huggingface/hub \
+    MPLCONFIGDIR=/tmp/matplotlib \
+    XDG_CACHE_HOME=/tmp/.cache
 
 USER 10001:10001
 

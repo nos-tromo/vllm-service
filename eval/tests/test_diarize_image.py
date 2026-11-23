@@ -7,6 +7,7 @@ the heavy dependencies; the build itself is the real check.
 """
 
 import re
+import shlex
 import tomllib
 from pathlib import Path
 from typing import Any
@@ -52,6 +53,38 @@ def _installs(dockerfile: Path, marker: str) -> list[str]:
     """
     commands = [command.strip() for line in _instructions(dockerfile) for command in line.split("&&")]
     return [command for command in commands if marker in command]
+
+
+def _runtime_instructions(dockerfile: Path) -> list[str]:
+    """Return the instructions of a Dockerfile's last stage, the one that ships.
+
+    Args:
+        dockerfile: The Dockerfile to read.
+
+    Returns:
+        The instructions after its last ``FROM``, ``FROM`` included.
+    """
+    instructions = _instructions(dockerfile)
+    last = max(index for index, line in enumerate(instructions) if line.startswith("FROM "))
+    return instructions[last:]
+
+
+def _env(dockerfile: Path) -> dict[str, str]:
+    """Return the variables the last stage of a Dockerfile sets with ``ENV``.
+
+    Args:
+        dockerfile: The Dockerfile to read.
+
+    Returns:
+        The variable names and their values.
+    """
+    variables: dict[str, str] = {}
+    for line in _runtime_instructions(dockerfile):
+        if line.startswith("ENV "):
+            for token in shlex.split(line.removeprefix("ENV ")):
+                name, _, value = token.partition("=")
+                variables[name] = value
+    return variables
 
 
 def _lock() -> dict[str, Any]:
@@ -137,3 +170,42 @@ def test_the_cuda_image_pins_torchaudio_and_torchcodec_on_the_base_torch() -> No
     (torchcodec,) = _installs(CUDA, "torchcodec==")
     assert re.search(r"'torchcodec==\d+\.\d+\.\d+'", torchcodec)
     assert "https://download.pytorch.org/whl/cpu" in torchcodec
+
+
+@DOCKERFILES
+def test_the_image_turns_pyannote_telemetry_off(dockerfile: Path) -> None:
+    """pyannote.audio 4.x sends OpenTelemetry usage spans unless told not to; nothing leaves an airgapped stack."""
+    assert _env(dockerfile).get("PYANNOTE_METRICS_ENABLED") == "false"
+
+
+@DOCKERFILES
+def test_the_telemetry_is_off_before_the_smoke_test_imports_pyannote(dockerfile: Path) -> None:
+    """The variable is set ahead of the smoke test, so the build imports pyannote as the container will."""
+    instructions = _runtime_instructions(dockerfile)
+    off = next(i for i, line in enumerate(instructions) if line == "ENV PYANNOTE_METRICS_ENABLED=false")
+    smoke = next(i for i, line in enumerate(instructions) if "diarize build smoke: OK" in line)
+    assert off < smoke
+
+
+@DOCKERFILES
+def test_the_caches_of_a_read_only_container_are_under_tmp(dockerfile: Path) -> None:
+    """The root filesystem is read-only and only ``/tmp`` is writable, so matplotlib and fontconfig cache there."""
+    variables = _env(dockerfile)
+    assert variables.get("MPLCONFIGDIR", "").startswith("/tmp/")
+    assert variables.get("XDG_CACHE_HOME", "").startswith("/tmp/")
+
+
+@DOCKERFILES
+def test_the_image_checks_its_dependencies_after_the_lock_install(dockerfile: Path) -> None:
+    """A locked package that needs another torch than the pinned one fails the build, not the first request."""
+    commands = [command for line in _runtime_instructions(dockerfile) for command in line.split("&&")]
+    commands = [command.strip() for command in commands]
+    install = next(i for i, command in enumerate(commands) if "--require-hashes" in command)
+    checks = [i for i, command in enumerate(commands) if re.search(r"\bpip check\b", command)]
+    assert checks
+    assert min(checks) > install
+
+
+def test_the_cpu_image_keeps_the_working_directory_of_its_base() -> None:
+    """The build files are used from ``/build`` without leaving it as the runtime working directory."""
+    assert not [line for line in _runtime_instructions(CPU) if line.startswith("WORKDIR ")]
