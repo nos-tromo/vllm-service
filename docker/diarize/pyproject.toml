@@ -7,7 +7,7 @@ dependencies = [
     # The release the eval reports were measured on (eval/reports/); 4.1.x needs its own eval.
     "pyannote.audio==4.0.7",
     # Its helper libraries at the versions the root uv.lock's eval-run group resolves.
-    "pyannote.core==6.0.1",
+    "pyannote.core==6.1.0",
     "pyannote.database==6.2.0",
     "pyannote.metrics==4.2.0",
     "pyannote.pipeline==4.1.0",
