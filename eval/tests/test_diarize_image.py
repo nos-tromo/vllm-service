@@ -195,11 +195,13 @@ def test_the_caches_of_a_read_only_container_are_under_tmp(dockerfile: Path) -> 
     assert variables.get("XDG_CACHE_HOME", "").startswith("/tmp/")
 
 
-@DOCKERFILES
-def test_the_image_checks_its_dependencies_after_the_lock_install(dockerfile: Path) -> None:
-    """A locked package that needs another torch than the pinned one fails the build, not the first request."""
-    commands = [command for line in _runtime_instructions(dockerfile) for command in line.split("&&")]
-    commands = [command.strip() for command in commands]
+def test_the_cpu_image_checks_its_dependencies_after_the_lock_install() -> None:
+    """A locked package that needs another torch than the pinned one fails the build, not the first request.
+
+    Only the CPU image can: ``pip check`` covers every package, and the PyTorch base of the CUDA image ships dev
+    tools whose own pins conflict with the lock.
+    """
+    commands = [command.strip() for line in _runtime_instructions(CPU) for command in line.split("&&")]
     install = next(i for i, command in enumerate(commands) if "--require-hashes" in command)
     checks = [i for i, command in enumerate(commands) if re.search(r"\bpip check\b", command)]
     assert checks

@@ -1025,10 +1025,12 @@ audio duration and speaker counts, model inits) to `otel.pyannote.ai` unless tha
 variable is false, and the package defaults it to true; the airgap rule (nothing
 fetches data, models or telemetry at runtime) makes it off in the image, before
 the build smoke test too (`eval/tests/test_diarize_image.py` checks it). After
-the lock install the build also runs a dependency check (`uv pip check` in the
-CPU image, `pip check` in the CUDA one), so a bump of the locked packages that
-needs another torch stack than the pinned one fails the build instead of
-installing silently (`--no-deps` does not look). The containers run `read_only`
+the lock install the CPU image's build also runs `uv pip check`, so a bump of
+the locked packages that needs another torch stack than the pinned one fails the
+build instead of installing silently (`--no-deps` does not look). The CUDA image
+has no such check: `pip check` covers every package and cannot be scoped to the
+lock, and the PyTorch base ships dev tools (`spin` wants `click<8.4`, the lock
+has 8.5.1) whose own pins conflict with it; its smoke test is the net there. The containers run `read_only`
 with `/tmp` the one writable path, so `MPLCONFIGDIR` and `XDG_CACHE_HOME` point
 into `/tmp` (matplotlib, which pyannote imports, and fontconfig otherwise log
 "mkdir -p failed" and "No writable cache directories" at every start). Endpoints:

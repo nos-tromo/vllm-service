@@ -52,14 +52,15 @@ RUN pip install --no-cache-dir --break-system-packages \
 # locked artifact against its hash (the lock covers the base's Python 3.12 as
 # well as 3.11). build_pipeline handles 4.x's renamed auth kwarg (token=) and
 # diarize_server extracts .speaker_diarization from 4.x's DiarizeOutput.
-# pip check then fails the build if a locked package needs another torch stack
-# than the base's (a bump of pyannote.audio, lightning or torchmetrics that wants
-# a newer torch), which --no-deps would not notice.
+# No `pip check` here, unlike Dockerfile.diarize.cpu: it checks every package in
+# the image and cannot be scoped to the lock, and this base carries dev tools whose
+# own pins conflict with the lock (spin wants click<8.4, the lock has 8.5.1) though
+# nothing at runtime uses them. The smoke test below catches a torch-stack mismatch
+# that breaks an import; the CPU image's check covers the same lock.
 COPY --from=lock /build/requirements.txt /tmp/requirements.txt
 RUN pip install --no-cache-dir --break-system-packages --no-deps --require-hashes \
     -r /tmp/requirements.txt \
-    && rm /tmp/requirements.txt \
-    && pip check
+    && rm /tmp/requirements.txt
 
 # pyannote.audio 4.x sends usage telemetry (OpenTelemetry spans to
 # otel.pyannote.ai: pipeline loads, every pipeline run with its audio duration
