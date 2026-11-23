@@ -299,13 +299,24 @@ Request and response shapes: [api-reference.md](api-reference.md#embeddings).
 `docker/compose.diarize-only.yaml` is a standalone compose project for the
 same audience as NER-only / Rerank-only / CLIP-only. It runs one container,
 `diarize-only`, built from `Dockerfile.diarize.cpu` (uv-managed Python 3.11,
-CPU torch + torchaudio + torchcodec, `pyannote.audio`, `ffmpeg`). No LiteLLM
-router, no GPU reservation. The container ships `src/diarize_server.py` — the same
-FastAPI app the full-stack `diarize` service runs — so it exposes the
+`ffmpeg`; CPU torch 2.11.0 + torchaudio 2.11.0 + torchcodec 0.13.0 pinned in the
+Dockerfile, `pyannote.audio` 4.0.7 and the rest of the closure installed from the
+hash-checked lock in `docker/diarize/`). No LiteLLM router, no GPU reservation.
+The container ships `src/diarize_server.py` — the same FastAPI app the full-stack `diarize` service runs — so it exposes the
 **same multipart `/diarize` contract**, and consumers (Nextext) target
 either backend by changing only the base URL. Default `DIARIZE_MODEL` is
-`pyannote/speaker-diarization-community-1` (pyannote.audio 4.x); the 3.1
+`pyannote/speaker-diarization-community-1` (pyannote.audio 4.0.7); the 3.1
 pipeline still loads if you configure it.
+
+The image does not resolve its Python dependencies at build time: both
+diarization images (this one and the full stack's CUDA `diarize`) install the
+closure locked in `docker/diarize/uv.lock`, from `docker/diarize/pyproject.toml`
+(`uv export`, then an install with `--no-deps --require-hashes`), as the topics
+and faces images do. The torch stack (torch, torchaudio, torchcodec) is the one
+thing outside the lock; each Dockerfile pins it. Moving to a newer
+`pyannote.audio` is a deliberate change of `docker/diarize/pyproject.toml`,
+evaluated on the labelled set first, never a side effect of a rebuild; Dependabot
+watches `docker/diarize` and proposes one as its own PR.
 
 The pyannote weights are **gated** on the Hugging Face Hub, so unlike the
 other CPU shapes the cache cannot be populated anonymously. One-time setup:

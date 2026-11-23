@@ -1,3 +1,13 @@
+# Stage 1: export the locked closure (docker/diarize/uv.lock) as a hash-pinned
+# requirements file. uv runs here only; the runtime stage installs the file with
+# pip, so the PyTorch base needs no uv.
+FROM ghcr.io/astral-sh/uv:python3.11-trixie-slim@sha256:839b8b68a4bf47933fbd4e64f2550fc6f36d7e15aceca8b1cc7e1ade1eb2f1c5 AS lock
+
+WORKDIR /build
+COPY docker/diarize/pyproject.toml docker/diarize/uv.lock /build/
+RUN uv export --locked --no-dev --no-emit-project --format requirements-txt -o /build/requirements.txt
+
+# Stage 2: runtime.
 FROM docker.io/pytorch/pytorch:2.11.0-cuda12.8-cudnn9-runtime@sha256:eee11b3b3872a8c838e35ef48f08b2d5def2080902c7f666831310ca1a0ef2be
 
 # curl for the docker-compose /health probe; ffmpeg decodes arbitrary
@@ -6,13 +16,14 @@ RUN apt-get update \
     && apt-get install -y --no-install-recommends curl ffmpeg \
     && rm -rf /var/lib/apt/lists/*
 
-# pyannote.audio 4.x for community-1 (the default model — see diarize_pipeline
-# DEFAULT_MODEL): community-1 needs 4.x (it passes a `plda` kwarg 3.x rejects),
-# and 4.x decodes via torchcodec instead of torchaudio. build_pipeline already
-# handles 4.x's renamed auth kwarg (token=) and diarize_server extracts
-# .speaker_diarization from 4.x's DiarizeOutput, so the huggingface_hub<1.0
-# cap (needed only for pyannote 3.x's use_auth_token= call) is dropped.
-# --break-system-packages required on PyTorch 2.11+ (Debian PEP 668).
+# The torch stack. torch itself is the base image's (2.11.0, cu128); the lock
+# below excludes torch, torchaudio and torchcodec, so they are pinned here.
+# --break-system-packages required on PyTorch 2.11+ (Ubuntu's PEP 668).
+#
+# torchaudio==2.11.0 from the cu128 index is the base's own pairing of torch
+# 2.11.0; pinning it makes that explicit and leaves an image that already ships
+# it untouched.
+#
 # torchcodec must be the +cpu build from the PyTorch index: the plain PyPI
 # wheels (0.12+) are built against CUDA 13 and dlopen libnvrtc.so.13, and the
 # +cu128 build dlopens libnppicc.so.12 — neither lib exists in this pytorch
@@ -20,23 +31,31 @@ RUN apt-get update \
 # build links only torch + ffmpeg, which is all we use: diarize_audio decodes
 # uploads via the ffmpeg CLI and pyannote only ever receives waveform dicts,
 # so torchcodec's GPU decode path is never exercised. 0.11 is the torch-2.11
-# row of torchcodec's compatibility table. Installed first (and pinned) so
-# pyannote's own torchcodec>=0.7 dependency is already satisfied and pip
-# doesn't pull the broken PyPI wheel. When bumping the PyTorch base image,
-# re-pick the pin from
+# row of torchcodec's compatibility table. Installed before the lock, which
+# leaves torchcodec out, so pyannote's own torchcodec dependency is never
+# resolved to the broken PyPI wheel. When bumping the PyTorch base image,
+# re-pick the pins from
 # https://github.com/pytorch/torchcodec#installing-torchcodec — the smoke test
 # below fails the build on a mismatch.
 RUN pip install --no-cache-dir --break-system-packages \
-    --index-url https://download.pytorch.org/whl/cpu \
-    'torchcodec==0.11.1' \
+    --index-url https://download.pytorch.org/whl/cu128 \
+    'torchaudio==2.11.0' \
     && pip install --no-cache-dir --break-system-packages \
-    'fastapi>=0.115.0' \
-    'uvicorn[standard]>=0.32.0' \
-    'python-multipart>=0.0.9' \
-    'pydantic>=2.0' \
-    'pyannote.audio>=4,<5' \
-    'huggingface_hub>=0.30' \
-    'requests>=2.31'
+    --index-url https://download.pytorch.org/whl/cpu \
+    'torchcodec==0.11.1'
+
+# The rest of the closure, from the lock (docker/diarize/uv.lock): pyannote.audio
+# 4.0.7 for community-1 (the default model — see diarize_pipeline DEFAULT_MODEL;
+# 4.x decodes via torchcodec instead of torchaudio) and everything it, the
+# server and the smoke test below import, at pinned versions. --no-deps because
+# the torch stack is excluded from the lock; --require-hashes checks each
+# locked artifact against its hash (the lock covers the base's Python 3.12 as
+# well as 3.11). build_pipeline handles 4.x's renamed auth kwarg (token=) and
+# diarize_server extracts .speaker_diarization from 4.x's DiarizeOutput.
+COPY --from=lock /build/requirements.txt /tmp/requirements.txt
+RUN pip install --no-cache-dir --break-system-packages --no-deps --require-hashes \
+    -r /tmp/requirements.txt \
+    && rm /tmp/requirements.txt
 
 # Build-time smoke test — fail the build (not the running container) on a
 # base-image bump that breaks either compatibility shim in diarize_compat.py:
@@ -48,7 +67,7 @@ RUN pip install --no-cache-dir --break-system-packages \
 #     the first real Pipeline.from_pretrained in production.
 COPY src/diarize_compat.py /app/diarize_compat.py
 COPY src/diarize_gate.py /app/diarize_gate.py
-RUN PYTHONPATH=/app python -c "import tempfile, os, torch, torchcodec, diarize_compat; from diarize_gate import crop_turns_to_speech; from pyannote.audio import Pipeline; import pyannote.audio.pipelines; from pyannote.audio.core.io import Audio; Audio(sample_rate=16000, mono='downmix'); p = tempfile.NamedTemporaryFile(suffix='.ckpt', delete=False).name; torch.save({'g': list(diarize_compat.TRUSTED_CHECKPOINT_GLOBALS), 'w': torch.zeros(1)}, p); torch.load(p, weights_only=True); os.unlink(p); print('diarize build smoke: OK')"
+RUN PYTHONPATH=/app python -c "import tempfile, os, torch, torchcodec, diarize_compat; from diarize_gate import crop_turns_to_speech; from pyannote.audio import Pipeline; import pyannote.audio.pipelines; from pyannote.audio.core.io import Audio; Audio(sample_rate=16000); p = tempfile.NamedTemporaryFile(suffix='.ckpt', delete=False).name; torch.save({'g': list(diarize_compat.TRUSTED_CHECKPOINT_GLOBALS), 'w': torch.zeros(1)}, p); torch.load(p, weights_only=True); os.unlink(p); print('diarize build smoke: OK')"
 
 COPY src/diarize_audio.py /app/diarize_audio.py
 COPY src/diarize_pipeline.py /app/diarize_pipeline.py

@@ -16,12 +16,12 @@ name: vllm-service-diarize-only
 # projects, mirroring how `data-net` exposes Qdrant and how the
 # `gliner-only`, `rerank-only`, and `clip-only` services expose theirs.
 #
-# Gated weights: pyannote/speaker-diarization-3.1 and
-# pyannote/segmentation-3.0 are gated on the Hugging Face Hub. On a fresh
-# host, accept both repos' conditions and pre-populate the shared
-# huggingface-cache volume once with HF_HUB_OFFLINE=0,
-# TRANSFORMERS_OFFLINE=0, and HF_TOKEN set (see docs/deployment-shapes.md,
-# "Diarize-only").
+# Gated weights: the default model, pyannote/speaker-diarization-community-1,
+# is gated on the Hugging Face Hub (so is the 3.1 pipeline, with its
+# segmentation-3.0, if DIARIZE_MODEL selects it). On a fresh host, accept the
+# conditions and pre-populate the shared huggingface-cache volume once with
+# HF_HUB_OFFLINE=0, TRANSFORMERS_OFFLINE=0, and HF_TOKEN set (see
+# docs/deployment-shapes.md, "Diarize-only").
 #
 # Pair with `compose.gliner-only.yaml`, `compose.rerank-only.yaml`, and
 # `compose.clip-only.yaml` on the same host to give a non-CUDA dev box the

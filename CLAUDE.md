@@ -39,7 +39,7 @@ backends with a single LiteLLM Proxy router. The Docker assets live under
 `docker/Dockerfile.diarize.cuda`,
 `docker/Dockerfile.diarize.cpu`, `docker/Dockerfile.asr.cpu`,
 `docker/Dockerfile.vad.cpu`, `docker/Dockerfile.topics.cpu`, `docker/topics/`,
-`docker/Dockerfile.faces.cpu`, `docker/faces/`,
+`docker/Dockerfile.faces.cpu`, `docker/faces/`, `docker/diarize/`,
 `docker/litellm.config.yaml`, and `docker/router/` — the router's audit and
 prefix-cache salt callbacks, mounted into the pinned LiteLLM image, see "Audit log"
 and "Prefix-cache isolation" below) plus `.env`
@@ -184,8 +184,9 @@ Ten independent compose projects, picked per host:
   `src/diarize_server.py` the full-stack `diarize` service does, so it
   speaks the identical multipart `/diarize` contract; consumers (Nextext)
   target either backend by changing the base URL alone. Uses
-  `Dockerfile.diarize.cpu` (uv-managed Python 3.11, CPU torch +
-  torchaudio + torchcodec, `pyannote.audio`, `ffmpeg`). The pyannote
+  `Dockerfile.diarize.cpu` (uv-managed Python 3.11, `ffmpeg`; CPU torch +
+  torchaudio + torchcodec pinned in the Dockerfile, `pyannote.audio` and
+  the rest installed from the locked closure in `docker/diarize/`). The pyannote
   weights are gated
   on the HF Hub (see "Diarization backend" below for the one-time
   pre-download), so unlike the other CPU shapes its cache cannot be
@@ -632,9 +633,11 @@ absent, so it's a perf bump rather than a hard requirement).
 No lockfile, no `uv`, no `pyproject.toml` — the overlay is one line. If you
 add another dependency later and want transitive pinning, that's the moment
 to reintroduce a lockfile-driven workflow; for one extras specifier the
-ergonomics aren't worth it. The topics image is the exception: it installs
-from its own lock (`docker/topics/uv.lock`), because a fixed-seed fit needs
-exact pins.
+ergonomics aren't worth it. The topics, faces and diarize images are the
+exceptions: each installs from its own lock (`docker/topics/uv.lock`,
+`docker/faces/uv.lock`, `docker/diarize/uv.lock`). Topics needs exact pins for
+a fixed-seed fit; diarize needs them because an unpinned `pyannote.audio` 4.x
+moves under the image (4.1 removed an API the build smoke test used).
 
 ### Service startup ordering
 
@@ -975,22 +978,46 @@ bytes are decoded to 16 kHz mono float32 by piping through `ffmpeg`
 (any container ffmpeg can decode), then handed to the pipeline as a
 pre-decoded waveform dict; torchaudio file decoding is never used (the
 server stubs the backend-probing API torchaudio 2.9+ removed before
-importing pyannote). The Dockerfile pins `pyannote.audio>=4,<5` (4.x is
-required by the community-1 checkpoint and imports torchcodec instead of
-torchaudio for decoding) and installs `torchcodec==0.11.1` as the `+cpu`
-build from the PyTorch index, pinned and installed *before* pyannote so
-pip doesn't resolve pyannote's own `torchcodec>=0.7` dependency to a
-broken wheel: the plain PyPI wheels (0.12+) are CUDA-13 builds that
-dlopen `libnvrtc.so.13`, and the `+cu128` build dlopens `libnppicc.so.12`
-(NPP) — neither library ships in the pytorch `-runtime` base image. The
-`+cpu` build costs nothing: torchcodec's CUDA path is video-only NVDEC
-decoding, and this service pre-decodes via ffmpeg, so torchcodec is an
-import-time formality; torch itself stays the base image's cu128 build
-and inference runs on CUDA. 0.11 is the torch-2.11 row of torchcodec's
-compatibility table — re-pick the pin when bumping the PyTorch base image
-(the build smoke test fails on a mismatch). The old `huggingface_hub<1.0` cap
-is dropped — it was only needed for the `use_auth_token` alias pyannote
-3.x passed. Endpoints:
+importing pyannote). Both Dockerfiles install `pyannote.audio` **4.0.7**
+(the release the eval reports were measured on; 4.x is required by the
+community-1 checkpoint, and it imports torchcodec instead of torchaudio for
+decoding) and the rest of the closure from the lock in `docker/diarize/`
+(`pyproject.toml` + `uv.lock`, the topics/faces pattern: `uv export --locked`,
+then an install with `--no-deps --require-hashes`). The lock holds every
+runtime dependency except the torch stack: `exclude-dependencies` drops torch,
+torchaudio and torchcodec, and with them what only torch pulls in (the
+`nvidia-*` wheels, triton). Each Dockerfile pins that stack itself, at the
+torch of the CUDA base (2.11.0). The lock covers Python 3.11 (the CPU image)
+and 3.12 (the CUDA image: the PyTorch base ships Ubuntu 24.04's Python), so a
+base-image bump that changes the interpreter needs the lock's
+`requires-python` checked. Moving to a newer `pyannote.audio` (4.1 removed
+`Audio(mono=...)` and 4.1.x is unevaluated) is a deliberate change of
+`docker/diarize/pyproject.toml`, re-evaluated on the labelled set, normally a
+Dependabot PR; the build smoke test calls `Audio(sample_rate=16000)`, which
+4.0.x and 4.1.x both accept, and `eval/tests/test_diarize_image.py` pins the
+install shape.
+
+The CPU image installs `torch==2.11.0`, `torchaudio==2.11.0` and
+`torchcodec==0.13.0`, all from the PyTorch CPU index. The CPU image's torchcodec
+is not the CUDA image's 0.11.1: the CPU index has no 0.11 or 0.12 wheel for
+linux/arm64 (arm64 starts at 0.13, so a dev build on Apple Silicon needs it) and
+PyPI's arm64 0.11.1 is a CUDA-13 build that cannot load without
+`libnvrtc.so.13`; torchcodec's table lists 0.12 and later for torch >=2.11.
+The CUDA image keeps torch from the base
+and installs `torchaudio==2.11.0` from the cu128 index (a no-op where the base
+ships it) and torchcodec as the `+cpu` build from the PyTorch index, *before*
+the lock, which leaves torchcodec out so pyannote's own dependency is never
+resolved to a broken wheel: the plain PyPI wheels (0.12+) are CUDA-13 builds
+that dlopen `libnvrtc.so.13`, and the `+cu128` build dlopens `libnppicc.so.12`
+(NPP) — neither library ships in the pytorch `-runtime` base image. The `+cpu`
+build costs nothing: torchcodec's CUDA path is video-only NVDEC decoding, and
+this service pre-decodes via ffmpeg, so torchcodec is an import-time formality;
+torch itself stays the base image's cu128 build and inference runs on CUDA. 0.11
+is the torch-2.11 row of torchcodec's compatibility table — re-pick the pins
+when bumping the PyTorch base image (the build smoke test fails on a
+mismatch). The old `huggingface_hub<1.0` cap is gone — it was only needed for
+the `use_auth_token` alias pyannote 3.x passed (the lock pins `huggingface-hub`
+0.36.2, the eval group's version). Endpoints:
 
 ```
 POST /diarize               # multipart `file=<bytes>` + optional integer
@@ -1029,8 +1056,8 @@ server-side for every consumer.
 
 A `diarize-only` standalone CPU shape (`docker/compose.diarize-only.yaml`,
 `make up-diarize-only`) runs the same `src/diarize_server.py` without the
-router — built from `Dockerfile.diarize.cpu` (uv-managed Python 3.11, CPU
-torch + torchaudio + torchcodec, `pyannote.audio`, `ffmpeg`), reached directly at
+router — built from `Dockerfile.diarize.cpu` (uv-managed Python 3.11, `ffmpeg`,
+the pinned CPU torch stack, `pyannote.audio` from the lock), reached directly at
 `http://diarize-only:8000/diarize` with no Bearer auth, same posture as the
 other `-only` shapes. In the full stack, requests go through the router,
 which gates with the master key. Smoke-test (full stack):

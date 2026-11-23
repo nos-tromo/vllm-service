@@ -1,12 +1,13 @@
-"""Compatibility shims for running pyannote.audio 3.x on this image.
+"""Compatibility shims for running pyannote.audio on this image.
 
-Two independent mismatches between pyannote.audio 3.3.x and the pinned PyTorch
-base image are patched here; import this module BEFORE importing
-``pyannote.audio``.
+Two independent mismatches between pyannote.audio and the pinned PyTorch
+stack are patched here; import this module BEFORE importing
+``pyannote.audio``. The images ship pyannote.audio 4.x, which needs only the
+second; the first is kept for 3.x.
 
 1. Missing torchaudio symbols. pyannote.audio 3.3.x references a few
    ``torchaudio`` symbols at import time that torchaudio 2.9+ removed when it
-   moved file decoding to torchcodec:
+   moved file decoding to torchcodec (4.x does not reference them):
 
    * ``torchaudio.AudioMetaData`` — used as a return annotation in
      ``pyannote/audio/core/io.py`` (evaluated at module import, so its mere
